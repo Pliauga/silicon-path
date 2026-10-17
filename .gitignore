@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+build/
+.svelte-kit/
+dist/
+
+# Local package store (pnpm may place one inside the workspace)
+.pnpm-store/
+
+# Environment and local overrides
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs and test artefacts
+*.log
+coverage/
+test-results/
+playwright-report/
+# Local model-build toolchain (KTX-Software, sharp, gltf-transform) and its scratch output
+.tools/
+.cache/
+.shots/
+.dsh-vision-toolkit/
+.dsh-vision-router/
+# Any other local AI-tooling scratch folders
+.dsh-*/

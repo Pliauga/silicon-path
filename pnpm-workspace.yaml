@@ -1,0 +1,30 @@
+# pnpm workspace + install-time guards.
+#
+# `allowBuilds` — esbuild ships a postinstall step that pnpm blocks by default.
+allowBuilds:
+  esbuild: true
+
+# `minimumReleaseAgeExclude` — pnpm v11 refuses to install a package version
+# published within the last 1440 minutes (its supply-chain guard). That guard
+# is worth keeping on, so this is a narrow, version-pinned exception rather
+# than a global `minimumReleaseAge: 0`.
+#
+# Housekeeping: when bits-ui is upgraded, add the new exact version here and
+# drop the old line. Once everything we pin is older than the guard window the
+# whole list can go away.
+minimumReleaseAgeExclude:
+  - bits-ui@2.20.1
+
+patchedDependencies:
+  '@gameguild/emception-browser@4.5.0': patches/@gameguild__emception-browser@4.5.0.patch
+
+# `verifyDepsBeforeRun` — pnpm 11+ otherwise runs `pnpm install` before every script and, if
+# node_modules was last written by a different pnpm major, tries to purge it and aborts with
+# ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY. Scripts (`pnpm dev|check|build|test`) should just run;
+# run `pnpm install` yourself after pulling. pnpm 11 reads this from here, NOT from .npmrc.
+verifyDepsBeforeRun: false
+
+# `confirmModulesPurge` — if node_modules was installed by a different pnpm major (or a different
+# store), pnpm asks "remove modules directory?" and aborts when there is no TTY (editor terminals,
+# CI). node_modules is fully regenerable from pnpm-lock.yaml, so just rebuild it without asking.
+confirmModulesPurge: false

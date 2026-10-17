@@ -1,0 +1,77 @@
+diff --git a/dist/boot.js b/dist/boot.js
+index 42756d90c19ea5b0ea322faf3a106df7c030f422..64120abfe0c1efd0cb7d5ba5cebfc39520b3b028 100644
+--- a/dist/boot.js
++++ b/dist/boot.js
+@@ -84,7 +84,7 @@ export async function boot(manifestUrl, terminalContainerOrTerminal) {
+         String(fileCount),
+     ].join(':');
+     console.log(`${P} Step 3/6: Initializing IDBFS layers (version=${manifestVersion})...`);
+-    const writeFs = new IDBFS('overlay-writes', { version: manifestVersion }); // persistent write-layer with version invalidation
++    const writeFs = new IDBFS('overlay-writes', { version: manifestVersion, volatile: true }); // persistent write-layer with version invalidation
+     const tmpFs = new IDBFS('tmp-fs', { volatile: true }); // volatile /tmp — ephemeral scratch space
+     const idbFs = new IDBFS('user-files'); // persistent /home
+     await writeFs.init();
+diff --git a/dist/vfs/lazy.js b/dist/vfs/lazy.js
+index 9e42d7b557a7f125596e5260a6aeb21474d5460d..984ae9e431a268017b9bf2d81b68cd912db2b7bf 100644
+--- a/dist/vfs/lazy.js
++++ b/dist/vfs/lazy.js
+@@ -227,8 +227,18 @@ export class LazyFS {
+             console.error(`${P}   loadBundle: HASH MISMATCH for "${bundleName}": expected ${bundle.hash.slice(0, 12)}..., got ${hash.slice(0, 12)}...`);
+             throw new Error(`Bundle hash mismatch for ${bundleName}`);
+         }
+-        // Decompress if the URL ends with .br (brotli-compressed tar)
+-        if (bundle.url.endsWith('.tar.br') || bundle.url.endsWith('.br')) {
++        // Decompress brotli payloads. The URL suffix alone is not reliable
++        // (static hosts may expose the same bytes under another name), so fall
++        // back to the tar magic at offset 257: an already-raw tar must not be
++        // decompressed twice.
++        const isTar =
++            data.length > 262 &&
++            data[257] === 0x75 && data[258] === 0x73 && data[259] === 0x74 &&
++            data[260] === 0x61 && data[261] === 0x72;
++        const brotliPayload =
++            !isTar &&
++            (bundle.url.endsWith('.tar.br') || bundle.url.endsWith('.br') || bundle.url.endsWith('.brotli'));
++        if (brotliPayload) {
+             const tDecomp = performance.now();
+             data = new Uint8Array(await this.decompressBrotli(data));
+             console.log(`${P}   loadBundle: brotli decompressed ${fmtSize(rawSize)} → ${fmtSize(data.length)} in ${(performance.now() - tDecomp).toFixed(1)}ms`);
+diff --git a/dist/worker-entry.js b/dist/worker-entry.js
+index 331f74952f77a05ce8b33d8055694840b7a1a4bf..d40d047f5663da6eacceb735f6e662fb1927d4bb 100644
+--- a/dist/worker-entry.js
++++ b/dist/worker-entry.js
+@@ -247,7 +247,7 @@ async function handleBoot(manifestUrl, toolVersions) {
+         manifest.generated,
+         String(Object.keys(manifest.files).length),
+     ].join(':');
+-    const writeFs = new IDBFS('overlay-writes', { version: manifestVersion });
++    const writeFs = new IDBFS('overlay-writes', { version: manifestVersion, volatile: true });
+     const tmpFs = new IDBFS('tmp-fs', { volatile: true });
+     const idbFs = new IDBFS('user-files');
+     await writeFs.init();
+diff --git a/package.json b/package.json
+index b88396f8f12d1a3eb53dc54140037792a4e496c5..1d5020c095a9a31decd15704341829485a7011d8 100644
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,9 @@
+   "main": "./dist/index.js",
+   "module": "./dist/index.js",
+   "types": "./dist/index.d.ts",
+-  "sideEffects": false,
++  "sideEffects": [
++    "./dist/worker-entry.js"
++  ],
+   "exports": {
+     ".": {
+       "import": "./dist/index.js",
+@@ -21,6 +23,10 @@
+     "./worker": {
+       "import": "./dist/worker-entry.js",
+       "types": "./dist/worker-entry.d.ts"
++    },
++    "./worker-client": {
++      "import": "./dist/worker-client.js",
++      "types": "./dist/worker-client.d.ts"
+     }
+   },
+   "files": [
