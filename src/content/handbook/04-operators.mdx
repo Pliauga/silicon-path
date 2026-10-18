@@ -1,0 +1,209 @@
+---
+id: 04-operators
+title: 'Operators: Arithmetic, Division Traps, Logic, and Precedence'
+estimatedMinutes: 40
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import BitwiseVisualizer from '$lib/components/viz/BitwiseVisualizer.svelte';
+	import {
+		coinDispenser,
+		strikeRate,
+		shortCircuitGuard
+	} from '$lib/content/handbook/exercises/04-operators';
+</script>
+
+Most of the bugs you will write in your first month of C are operator bugs, and almost none of them come with a compiler warning. A division quietly discards a fraction, an increment fires one step too early, a condition never runs because the left half of an `&&` already decided the answer. This chapter walks the operator families one at a time and pairs each with the small fact about machine arithmetic that explains it.
+
+## Objectives
+
+- Perform arithmetic with `+`, `-`, `*`, `/`, and `%`, and predict where integer division truncates.
+- Use an explicit `(double)` cast when you genuinely need a fractional result.
+- Use compound assignment (`+=`, `-=`), prefix and postfix increment (`++`, `--`), and the ternary operator (`?:`).
+- Use relational (`==`, `!=`, and the four ordering comparisons) and logical (`&&`, `||`, `!`) operators, knowing what integer they produce.
+- Respect operator precedence, and use `sizeof` correctly.
+
+## Why students struggle
+
+In C, dividing two integers always produces an integer: `7 / 2` is `3`, and the `.5` is gone before you get a chance to look at it. Beginners assume that assigning the result to a `double` will rescue the fraction, but the truncation already happened on the right-hand side. The `%` operator causes a second wave, because it looks like a percentage sign and because its result follows the sign of the left operand, not the sign of the "true" remainder from school.
+
+The increment operators are worse: both `++x` and `x++` leave `x` one larger, and the difference is only in the value the expression hands back. Add short-circuit evaluation, where `&&` and `||` may skip their right-hand side entirely, and precedence, where `a + b * c` is not `(a + b) * c`, and you have four ways to write code that compiles cleanly and computes the wrong answer.
+
+## The code, both ways
+
+Every chapter shows the same idea twice. Read the version that maps onto something you already know, then read the other one; the point is that neither analogy is the concept.
+
+### The money version
+
+```c
+// Money version (operators_money.c)
+#include <stdio.h>
+
+int main(void) {
+    // 1. Integer division vs Modulo (%) vs Cast
+    int billPence = 1503;   // £15.03 split among 4 friends
+    int people = 4;
+    int sharePence = billPence / people;               // 375 (not 375.75!)
+    int leftoverPence = billPence % people;            // 3 pence left over
+    double exactPence = (double)billPence / people;    // 375.75
+
+    printf("Each pays: %d pence (£%d.%02d), leftover: %d pence\n",
+           sharePence, sharePence / 100, sharePence % 100, leftoverPence);
+    printf("Exact mathematical split: %.2f pence\n", exactPence);
+
+    // 2. Compound assignment & prefix vs postfix ++
+    int balancePence = 10000;
+    balancePence += 2500;    // deposit: 12500
+    balancePence -= 500;     // fee:     12000
+
+    int ticketA = 10;
+    int printedA = ticketA++;   // postfix: gives 10 first, THEN ticketA becomes 11
+    int ticketB = 10;
+    int printedB = ++ticketB;   // prefix:  ticketB becomes 11 first, THEN gives 11
+    printf("Balance: %d | Postfix: %d (now %d) | Prefix: %d (now %d)\n",
+           balancePence, printedA, ticketA, printedB, ticketB);
+
+    // 3. Relational, Logical, Precedence, and Ternary (? :)
+    int feePence = (balancePence >= 10000) ? 0 : 250;
+    int canWithdraw = (balancePence > 0) && (feePence == 0);
+    printf("Fee: %d pence | Eligible for free withdrawal: %d\n",
+           feePence, canWithdraw);
+    printf("Precedence check: 100 + 50 * 2 = %d\n", 100 + 50 * 2); // 200
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (operators_football.c)
+#include <stdio.h>
+
+int main(void) {
+    // 1. Integer division vs Modulo (%) vs Cast
+    int totalPlayers = 23;  // 23 squad players split into 5-a-side teams
+    int teamSize = 5;
+    int fullTeams = totalPlayers / teamSize;           // 4 (not 4.6!)
+    int subsLeft = totalPlayers % teamSize;            // 3 players left over
+    double exactRatio = (double)totalPlayers / teamSize; // 4.60
+
+    int matchSeconds = 5423;
+    printf("5-a-side: %d full teams, %d subs waiting (ratio %.2f)\n",
+           fullTeams, subsLeft, exactRatio);
+    printf("Match clock: %d:%02d\n", matchSeconds / 60, matchSeconds % 60);
+
+    // 2. Compound assignment & prefix vs postfix ++
+    int points = 10;
+    points += 3;             // win:  13
+    points -= 1;             // deduction: 12
+
+    int goalsA = 10;
+    int shownA = goalsA++;   // postfix: shows 10 first, THEN goalsA becomes 11
+    int goalsB = 10;
+    int shownB = ++goalsB;   // prefix:  goalsB becomes 11 first, THEN shows 11
+    printf("Points: %d | Postfix: %d (now %d) | Prefix: %d (now %d)\n",
+           points, shownA, goalsA, shownB, goalsB);
+
+    // 3. Relational, Logical, Precedence, and Ternary (? :)
+    int bonusPoints = (points >= 12) ? 2 : 0;
+    int qualified = (points > 0) && (bonusPoints == 2);
+    printf("Bonus: %d | Qualified for knockout: %d\n",
+           bonusPoints, qualified);
+    printf("Precedence check: 4 + 3 * 2 = %d\n", 4 + 3 * 2); // 10
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-operators-predict"
+	questions={["Why does `int printedA = ticketA++;` set `printedA` to `10`, while `int printedB = ++ticketB;` sets `printedB` to `11`?","What is the difference between `(double)(billPence / people)` and `(double)billPence / people`?","What integer values do `==`, `&&`, and `||` return in C when a condition is true versus false?"]}
+	answers={["Postfix `ticketA++` evaluates to the **old** value (`10`) and increments `ticketA` as a side effect. Prefix `++ticketB` increments `ticketB` **first** and evaluates to the **new** value (`11`).","In `(double)(billPence / people)`, the integer division `1503 / 4` happens first, producing `375`, and only then is `375` converted to `375.00` — too late. In `(double)billPence / people`, `billPence` becomes `1503.0` before the division, so the division itself is done in floating point and gives `375.75`.","In C, relational and logical operators always evaluate to the integer `1` for true and `0` for false."]}
+>
+
+**Expected output, money:**
+
+```text
+Each pays: 375 pence (£3.75), leftover: 3 pence
+Exact mathematical split: 375.75 pence
+Balance: 12000 | Postfix: 10 (now 11) | Prefix: 11 (now 11)
+Fee: 0 pence | Eligible for free withdrawal: 1
+Precedence check: 100 + 50 * 2 = 200
+```
+
+**Expected output, football:**
+
+```text
+5-a-side: 4 full teams, 3 subs waiting (ratio 4.60)
+Match clock: 90:23
+Points: 12 | Postfix: 10 (now 11) | Prefix: 11 (now 11)
+Bonus: 2 | Qualified for knockout: 1
+Precedence check: 4 + 3 * 2 = 10
+```
+
+</PredictCard>
+
+### Compile and run
+
+The same command compiles either theme; only the file name changes.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g operators_money.c -o operators_money
+./operators_money
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard, the dialect this handbook teaches. |
+| `-Wall -Wextra` | Switches on the main warning families; they catch operator slips such as an assignment where a comparison was meant. |
+| `-Wpedantic` | Rejects compiler-specific extensions so your code stays portable C. |
+| `-g` | Keeps debugging symbols, so a debugger can show you line numbers and variable values. |
+| `-o operators_money` | Names the executable `operators_money` instead of the default `a.out`. |
+
+The compiler writes a separate executable to disk; your `.c` source is untouched, which is why editing and re-running the old binary still prints the old answers. The `-std=c17` flag only chooses the standard the compiler checks against — it does not change how integers divide, which has been fixed since C99.
+
+<Eli5Block
+	topic="operators"
+	money={"Picture 1503 physical one-penny coins being shared equally between four people. Each person receives 1503 divided by 4, which is 375 coins, and 1503 modulo 4 leaves 3 coins sitting on the table, because nobody can saw a penny into quarters. That is exactly the pair of operators: division counts the full shares, modulo counts what would not fit. Formatting those pence as pounds uses the same two operators again — pence divided by 100 gives whole pounds, and pence modulo 100 gives the leftover pence from 0 to 99 — which is how banking software prints £3.75 while only ever holding integers.\n\nThe type cast is the moment you stop handling coins and open a ledger that permits fractional pence; casting one operand before the division is what makes the ledger see 375.75 instead of a pre-rounded 375.00. The ticket machine at the counter settles prefix and postfix: with the prefix form the machine advances the roll to the next number first and then prints the slip, and with the postfix form it prints the current slip first and only then advances. The ternary operator is the one-line fee rule printed on the counter card: if the balance holds, charge nothing, otherwise charge 250 pence."}
+	football={"Take 23 squad players and fill 5-a-side teams. Division gives 4 complete teams on the pitch, and modulo gives the 3 substitutes left waiting on the touchline — 4.6 teams is not a thing that can walk out of the tunnel. The match clock works the same way: seconds divided by 60 gives whole minutes, and seconds modulo 60 gives the remaining seconds from 0 to 59, which is why 5423 seconds displays as 90:23 rather than a decimal.\n\nPrefix and postfix are two orders of doing the same job on the stadium scoreboard. With the prefix form you update the scoreboard first and then take the photograph, so the photo shows the new total; with the postfix form you photograph the board first and add the goal afterwards, so the photo keeps the old total even though the board is now one higher. Precedence is the league table arithmetic: points are three times the wins plus the draws, and the multiplication happens before the addition, exactly as C evaluates multiplication, division and remainder ahead of addition and subtraction."}
+/>
+
+<BitwiseVisualizer />
+
+## What is really happening
+
+The arithmetic operators work on values, not on the text you typed. When both operands are integers, the compiler emits an integer division instruction, and that instruction produces an integer: there is no fractional part to round, only a quotient and a remainder. C99 fixed the rule as **truncation toward zero**, so `7 / 2` is `3` and `-7 / 2` is `-3`. The remainder operator `%` is defined to satisfy `(a / b) * b + a % b == a`, which forces `a % b` to carry the sign of `a`: `-7 % 2` is `-1`. The `%` operator accepts integers only; for `double` you would call `fmod` from `math.h`.
+
+**Compound assignment** is shorthand with a guarantee: `a += b` means `a = a + b`, except that the left-hand side is evaluated only once. `++` and `--` are not shorthand at all — they modify the object in memory. That is why using one on the same variable twice in one expression is **undefined behaviour**: in `i = i++ + 1` the read and the write are unsequenced, and the standard permits anything at all, including the answer you expected.
+
+**Relational** operators (`==`, `!=`, and the four ordering comparisons) and **logical** operators (`!`, `&&`, `||`) produce the `int` values `1` and `0` — not a distinct boolean type. `&&` and `||` use **short-circuit evaluation**: `A && B` does not evaluate `B` at all when `A` is `0`, and `A || B` does not evaluate `B` when `A` is non-zero. The ternary operator `cond ? expr1 : expr2` is similarly lazy and evaluates only the branch that is chosen. `sizeof` is an operator, evaluated at compile time, whose result has type `size_t` — hence `%zu`.
+
+**Precedence** decides how an unparenthesised expression is grouped. Parentheses, array subscripting, member access, and postfix `++` bind tightest; then unary prefix operators, `!`, unary minus, casts, `sizeof`; then the multiplicative group `*`, `/`, `%`; then additive `+` and `-`; then the ordering comparisons, then equality; then `&&`; then `||`; then the ternary; and finally assignment, which binds loosest and associates right to left. That ladder is why `100 + 50 * 2` is `200`, and it is also why writing the parentheses yourself is almost always kinder to the next reader.
+
+## Where the analogy stops
+
+Sharing physical coins suggests the leftover rounds down towards minus infinity, which for positive money is harmless. C does not round down; it truncates towards zero, and the two rules disagree the moment a negative operand appears. `7 / 2` and `-7 / 2` are `3` and `-3`, not `3` and `-4`, and `-7 % 2` is `-1`, not the `1` a mathematician would expect from a true remainder. A till that only ever handles positive pence will never expose the difference, which is precisely why the analogy is comfortable and incomplete.
+
+## Common mistakes
+
+- **Casting after the integer division.** `double avg = (double)(total / count);` divides as integers first. Cast at least one operand before the `/`: `double avg = (double)total / count;`.
+- **Dividing or taking modulo by zero.** `x / 0` and `x % 0` are undefined behaviour and usually kill the process immediately. Guard the divisor, and let short-circuit logic do it: `count > 0 && total / count > 50` never divides when `count` is zero.
+- **Believing `^` is exponentiation.** In C `^` is bitwise exclusive or, so `2 ^ 3` is `1`, not `8`. Multiply a value by itself for a square.
+- **Modifying a variable twice in one expression.** `x = x++;` and `printf("%d %d\n", i, i++);` contain unsequenced side effects and are undefined behaviour, even when a particular compiler happens to give you the answer you wanted.
+
+## Practice
+
+Three tasks follow: two build programs from scratch with the division and modulo operators, and one repairs a division guard that crashes on its first test case.
+
+<ExerciseCard {...coinDispenser} />
+
+<ExerciseCard {...strikeRate} />
+
+<ExerciseCard {...shortCircuitGuard} />

@@ -1,0 +1,224 @@
+---
+id: 17-structures
+title: 'Structures (struct): Account Files, Player Cards, and the -> Operator'
+estimatedMinutes: 40
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		branchLedgerAudit,
+		leagueTableUpdate,
+		structPaddingBugs
+	} from '$lib/content/handbook/exercises/17-structures';
+</script>
+
+A `struct` keeps values of different types together under one name, so a bank account or a player card travels as a single object instead of four parallel arrays. It is the first type in this handbook that you design yourself, and the one that makes file records, `malloc`, and most real C code readable. This chapter builds both a ledger and a squad list, then settles the question that trips up almost everyone: when do you write a dot, and when do you write an arrow?
+
+## Objectives
+
+- Group related values of different types into one composite type with `struct` and `typedef struct`.
+- Initialise a struct with designated initialisers, naming each field as `.field = value`.
+- Read a field with the dot operator on a struct variable and with the arrow operator on a struct pointer.
+- Pass a struct to a function by pointer: `const StructType *` to read it, `StructType *` to update it.
+
+## Why students struggle
+
+An array holds many values, but every one of them must have the same type. A branch of twenty accounts needs a name, an ID, a balance, and a tier for each customer, and without a `struct` that becomes four parallel arrays: `names[]`, `ids[]`, `balances[]`, `tiers[]`. They start in step and drift apart the first time someone inserts a customer in the middle, or sorts one array but not the others.
+
+The next hurdle is syntax. A dot and an arrow look interchangeable and are not: one reads a field from a struct, the other reads a field through a pointer to a struct. The wrong operator is caught at compile time. The silent copy is not, because a function that takes `PlayerCard c` receives a whole copy, so `c.goals++` leaves the caller's card untouched and the bug shows up much later.
+
+## The code, both ways
+
+The same four-field record appears twice: a bank account and a player card, each printed through a read-only pointer and then updated through a writable one.
+
+### The money version
+
+```c
+// Money version (structs_money.c)
+#include <stdio.h>
+
+typedef struct {
+    char holder[24];
+    int accountId;
+    int balancePence;
+    char tier;
+} BankAccount;
+
+// Pass a 'const BankAccount *' slip to READ without copying the whole folder:
+void printAccountSummary(const BankAccount *accSlip) {
+    // accSlip->field is exact shorthand for (*accSlip).field
+    printf("Account #%d | Holder: %-10s | Tier %c | Balance: %d pence (£%d.%02d)\n",
+           accSlip->accountId,
+           accSlip->holder,
+           accSlip->tier,
+           accSlip->balancePence,
+           accSlip->balancePence / 100,
+           accSlip->balancePence % 100);
+}
+
+// Pass a 'BankAccount *' slip to MODIFY the caller's actual folder:
+void depositAndUpgrade(BankAccount *accSlip, int depositPence) {
+    accSlip->balancePence += depositPence;
+    if (accSlip->balancePence >= 100000) {   // >= £1,000.00 upgrades to Gold
+        accSlip->tier = 'G';
+    }
+}
+
+int main(void) {
+    // Designated initialisers (.field = value) — self-documenting and safe!
+    BankAccount leo = {
+        .holder       = "Leo Vance",
+        .accountId    = 4012,
+        .balancePence = 85000,
+        .tier         = 'S'
+    };
+
+    printf("sizeof(BankAccount) = %zu bytes\n", sizeof(BankAccount));
+    printAccountSummary(&leo);
+
+    // Direct member access on a struct variable uses '.'
+    leo.balancePence += 5000;
+
+    // Indirect member access via a pointer inside a function uses '->'
+    depositAndUpgrade(&leo, 15000);
+    printAccountSummary(&leo);
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (structs_football.c)
+#include <stdio.h>
+
+typedef struct {
+    char name[24];
+    int shirtNumber;
+    int goals;
+    char position;
+} PlayerCard;
+
+// Pass a 'const PlayerCard *' ticket to READ without copying the whole card:
+void printPlayerCard(const PlayerCard *cardTicket) {
+    // cardTicket->field is exact shorthand for (*cardTicket).field
+    printf("#%2d %-12s | Pos: %c | Season Goals: %d\n",
+           cardTicket->shirtNumber,
+           cardTicket->name,
+           cardTicket->position,
+           cardTicket->goals);
+}
+
+// Pass a 'PlayerCard *' ticket to MODIFY the caller's actual card:
+void recordHatTrick(PlayerCard *cardTicket) {
+    cardTicket->goals += 3;
+}
+
+int main(void) {
+    // Designated initialisers (.field = value) — self-documenting and safe!
+    PlayerCard leo = {
+        .name        = "Leo Vance",
+        .shirtNumber = 9,
+        .goals       = 14,
+        .position    = 'F'
+    };
+
+    printf("sizeof(PlayerCard) = %zu bytes\n", sizeof(PlayerCard));
+    printPlayerCard(&leo);
+
+    // Direct member access on a struct variable uses '.'
+    leo.goals += 1;
+
+    // Indirect member access via a pointer inside a function uses '->'
+    recordHatTrick(&leo);
+    printPlayerCard(&leo);
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-structures-predict"
+	questions={["The fields add up to 24 + 4 + 4 + 1 = 33 bytes. Why does `sizeof(BankAccount)` print 36?","Why is `(*accSlip).balancePence` written with parentheses, and what does `accSlip->balancePence` save you from?","Does `BankAccount backup = leo;` copy the `char holder[24]` array as well, or only a pointer to it?"]}
+	answers={["**Struct padding.** Every `int` must begin at an address divisible by 4, so the compiler inserts three invisible bytes after the final `char`. Without them, the second element of an array of accounts would start at offset 33 and its first `int` would be misaligned. The struct is 36 bytes: 33 of data and 3 of alignment.","Because `.` binds more tightly than `*`, `*accSlip.balancePence` would try to treat `accSlip` as a struct and take a field of it. The parentheses force the dereference first. The arrow operator is exactly `(*accSlip).balancePence`, written once and read as one idea.","It copies everything, including the array. Struct assignment is a byte-for-byte copy of the object, not a reference, so the backup owns its own twenty-four bytes of name storage. That is also why passing a struct by value to a function copies the whole folder."]}
+>
+
+**Expected output, money:**
+
+```text
+sizeof(BankAccount) = 36 bytes
+Account #4012 | Holder: Leo Vance  | Tier S | Balance: 85000 pence (£850.00)
+Account #4012 | Holder: Leo Vance  | Tier G | Balance: 105000 pence (£1050.00)
+```
+
+**Expected output, football:**
+
+```text
+sizeof(PlayerCard) = 36 bytes
+# 9 Leo Vance    | Pos: F | Season Goals: 14
+# 9 Leo Vance    | Pos: F | Season Goals: 18
+```
+
+</PredictCard>
+
+### Compile and run
+
+Both programs build the same way; only the file name changes.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g structs_money.c -o structs_money
+./structs_money
+```
+
+| Flag | Meaning |
+|---|---|
+| `-std=c17` | Use the ISO C17 standard. Designated initialisers are part of it, not a compiler extension. |
+| `-Wall -Wextra -Wpedantic` | Turn on strict warnings. They catch the wrong operator and mismatched format specifiers before you run anything. |
+| `-g` | Keep line numbers and variable names for a debugger. |
+| `-o structs_money` | Write the executable as `structs_money` instead of the default `a.out`. |
+
+The name after `-o` is the file the compiler writes; without it, every build silently overwrites `a.out`. No separate header is needed here, because the struct definition sits above the functions that use it, which is all C17 asks for.
+
+<Eli5Block
+	topic="structures"
+	money={"A struct is an account file folder in the vault, with labelled sections inside one cover: holder is a twenty-four-box name strip, accountId and balancePence are four-box safes, and tier is a one-box safe. The folder travels as one object, so you never hand a colleague four loose sheets and hope they stay in order.\n\nThe dot and the arrow describe what is in your hand. Write leo.balancePence when you are holding the actual folder; write accSlip->balancePence when you are holding a claim slip that points to the folder's shelf in the vault. That is also why a function takes a const BankAccount pointer: passing the struct by value makes the clerk photocopy every page, while a pointer hands over one small claim slip stamped read-only."}
+	football={"A struct is a player registration card that keeps name, shirtNumber, goals and position together as one unit. One card holds everything the league needs to know about that player, instead of four separate lists that must be kept in the same order.\n\nUse leo.goals when the card is in front of you, and cardTicket->goals when all you hold is a ticket telling you which seat the card is filed under. The ticket identifies the card without copying it, and recordHatTrick changes the real card precisely because the ticket points at it."}
+/>
+
+## What is really happening
+
+A `struct` definition describes a **composite type**: a fixed sequence of named fields, each with its own type, stored in declaration order. Writing `struct Point { int x; int y; };` creates a tag, and variables then need the full name, `struct Point p;`. Adding `typedef` gives the type an ordinary name: `typedef struct { int x; int y; } Point;` defines an anonymous struct and aliases it, so you can write `Point p;` from then on. Most modern C uses the typedef form for data records, and keeps a tag only for types that must refer to themselves, such as linked-list nodes.
+
+A **designated initialiser** names the field it fills: `Point p = { .x = 3, .y = 7 };`. Fields may appear in any order, and any field you leave out is zeroed. That is what makes designated initialisers safer than a positional list: adding a field to the struct cannot silently shift your values into the wrong slots.
+
+Member access has two spellings. The **dot operator** reads a field from a struct variable: `p.x`. The **arrow operator** reads a field through a struct pointer, and is defined as `(*ptr).x`; it exists because those parentheses would otherwise be mandatory and noisy. The two are not interchangeable, and the compiler decides from the declared type of the name in front of the operator, not from what the variable happens to point at while the program runs.
+
+The pattern scales to an **array of structs**. `BankAccount branch[100];` stores a hundred complete accounts contiguously, and `branch[i].balancePence` is one address calculation away. `sizeof` reports the padded size, not the sum of the fields: 24 + 4 + 4 + 1 rounds up to 36 so that every element begins on a four-byte boundary. Grouping the small fields together is often enough to remove that padding entirely.
+
+## Where the analogy stops
+
+Even though C copies a struct with `=`, it refuses to compare two of them with `==`: `if (backup == leo)` is a compile error. The padding bytes are the reason. The compiler is not obliged to initialise them, so two structs with identical fields can still differ in the invisible bytes between the fields you can see. Compare field by field in a helper, for example `bool accountsEqual(const BankAccount *a, const BankAccount *b)`, including `<stdbool.h>` if you use `bool`.
+
+## Common mistakes
+
+- **Using the dot on a pointer, or the arrow on a value.** `accSlip.balancePence` fails because a pointer is not a struct; `leo->balancePence` fails because a struct variable is not a pointer. Decide from the declared type, not from what the name sounds like.
+- **Passing a struct by value to a function that modifies it.** `void badScoreGoal(PlayerCard c) { c.goals++; }` compiles without a murmur and changes nothing the caller can see, because `c` is a copy.
+- **Forgetting the semicolon after the closing brace of a struct definition.** The `;` is part of the definition. Without it, the compiler reports an error on the following line, often far from the real cause.
+- **Assuming `sizeof` equals the sum of the field sizes.** Padding is real memory, and it changes with the order of the fields.
+
+## Practice
+
+Three exercises follow: an audit that walks an array of accounts, a league table updated through pointers, and a bug hunt in a program that reports struct sizes.
+
+<ExerciseCard {...branchLedgerAudit} />
+
+<ExerciseCard {...leagueTableUpdate} />
+
+<ExerciseCard {...structPaddingBugs} />

@@ -1,0 +1,233 @@
+---
+id: 05-conditionals
+title: 'Conditionals: if, else, switch, Ternary, and Truth in C'
+estimatedMinutes: 32
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		saverTiers,
+		matchPoints,
+		conditionalBugs
+	} from '$lib/content/handbook/exercises/05-conditionals';
+</script>
+
+A program that cannot choose is only a calculator. Conditionals turn a fixed list of instructions into a decision: test, then step. This chapter covers the `if` ladder, the ternary operator, and `switch`, all of which rest on one rule — zero is false, and every other value is true.
+
+## Objectives
+
+- Write branching logic with `if`, `else if`, and `else`.
+- Use `stdbool.h` for `bool`, `true`, and `false`, and explain why zero is false while any non-zero value is true.
+- Avoid the assignment-in-condition trap, where `=` replaces `==`.
+- Use the ternary operator to choose one of two values in a single expression.
+- Write `switch` statements with `case`, `break`, and `default`, and explain a missing `break`.
+
+## Why students struggle
+
+Almost every beginner loses an afternoon to one missing equals sign. `if (balance = 0)` looks like a question, but C reads it as an order: store `0`, then test the result. The result is `0`, so the branch is skipped and the balance you meant to inspect is already gone. Your compiler will warn you, if you ask.
+
+The second trap is a belief about negative numbers. A balance of minus twenty pounds, a goal difference of minus four, a temperature below freezing: all of these feel false, and in C all of them are true. Truth here is not a judgement about good or bad; it is a test for emptiness, and only `0` is empty.
+
+## The code, both ways
+
+Both programs branch on the same four ideas: an `if` ladder, the truth rule, a ternary, and a `switch`. The money version runs an ATM withdrawal; the football version handles referee's cards. Read the one whose vocabulary you own first.
+
+### The money version
+
+```c
+// Money version (conditionals_money.c)
+#include <stdio.h>
+#include <stdbool.h>   // bool, true, false (built-in keywords from C23)
+
+int main(void) {
+    int balancePence = 8000;        // £80.00
+    int withdrawalPence = 10000;    // £100.00
+    int overdraftLimitPence = 5000; // £50.00
+    bool cardActive = true;
+
+    // 1. if / else if / else ladder
+    if (!cardActive) {
+        printf("ATM: Card is frozen.\n");
+    } else if (withdrawalPence <= balancePence) {
+        balancePence -= withdrawalPence;
+        printf("ATM: Cash dispensed. New balance: %d pence\n", balancePence);
+    } else if (withdrawalPence <= balancePence + overdraftLimitPence) {
+        balancePence -= withdrawalPence;
+        printf("ATM: Dispensed using overdraft. Balance: %d pence\n", balancePence);
+    } else {
+        printf("ATM: Declined (insufficient funds).\n");
+    }
+
+    // 2. C Truth rule: negative balance (-2000) is NON-ZERO, so it is TRUE!
+    if (balancePence) {
+        printf("Truth check: balance (%d) is non-zero, so if(balance) is TRUE!\n",
+               balancePence);
+    }
+
+    // 3. Ternary (? :) for selecting a label
+    printf("Account status: %s\n",
+           (balancePence < 0) ? "OVERDRAWN" : "IN CREDIT");
+
+    // 4. switch statement for ATM menu selection
+    int menuChoice = 2;
+    switch (menuChoice) {
+        case 1:
+            printf("Menu 1: Print mini-statement\n");
+            break;
+        case 2:
+            printf("Menu 2: Withdraw cash\n");
+            break;   // without break, execution falls through into case 3!
+        case 3:
+            printf("Menu 3: Deposit cash\n");
+            break;
+        default:
+            printf("Menu: Invalid selection\n");
+            break;
+    }
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (conditionals_football.c)
+#include <stdio.h>
+#include <stdbool.h>   // bool, true, false (built-in keywords from C23)
+
+int main(void) {
+    int yellowCards = 2;
+    bool straightRedOffence = false;
+    int goalDifference = -4;
+
+    // 1. if / else if / else ladder
+    if (straightRedOffence || yellowCards >= 2) {
+        printf("Referee: RED CARD — player sent off!\n");
+    } else if (yellowCards == 1) {
+        printf("Referee: On a booking — one more yellow is a red.\n");
+    } else {
+        printf("Referee: Clean disciplinary record.\n");
+    }
+
+    // 2. C Truth rule: negative goalDifference (-4) is NON-ZERO, so it is TRUE!
+    if (goalDifference) {
+        printf("Truth check: GD (%d) is non-zero, so if(GD) is TRUE!\n",
+               goalDifference);
+    }
+
+    // 3. Ternary (? :) for selecting a label
+    printf("Goal difference status: %s\n",
+           (goalDifference < 0) ? "NEGATIVE GD" : "LEVEL OR POSITIVE GD");
+
+    // 4. switch statement for tactical formation selection
+    int formationCode = 2;
+    switch (formationCode) {
+        case 1:
+            printf("Tactics 1: 4-4-2 Classic\n");
+            break;
+        case 2:
+            printf("Tactics 2: 4-3-3 High Press\n");
+            break;   // without break, execution falls through into case 3!
+        case 3:
+            printf("Tactics 3: 3-5-2 Wing-backs\n");
+            break;
+        default:
+            printf("Tactics: Unknown formation code\n");
+            break;
+    }
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-conditionals-predict"
+	questions={["In the money program, `balancePence` ends at `-2000`, an overdraft of twenty pounds. Does `if (balancePence)` treat `-2000` as true or false?","What would happen in the `switch` block if you deleted the `break;` at the end of `case 2:`?","Why does `if (0 < x < 10)` fail to check whether `x` sits between `0` and `10`, say when `x` is `-5`?"]}
+	answers={["**True.** `if (expr)` is exactly `if (expr != 0)`, and `-2000 != 0`, so the body runs.","It prints the case 2 line, then falls straight through into `case 3:` and prints that too.","C evaluates left to right, as `(0 < x) < 10`. With `x` at `-5`, `0 < -5` is false (`0`), and `0 < 10` is true (`1`). Write `if (x > 0 && x < 10)`."]}
+>
+
+**Expected output, money:**
+
+```text
+ATM: Dispensed using overdraft. Balance: -2000 pence
+Truth check: balance (-2000) is non-zero, so if(balance) is TRUE!
+Account status: OVERDRAWN
+Menu 2: Withdraw cash
+```
+
+**Expected output, football:**
+
+```text
+Referee: RED CARD — player sent off!
+Truth check: GD (-4) is non-zero, so if(GD) is TRUE!
+Goal difference status: NEGATIVE GD
+Tactics 2: 4-3-3 High Press
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save each program under the file name in its first comment, then compile and run.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g conditionals_money.c -o conditionals_money
+./conditionals_money
+cc -std=c17 -Wall -Wextra -Wpedantic -g conditionals_football.c -o conditionals_football
+./conditionals_football
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard. |
+| `-Wall` | Turns on the main warnings, including the one that catches `if (pin = 1234)`. |
+| `-Wextra -Wpedantic` | Adds stricter checks and rejects compiler-specific extensions. |
+| `-g` | Keeps line numbers and names for a debugger. |
+| `-o conditionals_money` | Names the output file; without it you get `a.out`. |
+
+The `-o` flag is why each chapter keeps its own executable rather than overwriting `a.out`. Everything here is standard C17; `bool` and `true` only became keywords in C23, so on a C17 compiler they arrive through `#include <stdbool.h>`.
+
+<Eli5Block
+	topic="conditionals"
+	money={"The if ladder is the ATM's checklist: frozen card first, then enough in the account, then enough with the overdraft, then refusal. The machine runs the first branch that matches and skips the rest, so branch order is bank priority order. Truth in C is the vault clerk being asked whether a box is empty: eighty pounds and an IOU for twenty pounds are both something, so both answer yes, and only a zero answers no.\n\nA double equals sign asks the clerk a question — is the balance zero? — while a single equals sign gives an order: wipe it now. The wrong one destroys the very number you were testing. The switch is the telephone menu: press 1 for balance, 2 for withdrawals. Leaving out break is pressing 2 and letting the machine run option 3 as well."}
+	football={"The if ladder is the referee's checklist: is it a straight red or a second yellow, is the player on one booking, is the record clean? The first question answered yes ends the conversation. Truth asks the same narrow question: is the goal difference not zero? Minus four is not zero, so the answer is yes and the branch runs.\n\nA double equals sign reads the referee's notebook; a single equals sign writes a two into it and changes the match. The switch is the coach calling a numbered set-piece routine. Without a break, the squad runs routine 2 and then chains into routine 3, because nothing told them where to stop."}
+/>
+
+## What is really happening
+
+C had no separate boolean type. Conditions were historically plain `int` values: `0` for false, `1` for true. C99 added `<stdbool.h>`, which supplies `bool`, `true` (that is `1`) and `false` (that is `0`) as a thin layer over integers; in **C23** all three became built-in keywords and the header is optional.
+
+Every condition is therefore an integer expression. `if (expr)` evaluates `expr` and tests it against zero, usually in one compare-and-branch instruction. Relational operators do not return a special boolean either; they return the `int` value `1` or `0`. Because the test is only ever "not zero", `if (-50)` is true.
+
+`switch (expr)` evaluates `expr` exactly once, and that expression must have an **integer type**: `int`, `char`, or an `enum`, never a `double` or a string. When the case labels are dense, the compiler often emits a hardware **jump table**, where each label is a destination marker inside one block of code. That is why control keeps running downward through the following cases until it reaches a `break` or a `return`: the labels are entrances, not walls.
+
+Sometimes that fall-through is the point: grouping labels above one body, as in `case 'y': case 'Y':`, handles both spellings in one place. Everywhere else, end each `case` and the `default` with `break;`.
+
+## Where the analogy stops
+
+In everyday life a negative balance or a negative goal difference feels negative: bad news, and therefore somehow false. In C, truth has nothing to do with sign: it strictly means non-zero, so an overdraft is a perfectly true value. If you want to know whether a balance is in credit, ask explicitly with `if (balancePence > 0)`; the bare test cannot tell you.
+
+## Common mistakes
+
+- **Writing `=` instead of `==` in a condition.** `if (pin = 1234)` stores `1234` in `pin`, evaluates to `1234`, and lets anyone in. With `-Wall` you get `warning: suggest parentheses around assignment used as truth value`.
+- **Chaining inequalities as maths does.** `if (18 <= age <= 65)` becomes `(18 <= age) <= 65`, which is `0 <= 65` or `1 <= 65` — always true. Write `if (age >= 18 && age <= 65)`.
+- **A stray semicolon after the condition.** `if (balancePence < 0);` makes the semicolon an empty statement that ends the `if` at once, so the next `printf` runs whatever the balance is.
+- **Forgetting `break` in a `switch`.** Execution falls silently into the next case, so a customer who chose option 1 also triggers option 2.
+- **Switching on a string or a `double`.** Only integer, character, and enum expressions are allowed.
+
+## Practice
+
+Three programs: a savings band for the bank, a points calculation for the match, and a bug hunt through an ATM routine.
+
+<ExerciseCard {...saverTiers} />
+
+<ExerciseCard {...matchPoints} />
+
+<ExerciseCard {...conditionalBugs} />

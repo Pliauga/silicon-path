@@ -1,0 +1,205 @@
+---
+id: 16-enumerated-types
+title: 'Enumerated Types (enum): Named Integer States'
+estimatedMinutes: 30
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		directDebitStateMachine,
+		matchPhaseClock,
+		cardFlagBugs
+	} from '$lib/content/handbook/exercises/16-enumerated-types';
+</script>
+
+A payment sits in one of four states: pending, approved, declined, or frozen. You can hold that as `0, 1, 2, 3` in your head for about a week, and then you will not remember whether `2` was declined or frozen. `enum` puts the names back into the source file while the compiled program keeps storing a small integer. This chapter covers the default numbering, the explicit values you choose yourself, and the one thing an `enum` will not do: turn itself into text.
+
+## Objectives
+
+- Define an enumerated type with `enum` and `typedef enum`.
+- Explain the default numbering `0, 1, 2, ...` and how an enumerator takes an explicit value instead.
+- Pair `enum` values with `switch` so states read as names rather than magic numbers.
+- Explain why printing an `enum` needs a helper that returns a string.
+
+## Why students struggle
+
+Before `enum`, a beginner represents a state with a raw integer and a comment: `1` means pending, `2` means approved, `3` means declined. The comments drift, the numbers get copied between files, and a comparison against the wrong constant still compiles. `enum` gives those numbers names and makes the names the only thing you write, but it does not make the compiler as strict as beginners expect, because the value underneath is still an ordinary integer.
+
+The second surprise arrives at the print statement. Having written `TX_APPROVED`, a beginner reasonably expects `printf` to print the word APPROVED, and reaches for `%s` with the enum value itself. At runtime `TX_APPROVED` is just the integer `1`, so `printf` is handed address `0x1` and asked to read a string from there, which crashes or prints nonsense. Demoting the specifier to `%d` prints `1`, which is correct and unhelpful. The word only appears if your program maps the value back to it.
+
+## The code, both ways
+
+Both programs define one enum that counts from zero and one that carries chosen values, then convert a value back to text through a small `switch`; read one, then the other, and only the nouns will change.
+
+### The money version
+
+```c
+// Money version (enums_money.c)
+#include <stdio.h>
+
+// Default numbering: TX_PENDING = 0, TX_APPROVED = 1, TX_DECLINED = 2, TX_FROZEN = 3
+typedef enum {
+    TX_PENDING,
+    TX_APPROVED,
+    TX_DECLINED,
+    TX_FROZEN
+} TransactionState;
+
+// Explicit values: each constant has a custom integer value
+typedef enum {
+    FEE_BASIC_PENCE   = 0,
+    FEE_SILVER_PENCE  = 500,
+    FEE_PREMIER_PENCE = 1500
+} MonthlyFee;
+
+const char *stateToString(TransactionState state) {
+    switch (state) {
+        case TX_PENDING:  return "PENDING";
+        case TX_APPROVED: return "APPROVED";
+        case TX_DECLINED: return "DECLINED";
+        case TX_FROZEN:   return "FROZEN";
+        default:          return "UNKNOWN";
+    }
+}
+
+int main(void) {
+    TransactionState cardPayment = TX_APPROVED;
+    MonthlyFee accountFee = FEE_SILVER_PENCE;
+
+    printf("cardPayment numeric code: %d (%s)\n",
+           cardPayment, stateToString(cardPayment));
+    printf("Selected monthly fee:     %d pence (£%d.%02d)\n",
+           accountFee, accountFee / 100, accountFee % 100);
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (enums_football.c)
+#include <stdio.h>
+
+// Default numbering: POS_GOALKEEPER = 0, POS_DEFENDER = 1, POS_MIDFIELDER = 2, POS_FORWARD = 3
+typedef enum {
+    POS_GOALKEEPER,
+    POS_DEFENDER,
+    POS_MIDFIELDER,
+    POS_FORWARD
+} PitchPosition;
+
+// Explicit values: league points for each match outcome
+typedef enum {
+    OUTCOME_LOSS = 0,
+    OUTCOME_DRAW = 1,
+    OUTCOME_WIN  = 3
+} MatchOutcome;
+
+const char *positionToString(PitchPosition pos) {
+    switch (pos) {
+        case POS_GOALKEEPER: return "Goalkeeper";
+        case POS_DEFENDER:   return "Defender";
+        case POS_MIDFIELDER: return "Midfielder";
+        case POS_FORWARD:    return "Forward";
+        default:             return "Unknown";
+    }
+}
+
+int main(void) {
+    PitchPosition leoPos = POS_FORWARD;
+    MatchOutcome saturdayResult = OUTCOME_WIN;
+
+    printf("Leo Vance position code: %d (%s)\n",
+           leoPos, positionToString(leoPos));
+    printf("Saturday match reward:   %d league points\n",
+           saturdayResult);
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-enumerated-types-predict"
+	questions={["What integer values are assigned to `TX_PENDING`, `TX_APPROVED`, `TX_DECLINED`, and `TX_FROZEN` when you write no `= ...` at all?","What if you write `enum Example { A = 10, B, C };` — what values do `B` and `C` get?","Why did we write a helper function `stateToString()` and `positionToString()` instead of passing `cardPayment` straight to `printf(\"%s\", ...)`?"]}
+	answers={["They start at `0` and count up by one: `0`, `1`, `2`, `3`.","Any enumerator without an `=` value is set to one more than the previous enumerator, so `A = 10`, `B = 11`, and `C = 12`.","Because at runtime `TX_APPROVED` is just the integer `1`. Passing the integer `1` to `printf(\"%s\", ...)` tells `printf` to treat address `0x1` as a string pointer, and the program crashes. A small `switch` function that returns a `const char *` string literal is the standard C pattern instead."]}
+>
+
+**Expected output, money:**
+
+```text
+cardPayment numeric code: 1 (APPROVED)
+Selected monthly fee:     500 pence (£5.00)
+```
+
+**Expected output, football:**
+
+```text
+Leo Vance position code: 3 (Forward)
+Saturday match reward:   3 league points
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save each program under the file name in its first comment, then build and run it.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g enums_money.c -o enums_money
+./enums_money
+cc -std=c17 -Wall -Wextra -Wpedantic -g enums_football.c -o enums_football
+./enums_football
+```
+
+| Flag | Meaning |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard, the version these programs target. |
+| `-Wall -Wextra -Wpedantic` | Turns on strict warnings, including the `-Wswitch` check that reports an enumerator a `switch` forgot. |
+| `-g` | Keeps line numbers and variable names for a debugger. |
+| `-o enums_money` | Names the executable, so the two builds sit side by side instead of overwriting the default `a.out`. |
+| `-Werror` | Turns those warnings into errors, so a forgotten enumerator stops the build. |
+
+The `-o` flag is the only reason the two programs do not collide on disk; omit it and both write `a.out`, so the second build silently replaces the first. Nothing here needs C23: C17 already guarantees that enumerators are integer constants and that the compiler picks a type able to hold every value, while C23 lets you name that underlying type yourself.
+
+<Eli5Block
+	topic="enumerated-types"
+	money={"An enum is the bank's official stamp wheel: one fixed ring of named positions, PENDING, APPROVED, DECLINED and FROZEN, with a rule that no other stamp exists. The clerk reads and writes the clear English names, so nobody has to remember that 2 meant declined this week and something else last week.\n\nTurn the wheel over and you find ordinary integers: the first stamp is 0, the next is 1, and so on without gaps. That is the load-bearing part, because an enum value has to fit in a standard integer box and travel through the program as a number; the machine compares 1 with 1, not APPROVED with APPROVED. A second wheel can carry prices instead of positions, which is how a silver account stores 500 pence rather than a hidden internal code."}
+	football={"An enum is the printed team sheet that lists the four position categories, goalkeeper, defender, midfielder and forward, as the only positions a player may hold. Everyone on the touchline reads the same four words, so no one has to translate a shirt number into a role.\n\nUnderneath, the sheet is numbered: goalkeeper is 0, defender is 1, because the value must fit an ordinary integer box on its way to the pitch. The same trick prices a result, where a loss is worth 0 points, a draw 1 and a win 3, so those numbers are chosen rather than counted. Hand that number to someone who asked for a name and they read 3, not forward, which is exactly why the program carries its own small lookup."}
+/>
+
+## What is really happening
+
+An enumerator is not a variable. `TX_APPROVED` is a **true compile-time integer constant** of type `int`, which is why it can sit in a `case` label, size an array, or take part in a bitwise expression, and why you cannot assign to it. A `const int` looks similar and is not the same thing: in C it is a read-only object rather than a constant expression, so it cannot label a `case` or size an array at file scope. The declaration itself reserves no storage; it teaches the compiler a set of names and values, and `typedef` gives that set a type name.
+
+The numbering is a rule, not a convention. The first enumerator is `0`, and each later one is one more than the one before it. An explicit value resets the count from that point, which is why `FEE_SILVER_PENCE = 500` would make a following enumerator `501` if you left it blank, and why `OUTCOME_WIN = 3` is worth three points rather than the next integer in line.
+
+The compiler can also help you keep those states honest. Compile with `-Wall` and write a `switch` over an enum variable with no `default:` label, and GCC warns `enumeration value not handled in switch` as soon as one enumerator is missing. Add a fifth transaction state in six months and every switch that prints a state will complain at build time, which is the review you wanted. The `default:` label that feels safer actually switches that check off, so write the exhaustive switch and let the compiler count for you.
+
+Finally, C enumerators live in the **ordinary identifier scope**. There is no separate namespace here, unlike C++ `enum class`, so two enum types declared in the same scope cannot both define an enumerator called `NONE`, and an enumerator can collide with a macro or a variable name. That is why C programmers prefix every group of names, as `TX_`, `FEE_`, `POS_` and `OUTCOME_` do above. C17 leaves the underlying integer type to the implementation, which picks one able to represent every value, typically `int`; C23 lets you write that type down on the enum head.
+
+## Where the analogy stops
+
+A physical stamp wheel cannot be turned to position `99` when it holds four stamps. In C, an enum variable is stored in an ordinary integer box, so the language will not stop someone from writing `TransactionState s = (TransactionState)99;`. The value is outside the enum and no `case` will match it. Keep a `default` branch in your printing helper, and validate any number that arrives from a file, a network message or a user before you cast it to an enum.
+
+## Common mistakes
+
+- **Passing an enum to `printf("%s", myEnum)`.** An enum is an integer, so it needs `%d`; print the name through a `switch` helper or a lookup array of strings.
+- **Using un-prefixed enumerator names such as `OPEN` or `ERROR`.** They clash with other enums and with system macros, so prefix each group, as in `ACCT_OPEN` and `CARD_OPEN`.
+- **Forgetting the semicolon after the closing brace** of `enum { ... };`. The declaration is not finished until that `;` is there, and the error often appears on the next line.
+
+## Practice
+
+These three programs use the same idea in three settings: a state machine, a lookup table sized by the enum itself, and a broken program that asks you to read the compiler.
+
+<ExerciseCard {...directDebitStateMachine} />
+
+<ExerciseCard {...matchPhaseClock} />
+
+<ExerciseCard {...cardFlagBugs} />

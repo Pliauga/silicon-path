@@ -1,0 +1,192 @@
+---
+id: 03-constants
+title: 'Constants: const vs #define'
+estimatedMinutes: 30
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		atmFeeCalculator,
+		leaguePointsAudit,
+		brokenMacro
+	} from '$lib/content/handbook/exercises/03-constants';
+</script>
+
+Magic numbers are the small integers that appear in code without a name: the `8500000` that is really a bank protection limit, the `90` that is really the length of a football match. They read fine on the day you write them and become a liability the first time the real-world value changes. C gives you two ways to name them, and the two are not interchangeable: the `const` keyword makes a typed read-only variable, while `#define` performs a text substitution before the compiler ever sees your code. This chapter shows both, and shows where each one is the wrong tool.
+
+## Objectives
+
+- Remove magic numbers from a program by giving every fixed value a name.
+- Declare typed read-only variables with the `const` keyword.
+- Create compile-time symbolic constants with the `#define` directive.
+- Explain how `const` and `#define` differ in type checking, addressability, and scope.
+
+## Why students struggle
+
+Beginners scatter raw numbers through their code: `8500000` on one line, `90` on another, `2500` in ten places. Each one is a fact about the world that the program has swallowed, and nothing in the source says what it means. The program works until the fee changes or the limit is raised, and then the search for every copy begins.
+
+The second difficulty is that C offers two mechanisms for the same job. Beginners meet `const` and `#define` in the same lesson, assume they are synonyms, and then run into the same three symptoms: an equals sign or a semicolon smuggled into a `#define`, an uninitialised `const` that can never be assigned afterwards, and an address-of expression applied to a macro that has no memory to point at.
+
+## The code, both ways
+
+Every chapter shows the same idea twice. Read the version that maps onto something you already know, then read the other one; the point is the mechanism, not the theme.
+
+### The money version
+
+```c
+// Money version (constants_money.c)
+#include <stdio.h>
+
+// Preprocessor symbolic constant (no '=' and no ';' at the end!)
+#define FSCS_LIMIT_PENCE 8500000
+
+int main(void) {
+    // Typed read-only variables (locked vault boxes)
+    const int ISA_ALLOWANCE_PENCE = 2000000;   // £20,000.00
+    const char CURRENCY_CODE = 'G';            // GBP
+
+    int leoSavingsPence = 1450000;             // £14,500.00
+    int remainingAllowance = ISA_ALLOWANCE_PENCE - leoSavingsPence;
+
+    // Uncommenting the next line causes a compile-time error:
+    // ISA_ALLOWANCE_PENCE = 3000000;
+
+    printf("Currency code:        %c\n", CURRENCY_CODE);
+    printf("Protected bank limit: %d pence (£%d)\n",
+           FSCS_LIMIT_PENCE, FSCS_LIMIT_PENCE / 100);
+    printf("Annual ISA limit:     %d pence (£%d)\n",
+           ISA_ALLOWANCE_PENCE, ISA_ALLOWANCE_PENCE / 100);
+    printf("Address of ISA const: %p\n", (void *)&ISA_ALLOWANCE_PENCE);
+    printf("Leo's remaining ISA:  %d pence (£%d)\n",
+           remainingAllowance, remainingAllowance / 100);
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (constants_football.c)
+#include <stdio.h>
+
+// Preprocessor symbolic constant (no '=' and no ';' at the end!)
+#define REGULATION_MINUTES 90
+
+int main(void) {
+    // Typed read-only variables (retired/locked stadium seats)
+    const int MAX_SQUAD_SIZE = 25;
+    const char COMPETITION_TIER = '1';
+
+    int registeredPlayers = 21;
+    int openSpots = MAX_SQUAD_SIZE - registeredPlayers;
+
+    // Uncommenting the next line causes a compile-time error:
+    // MAX_SQUAD_SIZE = 30;
+
+    printf("Competition tier:        %c\n", COMPETITION_TIER);
+    printf("Regulation match length: %d minutes\n", REGULATION_MINUTES);
+    printf("League squad limit:      %d players\n", MAX_SQUAD_SIZE);
+    printf("Address of squad const:  %p\n", (void *)&MAX_SQUAD_SIZE);
+    printf("Open registration spots: %d players\n", openSpots);
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-constants-predict"
+	questions={["Why can we take the memory address `&ISA_ALLOWANCE_PENCE` (or `&MAX_SQUAD_SIZE`), whereas writing `&FSCS_LIMIT_PENCE` (or `&REGULATION_MINUTES`) would fail to compile?","What happens if you accidentally write `#define REGULATION_MINUTES = 90;` with an equals sign and a semicolon?","Why do C programmers write constants in `UPPER_SNAKE_CASE`?"]}
+	answers={["A `const int` is a real variable stored in a memory box, so it has an address. A `#define` is a text search-and-replace performed before compilation: by the time the compiler runs, `FSCS_LIMIT_PENCE` has already been replaced with the literal number `8500000`, and you cannot take the address of a literal number. The expression `&8500000` is invalid.","The preprocessor substitutes `= 90;` everywhere `REGULATION_MINUTES` appears, so `printf(\"%d\", REGULATION_MINUTES);` becomes `printf(\"%d\", = 90;);`, which is a syntax error in the middle of the argument list.","`UPPER_SNAKE_CASE` immediately signals to every human reader that the value is a fixed constant that must not be modified. It is a convention rather than a compiler rule, but it is the convention the whole C world follows."]}
+>
+
+**Expected output, money, with a sample address:**
+
+```text
+Currency code:        G
+Protected bank limit: 8500000 pence (£85000)
+Annual ISA limit:     2000000 pence (£20000)
+Address of ISA const: 0x16fdff1b8
+Leo's remaining ISA:  550000 pence (£5500)
+```
+
+**Expected output, football, with a sample address:**
+
+```text
+Competition tier:        1
+Regulation match length: 90 minutes
+League squad limit:      25 players
+Address of squad const:  0x16fdff1b8
+Open registration spots: 4 players
+```
+
+</PredictCard>
+
+### Compile and run
+
+The same command compiles either theme; only the file name changes.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g constants_money.c -o constants_money
+./constants_money
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Compiles against the ISO C17 standard, the version this handbook targets. |
+| `-Wall -Wextra` | Turns on the useful warnings, covering both ordinary mistakes and suspicious conversions. |
+| `-Wpedantic` | Rejects anything outside the standard, such as compiler-specific extensions. |
+| `-g` | Keeps debugging symbols, so a debugger can name your lines and variables. |
+| `-o constants_money` | Writes the executable as `constants_money` instead of the default `a.out`. |
+
+Without `-o` the compiler writes `a.out`, and a second program compiled in the same directory silently overwrites it. C17 is the standard this handbook targets; C23 adds `constexpr`, which finally gives you a typed compile-time constant, as the next section explains.
+
+<Eli5Block
+	topic="constants"
+	money={"A const variable is a fixed-term sealed safe-deposit box. The value goes in at the moment the box is opened, and the compliance department — here, the compiler — refuses every later attempt by a clerk to change what is inside. Because it is a real box in the vault, it has a box number you can quote, and that number is exactly what the address-of operator hands you; the box also has a declared shape, so a value of the wrong type will not fit.\n\nA #define constant is a rubber stamp, and the clerk holding it works before the form ever reaches compliance. Everywhere the stamp's name appears on the paper, the clerk stamps the number in its place, so the officer never sees the name at all — only the digits. That is why there is no box to point at: by the time anyone inspects the form, the stamp name has already disappeared from it."}
+	football={"A const variable is a retired club legend's seat in the stadium. The seat is real, it has a seat number you can quote, and its occupant was fixed when the season began; the referee will reject any attempt to swap somebody else into it, and the seat is built to one shape, so a player of the wrong build simply does not fit.\n\nA #define constant is the printing press that produces the matchday programme. Before the referee ever inspects the sheet, the press has already replaced every placeholder tag reading REGULATION_MINUTES with the figure 90, so the official sees only the number. Nobody can point at the tag afterwards, because the tag is not on the printed page at all."}
+/>
+
+## What is really happening
+
+`#define` belongs to the **preprocessor**, a separate pass that runs before the compiler proper. It records that the token sequence `FSCS_LIMIT_PENCE` stands for `8500000` and then rewrites the source text: every later occurrence of the name is replaced by those digits. No object is created, no type is recorded, no scope is consulted, and the substitution stays in force from the directive to the end of the translation unit, or until an `#undef` cancels it.
+
+`const` belongs to the **compiler**. The declaration `const int ISA_ALLOWANCE_PENCE = 2000000;` creates a real object of type `const int`, with storage, an address, and a lifetime governed by where you declared it. The qualifier means the object is **read-only through that name**: any assignment to it is a constraint violation, which the compiler diagnoses and refuses to compile.
+
+| Feature | `const` variable | `#define` macro |
+|---|---|---|
+| Handled by | the C compiler | the C preprocessor, before compilation |
+| Has a data type? | yes, `const int`, `const double`, and so on | no, just tokens pasted into the source |
+| Has a memory address? | yes, `&ISA_ALLOWANCE_PENCE` is valid | no, `&FSCS_LIMIT_PENCE` becomes an address of a literal |
+| Respects block scope? | yes | no, active to the end of the file or until `#undef` |
+| Usable as a file-scope array bound or a `case` label in C17? | no, not a constant expression | yes, and everywhere else too |
+
+The last row is where beginners get hurt. In C17 a `const int` is not a **constant expression**, so it cannot bound an array at file scope or label a `case`. At block scope, `int scores[COUNT];` where `COUNT` is a `const int` declares a **variable-length array** instead: legal in C11, sized at run time, and quietly different from what you meant. The preprocessor has no such problem, because it substitutes before the compiler asks the question.
+
+The clearest way to see the difference is to read your source twice: once as you wrote it, and once after substitution. The second reading is the program the compiler actually receives, and nearly every `#define` bug is obvious in it: a pasted semicolon in the middle of an expression, or an address-of operator followed by a number.
+
+## Where the analogy stops
+
+In English, a constant is an unchanging mathematical value, like pi. In C17, `const` means something narrower: **read-only through this variable name**. The object still occupies memory, still has an address, and can still change if something else writes to it through a different name. Nor does `const` promise a compile-time constant expression, which is why a `const int` cannot label a `switch` case in C17; that job needs `#define` or `enum`. And the safe-deposit box is a worse analogy still for the macro, because a macro was never a box: the stamp is applied to paper, and the paper is what the compiler reads.
+
+## Common mistakes
+
+- **Putting `=` or `;` in a `#define`.** Writing `#define FEE = 250;` pastes `= 250;` directly into your expressions and breaks compilation. Correct: `#define FEE 250`.
+- **Declaring a `const` without initialising it.** Writing `const int LIMIT;` locks the box while it is full of uninitialised garbage, and you can never assign a value to it afterwards. Always initialise a `const` on the exact line you declare it.
+- **Using magic numbers instead of named constants.** Writing `balance - 2500` in ten places means that when the bank fee changes to `3000`, you will inevitably miss one of the ten.
+
+## Practice
+
+Three exercises follow: a fee calculation with no magic numbers, a league points audit, and a bug hunt through a broken macro.
+
+<ExerciseCard {...atmFeeCalculator} />
+
+<ExerciseCard {...leaguePointsAudit} />
+
+<ExerciseCard {...brokenMacro} />

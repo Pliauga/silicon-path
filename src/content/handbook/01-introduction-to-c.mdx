@@ -1,0 +1,164 @@
+---
+id: 01-introduction-to-c
+title: 'Introduction to C'
+estimatedMinutes: 35
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LazyStudy from '$lib/components/viz/LazyStudy.svelte';
+	import CompilerPipeline from '$lib/components/viz/CompilerPipeline.svelte';
+	import {
+		attendanceBoard,
+		fourBugs,
+		savingsReceipt
+	} from '$lib/content/handbook/exercises/01-introduction-to-c';
+</script>
+
+C is a small language with a large reach. It was created by Dennis Ritchie at Bell Labs in the early 1970s to build the UNIX operating system, and it still sits underneath operating systems, databases, and the compilers you are about to use. Learning it means learning two things at once: a language, and the honest two-step workflow that turns text on disk into a program the CPU can run.
+
+## Objectives
+
+- Explain what C is and where it runs.
+- Understand the two-step compile-and-run workflow.
+- Write a complete C17 program with `#include <stdio.h>` and `main(void)`.
+- Print formatted values using `printf` format specifiers and read compiler errors from top to bottom.
+
+## Why students struggle
+
+In languages like Python or JavaScript, you type code and run it immediately in one step. C requires two distinct steps: first you **compile** human-readable source code into a machine-code executable, and then you **run** that executable. Beginners often edit their `.c` file and re-run the old binary without recompiling, get overwhelmed by cryptic compiler errors caused by a single missing semicolon, or pass the wrong format specifier to `printf`.
+
+## The code, both ways
+
+Every chapter shows the same idea twice. Read the version that maps onto something you already know, then read the other one; the point is that neither analogy is the concept.
+
+### The money version
+
+```c
+// Money version (intro_money.c)
+#include <stdio.h>   // gives us printf (standard input/output)
+
+int main(void) {     // every C program starts running here
+    int vaultBox = 42;
+    int balancePence = 12550;   // £125.50 stored as whole pence
+    char tier = 'A';
+
+    printf("=== High Street Bank Statement ===\n");
+    printf("Customer: Leo Vance (Tier %c)\n", tier);          // %c -> char
+    printf("Safe-deposit box: #%d\n", vaultBox);              // %d -> int
+    printf("Balance: %d pence (£%d.%02d)\n",
+           balancePence, balancePence / 100, balancePence % 100);
+    printf("Annual bonus rate: 100%% guaranteed\n");          // %% -> literal %
+
+    return 0;        // 0 tells the operating system "finished with no errors"
+}
+```
+
+### The football version
+
+```c
+// Football version (intro_football.c)
+#include <stdio.h>   // gives us printf (standard input/output)
+
+int main(void) {     // every C program starts running here (kick-off!)
+    int shirtNumber = 9;
+    int minutesPlayed = 840;
+    char group = 'B';
+
+    printf("=== Rovers Matchday Programme ===\n");
+    printf("Striker: Leo Vance (Group %c)\n", group);         // %c -> char
+    printf("Shirt number: #%d\n", shirtNumber);               // %d -> int
+    printf("Season time: %d mins (%d full matches + %d mins)\n",
+           minutesPlayed, minutesPlayed / 90, minutesPlayed % 90);
+    printf("Pass completion target: 100%%\n");                // %% -> literal %
+
+    return 0;        // 0 tells the operating system "full time, no issues"
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-introduction-to-c-predict"
+	questions={["Why do we write `100%%` inside `printf` instead of `100%`?","In the money version, what will `%02d` print when `balancePence % 100` is `50`? What if `balancePence` were `12505`, so the remainder is `5`?","If you change `vaultBox` from `42` to `99` in your editor and immediately run `./intro_money` without running `cc` again, what number will be printed?"]}
+	answers={["Because `%` starts a format specifier, such as `%d` or `%c`. Writing `%%` tells `printf` to print one literal percent sign.","`%02d` prints an integer padded with a leading zero to at least two digits: `50` prints as `50`, and `5` prints as `05` — so `£125.05`, not `£125.5`.","It will still print `42`. The executable on disk does not change until you run the compiler again."]}
+>
+
+**Expected output, money:**
+
+```text
+=== High Street Bank Statement ===
+Customer: Leo Vance (Tier A)
+Safe-deposit box: #42
+Balance: 12550 pence (£125.50)
+Annual bonus rate: 100% guaranteed
+```
+
+**Expected output, football:**
+
+```text
+=== Rovers Matchday Programme ===
+Striker: Leo Vance (Group B)
+Shirt number: #9
+Season time: 840 mins (9 full matches + 30 mins)
+Pass completion target: 100%
+```
+
+</PredictCard>
+
+### Compile and run
+
+The same command compiles either theme; only the file name changes.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g intro_money.c -o intro_money
+./intro_money
+```
+
+| Flag | Meaning |
+|---|---|
+| `-std=c17` | Use the ISO C17 standard. Modern compilers also accept `-std=c23`. |
+| `-Wall -Wextra -Wpedantic` | Turn on strict warnings. Always use these; they catch beginner bugs before you run the program. |
+| `-g` | Include debugging symbols: line numbers and variable information for a debugger. |
+| `-o intro_money` | Name the executable `intro_money` instead of the default `a.out`. |
+
+A format specifier cheat sheet: `%d` for `int`, `%ld` for `long`, `%lld` for `long long`, `%u` for `unsigned int`, `%zu` for `size_t` and `sizeof`, `%f` for `double` and `float`, `%c` for `char`, `%s` for a string, `%p` for a pointer cast to `(void *)`, `%x` for hexadecimal, and `%%` for a literal percent sign.
+
+<LazyStudy label="Compiler pipeline — interactive 3D study" fig="01" caption="The compiler pipeline, from source to executable" size="tall">
+	<CompilerPipeline />
+</LazyStudy>
+
+<Eli5Block
+	topic="introduction-to-c"
+	money={"Start with the paper form. A C source file is a filled-in bank application sitting on your desk, and the compiler is the compliance department: it reads the whole form before a single penny moves. If something is wrong, it rejects the form with red ink and a line number, and no executable is produced.\n\nWhen the form passes inspection, the result is the stamped, approved order — the executable the vault can actually run. main(void) is the front entrance every customer journey starts at, and return 0 is the final receipt stamped “transaction completed with zero errors”. A warning is approval with a raised eyebrow: the field looks suspicious, but nothing was refused."}
+	football={"Start with the coach's written tactical plan: the source file is paper, not play. The compiler is the referee's pre-match inspection of boots, shirt numbers, and the team sheet — it checks everything before the whistle. A compiler error is a player with illegal studs: the match cannot kick off.\n\nWhen inspection passes, the team walks onto the pitch and plays: that is your executable. main(void) is kick-off at the centre circle, and return 0 is the final whistle with nothing to report. A warning is the referee's verbal caution — allowed by the laws of the game, but risky."}
+/>
+
+## What is really happening
+
+C is a **compiled, statically typed** systems language. Unlike an interpreted language, which translates code line by line while it runs, a C compiler (`cc`, `gcc`, or `clang`) translates your entire `.c` text file directly into native CPU instructions and writes an executable binary to disk.
+
+`#include <stdio.h>` asks the preprocessor to load the declarations for the C Standard Input/Output library, which is where `printf` lives. Execution always begins at `main`. Writing `int main(void)` states that `main` takes no parameters and returns an `int` exit status to the operating system: `0` means success, any non-zero value signals an error.
+
+## Where the analogy stops
+
+When a bank compliance officer rejects a paper form, they circle the exact box that is wrong. A C compiler reporting an error on **line 12** is often reacting to a mistake at the end of **line 11** — a missing semicolon or closing quote — because it only notices something is wrong when it starts reading the next line. The compiler is a parser, not a proofreader.
+
+## Common mistakes
+
+- **Editing the `.c` file and running the old binary without recompiling.** Always run `cc` again after saving.
+- **Forgetting a semicolon at the end of a statement.** Look at the line *above* the line number in the error.
+- **Mismatched format specifiers.** Passing an `int` to `%s`, or a `double` to `%d`, is undefined behaviour: it prints garbage or crashes. With `-Wall`, the compiler catches most of these immediately.
+- **Fixing the last compiler error first.** One syntax mistake near the top can produce ten fake errors below it. Fix the first error, then recompile.
+- **Forgetting `\n` at the end of `printf`.** Without it, the terminal prompt is glued to the end of your output.
+
+## Practice
+
+<ExerciseCard {...savingsReceipt} />
+
+<ExerciseCard {...attendanceBoard} />
+
+<ExerciseCard {...fourBugs} />

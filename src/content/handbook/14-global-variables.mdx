@@ -1,0 +1,202 @@
+---
+id: 14-global-variables
+title: 'Global Variables: File Scope, extern, and Hidden Coupling Traps'
+estimatedMinutes: 35
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		attendanceGate,
+		refactoredAccounts,
+		shadowingBugs
+	} from '$lib/content/handbook/exercises/14-global-variables';
+</script>
+
+A variable declared outside every function lasts for the whole run of the program, and every function in the file can reach it by name. That convenience is also the trap: an ordinary-looking call can rewrite shared state, and nothing at the call site warns you. This chapter shows how file-scope variables work, how `extern` shares one across `.c` files, and why a `const` global or an explicit parameter is usually better.
+
+## Objectives
+
+- Declare a file-scope variable and explain its lifetime and its guarantee of zero-initialisation.
+- Share one global variable across several `.c` files with `extern`, and keep another that no other file can touch with `static`.
+- Explain why mutable globals are dangerous: hidden side effects, accidental shadowing, and debugging that depends on reading every function.
+- Prefer `const` globals or explicit function parameters over mutable shared state.
+
+## Why students struggle
+
+The moment a beginner discovers that `int balance;` at the top of a file is visible inside every function, with no parameter in sight, the temptation is to make everything global. It removes the need to think about arguments and return values, and a fifty-line program written that way does seem to work.
+
+Then the program grows to a hundred lines. `balance` is mysteriously negative, and the only way to find out which of fifteen functions wrote to it is to read all fifteen. The compiler stays silent, because writing to a global from a function whose signature never mentions it is perfectly legal C; only `-Wshadow` would flag the related mistake of reusing the name. You are the only tool that can see this coupling, and only if you go looking for it.
+
+## The code, both ways
+
+Both programs read a `const` global, let two ordinary functions change a mutable global behind `main`'s back, then shadow that global with a local of the same name.
+
+### The money version
+
+```c
+// Money version (globals_money.c)
+#include <stdio.h>
+
+// GOOD global: read-only constant shared across the whole file
+const int BANK_SORT_CODE = 402290;
+
+// RISKY mutable global: ANY function in this file can secretly change this!
+int gTotalVaultPence = 50000;
+
+void depositAtCounter(int amountPence) {
+    gTotalVaultPence += amountPence;
+}
+
+void rogueMaintenanceTask(void) {
+    // Hidden side effect: nothing in main's call to rogueMaintenanceTask()
+    // warns the reader that it deducts 1500p from gTotalVaultPence!
+    gTotalVaultPence -= 1500;
+}
+
+int main(void) {
+    printf("Sort code: %d | Opening vault: %dp\n",
+           BANK_SORT_CODE, gTotalVaultPence);
+
+    depositAtCounter(10000);
+    printf("After depositAtCounter(10000):  %dp\n", gTotalVaultPence);
+
+    rogueMaintenanceTask();
+    printf("After rogueMaintenanceTask():   %dp (Wait — who took 1500p?!)\n",
+           gTotalVaultPence);
+
+    // Shadowing a global with a local variable of the same name:
+    int gTotalVaultPence = 999;   // Local shadows the global inside main!
+    printf("Local shadow gTotalVaultPence:  %dp\n", gTotalVaultPence);
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (globals_football.c)
+#include <stdio.h>
+
+// GOOD global: read-only constant shared across the whole file
+const int STADIUM_CAPACITY = 22500;
+
+// RISKY mutable global: ANY function in this file can secretly change this!
+int gRoversScore = 1;
+
+void scoreGoalFromCorner(void) {
+    gRoversScore += 1;
+}
+
+void checkFloodlightPower(void) {
+    // Hidden side effect: a function that sounds like an electrical check
+    // secretly resets the global scoreboard!
+    gRoversScore = 0;
+}
+
+int main(void) {
+    printf("Capacity: %d | Opening score: %d\n",
+           STADIUM_CAPACITY, gRoversScore);
+
+    scoreGoalFromCorner();
+    printf("After scoreGoalFromCorner():  %d\n", gRoversScore);
+
+    checkFloodlightPower();
+    printf("After checkFloodlightPower(): %d (Wait — who wiped the score?!)\n",
+           gRoversScore);
+
+    // Shadowing a global with a local variable of the same name:
+    int gRoversScore = 99;        // Local shadows the global inside main!
+    printf("Local shadow gRoversScore:    %d\n", gRoversScore);
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-global-variables-predict"
+	questions={["Looking only at the call `rogueMaintenanceTask();` inside `main`, can you tell that it modifies `gTotalVaultPence`? The same question applies to `checkFloodlightPower();` and `gRoversScore`.","What happens at the end of `main` when we declare `int gTotalVaultPence = 999;`? Does that overwrite the global variable or hide it?","If you declare `int gAuditCount;` at the top of a file, outside every function and without `= 0`, what is its initial value?"]}
+	answers={["**No.** `rogueMaintenanceTask()` takes `void` and returns `void`, so the call site gives you no clue that the vault total is being changed. That invisible coupling is exactly why mutable globals make large programs hard to debug.","It **hides** the global for the rest of `main`; this is called shadowing. Inside `main` the name now refers to a local variable holding `999`, while any function called afterwards still sees the global, which stands at `58500`. The initialiser is a literal, so it does not read the global.","**`0`.** Like a `static` local, every file-scope variable has **static storage duration** and is zero-initialised before `main` begins. It never starts with whatever happened to be left in memory."]}
+>
+
+**Expected output, money:**
+
+```text
+Sort code: 402290 | Opening vault: 50000p
+After depositAtCounter(10000):  60000p
+After rogueMaintenanceTask():   58500p (Wait — who took 1500p?!)
+Local shadow gTotalVaultPence:  999p
+```
+
+**Expected output, football:**
+
+```text
+Capacity: 22500 | Opening score: 1
+After scoreGoalFromCorner():  2
+After checkFloodlightPower(): 0 (Wait — who wiped the score?!)
+Local shadow gRoversScore:    99
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save each program under the file name in its first comment, then build and run it.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g globals_money.c -o globals_money
+./globals_money
+cc -std=c17 -Wall -Wextra -Wpedantic -g globals_football.c -o globals_football
+./globals_football
+```
+
+| Flag | Meaning |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard, the version these programs target. |
+| `-Wall -Wextra -Wpedantic` | Turns on strict warnings; they catch unused values and non-standard extensions before you run anything. |
+| `-g` | Keeps line numbers and variable names for a debugger. |
+| `-o globals_money` | Names the executable, so the two builds sit side by side instead of overwriting each other. |
+
+Without `-o`, both builds would write `a.out` and the second would replace the first. Neither program needs a C17-only feature, so `-std=c11` compiles the same source.
+
+<Eli5Block
+	topic="global-variables"
+	money={"Leaving the bank's master ledger wide open on a table in the middle of the public lobby, with no lock and no sign-in sheet: any clerk, cleaner, or visitor in the building can walk past and scribble a new number into it at any time.\n\nA const global is a brass plaque bolted to the lobby wall showing the bank's sort code (const int BANK_SORT_CODE = 402290). Everyone can read it, and nobody can alter it. The clean alternative is the explicit pointer parameter: keep the ledger in a locked room and hand the claim slip, the address of one account, only to the service desk authorised to update it."}
+	football={"Putting a mutable global variable in a program is like putting the stadium scoreboard buttons on an unlocked panel in the concourse, where anyone walking past can press reset.\n\nA const global is the stadium capacity sign painted above the main stand: visible from everywhere, changeable by no one."}
+/>
+
+## What is really happening
+
+A variable declared at **file scope**, outside every function, is created before `main` starts and destroyed only when the program exits. That is **static storage duration**, the same lifetime a `static` local has, but with a wider **scope**: the name is visible from its declaration to the end of the translation unit. Because the operating system hands the program zeroed pages, C guarantees that such a variable starts at zero even with no initialiser. `int gAuditCount;` at the top of a file is `0`, never garbage. That guarantee is the one real advantage over a local variable.
+
+**Linkage** decides which other `.c` files can see the name. A plain definition such as `int gBankReservePence = 1000000;` has **external linkage**: exactly one `.c` file should allocate that box, and every other file that needs it declares `extern int gBankReservePence;`. That declaration reserves no storage; it tells the compiler that the box exists elsewhere and lets the linker connect the two. Marking the definition `static` gives it **internal linkage** instead. `static int sInternalVaultPence = 1000000;` is a file-private global, invisible to every other `.c` file, which is exactly what a driver module wants for its own state. A `const int LIMIT = 100;` at file scope is read-only, so nothing can corrupt it, though in C it still has external linkage by default; write `static const` in a header if each file needs its own copy.
+
+The hazard is not storage but visibility. Any function in the file can assign to a mutable global without mentioning it in a parameter list or a return type, so the only record of the dependency is the function body. Compare that with a pointer parameter: `void depositAtCounter(int *vaultPence, int amountPence)` states at the call site what the function reads and what it may change. When a global is genuinely the right shape, such as a read-only constant or a file-private counter behind accessor functions, mark it: a `g` prefix for globals and an `s` prefix for file-private state make an accidental shadow obvious.
+
+**Shadowing** is the second hazard, and it is silent. When a block declares a name that already exists at file scope, the inner declaration wins from that point to the end of the block. The global is not overwritten; it is merely unreachable by that name, and every function called in the meantime still sees it. That is why `int gTotalVaultPence = 999;` inside `main` leaves the vault at `58500` while the local prints `999`. Because this is legal C, `-Wall -Wextra` stays silent; add `-Wshadow` if you keep globals.
+
+## Where the analogy stops
+
+The analogy suggests that the shared ledger is the fast option, because nobody has to carry paperwork to it. The hardware says otherwise. On a modern 64-bit CPU the first six integer arguments on x86-64, and the first eight on ARM64, travel in **registers** and never touch RAM, while every read or write of a global variable is a load or a store to memory that the compiler must keep in order around each call. Passing parameters is the cleaner design and, in the common case, also the faster one, so the analogy breaks precisely where the intuition about speed begins.
+
+## Common mistakes
+
+- **Using mutable globals instead of parameters and return values.** A function that reads and writes file-scope state cannot be tested in isolation, because its result depends on history rather than on its arguments.
+- **Defining a global variable in a header file.** If two `.c` files include that header, each one creates its own definition and the linker stops with a duplicate-symbol error. Put the definition in one `.c` file and the `extern` declaration in the header.
+- **Shadowing a global by accident.** A local variable with the same name hides the global for the rest of the block, and the compiler will not mention it; prefix globals with `g` so the mistake is visible.
+
+## Practice
+
+Three exercises follow: two refactors and a shadowing bug hunt.
+
+<ExerciseCard {...refactoredAccounts} />
+
+<ExerciseCard {...attendanceGate} />
+
+<ExerciseCard {...shadowingBugs} />

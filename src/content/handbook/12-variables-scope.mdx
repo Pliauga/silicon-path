@@ -1,0 +1,210 @@
+---
+id: 12-variables-scope
+title: 'Variables Scope: Local Blocks, Stack Lifetime, and Shadowing'
+estimatedMinutes: 40
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		shadowedBalance,
+		saferPoints,
+		nestedScopes
+	} from '$lib/content/handbook/exercises/12-variables-scope';
+</script>
+
+A variable is a name, a value, and two less visible properties: **scope**, the stretch of source code where the name means something, and **lifetime**, the stretch of running time where its memory box exists. Both follow from where you write the declaration, and neither is visible in the value itself.
+
+## Objectives
+
+- Trace the visibility of a local variable from its declaration down to the closing brace of its block.
+- Explain what happens on the call stack when a function is called and when it returns.
+- Recognise shadowing, where an inner declaration hides an outer variable of the same name.
+- Explain why returning the address of a local variable leaves a dangling pointer.
+- Use `-Wshadow` to catch an accidental redeclaration before it reaches the terminal.
+
+## Why students struggle
+
+Students often assume that two variables sharing a name, in two different functions, must be the same variable. They are not connected at all: each call builds its own stack frame, and `vaultBox` in `main` has no relationship to `vaultBox` inside the function it calls. The shared spelling is a convenience for the reader, not a link between two memory boxes.
+
+The second trap is quieter, because it compiles. Writing `int balance = 500;` inside an `if` block, when you meant `balance = 500;`, declares a new inner variable that **shadows** the outer one. The assignment lands in the inner box, the outer balance never changes, and the inner box vanishes at the closing brace. Worse, the program may still print a plausible, wrong number.
+
+## The code, both ways
+
+Both programs do the same five things — declare an outer variable, hide it with a function call, declare inside a branch, shadow inside a bare block, and prove the outer box survived — and only the nouns change.
+
+### The money version
+
+```c
+// Money version (scope_money.c)
+#include <stdio.h>
+
+void processDeskTransaction(void) {
+    // This 'vaultBox' is strictly local to processDeskTransaction's stack frame:
+    int vaultBox = 999;
+    printf("  [Inside service desk] local vaultBox = %d (at %p)\n",
+           vaultBox, (void *)&vaultBox);
+}   // <-- processDeskTransaction's desk is wiped clean right here!
+
+int main(void) {
+    int vaultBox = 101;
+    int balancePence = 5000;
+
+    printf("[In main] vaultBox = %d (at %p)\n", vaultBox, (void *)&vaultBox);
+    processDeskTransaction();
+    printf("[Back in main] vaultBox is still %d\n\n", vaultBox);
+
+    // Block scope inside an 'if' statement:
+    if (balancePence >= 5000) {
+        int bonusPence = 250;   // only exists inside these braces!
+        balancePence += bonusPence;
+        printf("[Inside if-block] Applied bonus of %dp -> balance = %dp\n",
+               bonusPence, balancePence);
+    }
+    // Uncommenting the next line causes a compile error ('bonusPence' is dead):
+    // printf("%d\n", bonusPence);
+
+    // Shadowing example (LEGAL in C, but a classic bug trap!):
+    {
+        int vaultBox = 777;   // Hides main's vaultBox (101) inside this block!
+        printf("[Inner shadow block] vaultBox = %d (at %p)\n",
+               vaultBox, (void *)&vaultBox);
+    }
+    printf("[After shadow block] main's vaultBox is untouched: %d\n", vaultBox);
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (scope_football.c)
+#include <stdio.h>
+
+void runSetPieceDrill(void) {
+    // This 'captainShirt' is strictly local to runSetPieceDrill's stack frame:
+    int captainShirt = 99;
+    printf("  [Inside set-piece drill] local captainShirt = #%d (at %p)\n",
+           captainShirt, (void *)&captainShirt);
+}   // <-- runSetPieceDrill's whiteboard is wiped clean right here!
+
+int main(void) {
+    int captainShirt = 4;
+    int teamGoals = 2;
+
+    printf("[In main] captainShirt = #%d (at %p)\n",
+           captainShirt, (void *)&captainShirt);
+    runSetPieceDrill();
+    printf("[Back in main] captainShirt is still #%d\n\n", captainShirt);
+
+    // Block scope inside an 'if' statement:
+    if (teamGoals >= 2) {
+        int winBonusPts = 3;   // only exists inside these braces!
+        printf("[Inside if-block] Claiming %d league points for %d goals\n",
+               winBonusPts, teamGoals);
+    }
+    // Uncommenting the next line causes a compile error ('winBonusPts' is dead):
+    // printf("%d\n", winBonusPts);
+
+    // Shadowing example (LEGAL in C, but a classic bug trap!):
+    {
+        int captainShirt = 10;  // Hides main's captainShirt (#4) in this block!
+        printf("[Inner shadow block] captainShirt = #%d (at %p)\n",
+               captainShirt, (void *)&captainShirt);
+    }
+    printf("[After shadow block] main's captainShirt is untouched: #%d\n",
+           captainShirt);
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-variables-scope-predict"
+	questions={["Why do `vaultBox` in `main` and `vaultBox` in `processDeskTransaction` have completely different memory addresses (`%p`)?","Look at the inner block `{ int vaultBox = 777; ... }`. Why did `main`'s `vaultBox` remain `101` after the closing brace?","What happens if a function declares `int temp = 500;` and returns `&temp`, a pointer to its own local variable?"]}
+	answers={["Because every function call gets its own independent **stack frame** in memory. Sharing the same identifier name in two functions does not connect their memory boxes in any way.","Writing `int vaultBox = 777;` inside braces declared a **second, separate variable** that shadowed (hid) the outer `vaultBox` until the closing brace.","Returning `&temp` produces a **dangling pointer**: the moment the function returns, its stack frame is reclaimed, so the returned pointer points to a destroyed memory box. Reading through it is **undefined behaviour**."]}
+>
+
+**Expected output, money (sample addresses):**
+
+```text
+[In main] vaultBox = 101 (at 0x16fdff1ac)
+  [Inside service desk] local vaultBox = 999 (at 0x16fdff17c)
+[Back in main] vaultBox is still 101
+
+[Inside if-block] Applied bonus of 250p -> balance = 5250p
+[Inner shadow block] vaultBox = 777 (at 0x16fdff1a4)
+[After shadow block] main's vaultBox is untouched: 101
+```
+
+**Expected output, football (sample addresses):**
+
+```text
+[In main] captainShirt = #4 (at 0x16fdff1ac)
+  [Inside set-piece drill] local captainShirt = #99 (at 0x16fdff17c)
+[Back in main] captainShirt is still #4
+
+[Inside if-block] Claiming 3 league points for 2 goals
+[Inner shadow block] captainShirt = #10 (at 0x16fdff1a4)
+[After shadow block] main's captainShirt is untouched: #4
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save the money program as `scope_money.c` and build it with the flags the handbook uses everywhere, plus the one that reports shadowing.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -Wshadow -g scope_money.c -o scope_money
+./scope_money
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard this handbook teaches. |
+| `-Wall -Wextra -Wpedantic` | Strict warnings; they catch a dead variable or a bad printf before you run. |
+| `-Wshadow` | Warns when an inner declaration hides an outer variable of the same name. |
+| `-g` | Keeps line numbers and variable names for the debugger. |
+| `-o scope_money` | Names the executable; without it the compiler writes `a.out`. |
+
+The football program builds with the same command once the file is renamed. Addresses are placeholders that change on every build; the relationship between them does not, because the callee frame sits below the caller frame. These programs target C17, and the compiler also accepts `-std=c23`.
+
+<Eli5Block
+	topic="variables-scope"
+	money={"The call stack is a pile of transaction trays on the teller's counter. When main calls processDeskTransaction, a fresh tray is set down on top of the pile for that function's local boxes; when the function finishes, its tray is swept clean and lifted away, revealing main's tray underneath, untouched.\n\nBlock scope is any sub-tray opened by curly braces: a variable declared inside an if or for exists only until the matching closing brace. Shadowing is a second sticky note labelled vaultBox stuck on top of the first one inside a sub-room, so the old label is hidden while you are in there and the outer box is never touched. A dangling pointer is worse than either: it is a claim slip for a temporary tray that was destroyed the instant the clerk's call ended."}
+	football={"The call stack is a pile of tactics whiteboards in the dugout. Calling a function puts a new whiteboard on top of the pile; returning wipes that whiteboard and lifts it off, leaving the board underneath exactly as it was drawn.\n\nBlock scope is a temporary drill zone on the training pitch: the cones and bibs placed for that drill are cleared away at the closing brace, while the outer session carries on around it. Shadowing is naming a substitute Leo when there is already a Leo on the pitch, because instructions shouted inside the drill zone reach the inner Leo and the outer Leo never hears them. A dangling pointer is a note telling the next coach to look at a bib that has already been collected."}
+/>
+
+## What is really happening
+
+In C, every variable has two independent properties. Its **scope** is where its name is visible in the source. For the variables here that is **block scope**: a name declared inside braces — a function body, a branch, a loop header — is visible only from its declaration to the matching closing brace. Names declared outside all functions have **file scope**, covered in Chapter 13. Its **storage duration** is how long the box lives at run time; locals have **automatic storage duration**, allocated on entry to the block and deallocated on exit. A keyword such as `static` changes the second property without changing the first, which is why the two ideas are worth separating.
+
+The mechanism is the **call stack**. Before `main` calls `processDeskTransaction`, the machine decrements the **stack pointer** register to reserve space for the callee's frame, then writes the callee's locals into it. Because that frame sits at a different address, `&vaultBox` inside the call can never equal `&vaultBox` in `main`: the names match, the addresses do not. Returning reverses the move; the stack pointer goes back up and the frame is no longer reserved. Nothing is copied out and nothing is saved.
+
+Shadowing is resolved by a simple rule. A name is looked up from the innermost enclosing block outwards, and the first declaration found wins. Inside the shadow block, `vaultBox` resolves to the block's own box at `777`; after the closing brace that declaration no longer exists, so the same name resolves to `main`'s box again. A declaration is only visible from its own line onwards. This is also why a loop body, being a block, hands you a fresh variable on every pass: the box is created at the opening brace and destroyed at the end of the pass.
+
+## Where the analogy stops
+
+Wiping a whiteboard literally erases the ink. When a C function returns, the CPU does **not** spend time zeroing out the old stack bytes. It simply moves the hardware **stack pointer** back up, marking those memory boxes as free to be overwritten by the next function call. The bytes remain, which makes the dangling pointer bug treacherous: dereferencing a pointer to a dead local often prints the old number on the first line, then decays into garbage on a later `printf` call once the space is reused. Reading a value you were never given is undefined behaviour whether or not it looks correct today.
+
+## Common mistakes
+
+- **Shadowing an outer variable by accidentally retyping its type inside an `if` or `while`.** `int balancePence = 1000;` followed inside a branch by `int balancePence = 5000;` creates a new inner box, so the outer balance is still `1000` afterwards. Drop the `int` to assign, and build with `-Wshadow` so the compiler points at the hiding declaration.
+- **Returning the address of a local variable.** A function that declares `int balance = 10000;` and ends with `return &balance;` hands back a pointer into a frame that is destroyed on return. Compilers with `-Wall` warn that the address of stack memory associated with a local variable is returned; the fix is a caller-owned output parameter, or heap allocation in Chapter 16.
+
+## Practice
+
+Three tasks follow: repair a program defeated by two scope bugs, replace a dangling local pointer with a caller-owned one, and trace a total through three nested scopes.
+
+<ExerciseCard {...shadowedBalance} />
+
+<ExerciseCard {...saferPoints} />
+
+<ExerciseCard {...nestedScopes} />

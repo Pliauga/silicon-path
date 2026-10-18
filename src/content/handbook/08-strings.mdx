@@ -1,0 +1,201 @@
+---
+id: 08-strings
+title: 'Strings: Character Arrays, the Null Terminator, and string.h'
+estimatedMinutes: 38
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		accountMasker,
+		chantBanner,
+		clubSorter
+	} from '$lib/content/handbook/exercises/08-strings';
+</script>
+
+C does not have a string type. It has characters, arrays, and one convention that holds them together: a byte with the value zero sits immediately after the last character, and every function treats that byte as the end. Each `printf("%s")`, each `strlen`, and each `strcmp` in this chapter depends on that single byte being exactly where it should be.
+
+## Objectives
+
+- Explain how C stores a string as a `char` array terminated by the null byte, written `'\0'`, whose value is zero.
+- Size a character array with one extra byte for that terminator.
+- Distinguish `sizeof` (the capacity of the buffer) from `strlen` (the number of characters before the terminator).
+- Compare strings with `strcmp` rather than `==`, and read what a negative, zero, or positive return value means.
+- Format and copy text safely into a fixed buffer with `snprintf`.
+
+## Why students struggle
+
+Unlike Python or Java, C has no built-in `string` type. A string here is a row of `char` boxes ending with an invisible sentinel byte, `'\0'`, whose numeric value is zero. Beginners forget to reserve the extra byte, so a six-letter word goes into `char word[6]` and there is nowhere left to put the terminator. The array compiles, prints something, and then quietly corrupts whatever sits next to it.
+
+The second trap is a habit carried over from other languages: writing `if (name == "Leo")` to test whether two names match. That compares the addresses of two rows of boxes, not the letters inside them, so it is false even when the text is identical. The compiler warns about it, but only if you ask for warnings.
+
+## The code, both ways
+
+Every chapter shows the same idea twice: read the version whose vocabulary you already own first, then the other one, because neither analogy is the concept.
+
+### The money version
+
+```c
+// Money version (strings_money.c)
+#include <stdio.h>
+#include <string.h>    // strlen, strcmp, strcpy, strcat
+
+int main(void) {
+    // "Vance" has 5 letters, so it occupies 6 bytes in memory:
+    // ['V']['a']['n']['c']['e']['\0']
+    char holder[] = "Vance";
+    char inputName[] = "Vance";
+
+    printf("Account holder: %s\n", holder);
+    printf("strlen(holder) = %zu letters | sizeof(holder) = %zu bytes\n",
+           strlen(holder), sizeof(holder));
+    printf("Null terminator byte at holder[5] has numeric value: %d\n",
+           (int)holder[5]);
+
+    // Comparing strings: NEVER use == (that compares box numbers!).
+    // strcmp returns 0 when two strings have identical characters.
+    if (strcmp(holder, inputName) == 0) {
+        printf("strcmp check: \"%s\" matches \"%s\" (returns 0)\n",
+               holder, inputName);
+    }
+
+    // Building a safe formatted reference in a fixed buffer with snprintf:
+    char statementLine[64];
+    int balancePence = 45075;
+    snprintf(statementLine, sizeof(statementLine),
+             "Holder: %s | Balance: £%d.%02d",
+             holder, balancePence / 100, balancePence % 100);
+    printf("%s\n", statementLine);
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (strings_football.c)
+#include <stdio.h>
+#include <string.h>    // strlen, strcmp, strcpy, strcat
+
+int main(void) {
+    // "Rovers" has 6 letters, so it occupies 7 bytes in memory:
+    // ['R']['o']['v']['e']['r']['s']['\0']
+    char club[] = "Rovers";
+    char visitorInput[] = "Rovers";
+
+    printf("Home club: %s\n", club);
+    printf("strlen(club) = %zu letters | sizeof(club) = %zu bytes\n",
+           strlen(club), sizeof(club));
+    printf("Final whistle byte at club[6] has numeric value: %d\n",
+           (int)club[6]);
+
+    // Comparing strings: NEVER use == (that compares seat numbers!).
+    // strcmp returns 0 when two strings have identical characters.
+    if (strcmp(club, visitorInput) == 0) {
+        printf("strcmp check: \"%s\" matches \"%s\" (returns 0)\n",
+               club, visitorInput);
+    }
+
+    // Building a safe scoreboard banner in a fixed buffer with snprintf:
+    char scoreboard[64];
+    int homeGoals = 3, awayGoals = 1;
+    snprintf(scoreboard, sizeof(scoreboard),
+             "Full Time: %s %d - %d Athletic",
+             club, homeGoals, awayGoals);
+    printf("%s\n", scoreboard);
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-strings-predict"
+	questions={["Why is `sizeof(\"Vance\")` equal to `6` while `strlen(\"Vance\")` is equal to `5`?","What does `strcmp(a, b)` return when `a` and `b` contain the exact same characters: `1` (true) or `0`?","What happens if you pass a `char` array that has **no `'\\0'` byte** to `printf(\"%s\", arr)` or `strlen(arr)`?"]}
+	answers={["`strlen` counts only the visible characters before `'\\0'`, so it reports `5`. `sizeof` measures the total bytes allocated in the array, which includes the terminator byte, so it reports `5 + 1 = 6`.","`strcmp` returns **`0`** when the strings are equal. Think of it as subtracting one string from the other: zero difference means equal, a negative result means the first string sorts before the second, and a positive result means it sorts after.","`printf` and `strlen` keep marching through adjacent memory boxes byte after byte until they happen to hit a zero byte somewhere in RAM, printing whatever follows your array or crashing with a segmentation fault."]}
+>
+
+**Expected output, money:**
+
+```text
+Account holder: Vance
+strlen(holder) = 5 letters | sizeof(holder) = 6 bytes
+Null terminator byte at holder[5] has numeric value: 0
+strcmp check: "Vance" matches "Vance" (returns 0)
+Holder: Vance | Balance: £450.75
+```
+
+**Expected output, football:**
+
+```text
+Home club: Rovers
+strlen(club) = 6 letters | sizeof(club) = 7 bytes
+Final whistle byte at club[6] has numeric value: 0
+strcmp check: "Rovers" matches "Rovers" (returns 0)
+Full Time: Rovers 3 - 1 Athletic
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save each program under the file name in its first comment, then compile and run.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g strings_money.c -o strings_money
+./strings_money
+cc -std=c17 -Wall -Wextra -Wpedantic -g strings_football.c -o strings_football
+./strings_football
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard. |
+| `-Wall` | Turns on the main warnings, including the one that catches a string compared with `==`. |
+| `-Wextra -Wpedantic` | Adds stricter checks and rejects compiler-specific extensions. |
+| `-g` | Keeps line numbers and names for a debugger. |
+| `-o strings_money` | Names the output file; without it the compiler writes `a.out`. |
+
+The `-o` flag is why each program keeps its own executable instead of overwriting `a.out`. Both programs sit inside C11 as well as C17: `snprintf` arrived in C99, so the app's compiler and a desktop compiler accept exactly the same source.
+
+<Eli5Block
+	topic="strings"
+	money={"A C string is a row of safe-deposit boxes, one letter per box, ending with a final box stamped END. The stamp is a single byte whose value is zero, and it is not a letter you can read. When you hand the clerk the number of the first box, the clerk has no idea how long the name is; it simply opens box after box until it finds the END stamp. That is why the stamp must always be there, and why it costs you one extra box of rent.\n\nComparing two rows with the double equals sign asks whether the two customers were given the same physical box number. Two separate rows holding identical letters still have different numbers, so the answer is always no. Asking the clerk to run strcmp instead means opening both rows side by side and checking the letters one at a time; a zero answer means the contents match, whatever the box numbers happen to be."}
+	football={"A C string is a passing move along a row of stadium seats, one letter per seat, and the move ends with the final whistle sitting in the last seat. The whistle is a byte whose value is zero; it is not a player. The stadium announcer starts at the first seat and reads letters aloud until the whistle sounds, so a row with no whistle keeps the announcer reading into the next block of seats. That is exactly how a missing terminator turns into garbage on screen.\n\nComparing two rows with the double equals sign asks whether two tickets point at the same seat number. Two rows spelling the same word from different seats still have different numbers, so the test fails. Asking strcmp instead is asking whether the two chants spell the same word, seat by seat, and a zero answer means they do."}
+/>
+
+## What is really happening
+
+There are two ways to bring text into a program, and only one of them is yours to edit. Writing `char mutableName[] = "Rovers";` asks the compiler to reserve seven bytes on the stack and to copy the six letters plus the terminator into them, so `mutableName[0] = 'C';` is perfectly legal. Writing `const char *literalName = "Rovers";` only stores a pointer to bytes the compiler parked in the program's read-only data segment; those bytes are shared by every use of that literal, and writing through the pointer is **undefined behaviour**, which on a modern machine means a segmentation fault. Mark such pointers `const char *` and the compiler will refuse the write for you.
+
+The `<string.h>` functions are variations on one walk. `strlen` starts at the address you give it and counts bytes until it meets a zero, returning a `size_t`; because it must physically visit every byte it is **linear time**, not a stored length. `strcmp` walks two strings together and returns a negative number, zero, or a positive number according to the first differing pair of bytes, so equality is written `strcmp(a, b) == 0`. `strcpy` and `strcat` copy and append without knowing the destination's size, which makes them the classic source of **buffer overflows**.
+
+`snprintf` is the bounded alternative and the one to reach for. It is told the capacity of the destination, writes at most that many bytes **including the terminator**, and truncates rather than overrunning. That single extra argument is the difference between a printed statement line and a smashed stack frame.
+
+None of this is stored in memory as metadata. An array does not carry its length, and when you pass it to a function it **decays to a pointer** to its first element: the callee receives an address and nothing else. The terminator is the only length information `printf` and `strlen` will ever get, which is why the `+ 1` in `char club[7] = "Rovers";` is not a style preference. It is the difference between a string and a row of bytes that happens to start with the right letters.
+
+## Where the analogy stops
+
+Writing `if (!strcmp(a, b))` is correct C, because `strcmp` returns zero for equal strings and `!0` is true. It also reads, in English, like "if not equal", which is the opposite of what it does. The inversion is not a compiler bug and no warning will fire; it is a human bug waiting in code that looks fine. Write `if (strcmp(a, b) == 0)` and let the reader see the test that is actually happening.
+
+## Common mistakes
+
+- **Forgetting the extra byte.** `"Rovers"` is six letters but needs `char club[7]`. With `char club[6]` there is no room for the terminator, and `strlen` walks past the end of the array looking for a zero that is not there.
+- **Comparing with `==`.** `if (code == "GBP")` compares two addresses, not the letters, and is almost always false. With `-Wall` the compiler warns you. Use `strcmp(code, "GBP") == 0`.
+- **Assigning a string after declaration.** Once `char holder[16];` exists you cannot write `holder = "Sterling";`, because an array name is not assignable. Copy into it with `snprintf(holder, sizeof(holder), "%s", "Sterling");`.
+- **Confusing `'a'` with `"a"`.** Single quotes make one `char` byte with the value ninety-seven. Double quotes make a two-byte array holding the letter and its terminator, and the two are not interchangeable in any argument list.
+
+## Practice
+
+Three programs: a receipt masker for the bank, a chant banner for the terraces, and an alphabetical sorter that has to use `strcmp` rather than `==`.
+
+<ExerciseCard {...accountMasker} />
+
+<ExerciseCard {...chantBanner} />
+
+<ExerciseCard {...clubSorter} />

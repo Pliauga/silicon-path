@@ -1,0 +1,204 @@
+---
+id: 02-variables-and-types
+title: 'Variables and Types: Memory Boxes, Sizes, and Overflow'
+estimatedMinutes: 30
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		vaultCapacity,
+		turnstileWrap,
+		memoryBoxInspector
+	} from '$lib/content/handbook/exercises/02-variables-and-types';
+</script>
+
+Every variable you declare in C is a real, numbered box in memory, and the type you choose decides how many bytes that box occupies. That is a promise, not a suggestion: once you declare an `int`, the compiler sets aside a fixed number of bytes and will not quietly grow them when the number gets larger. This chapter shows you how to measure those boxes, how to pick a type that fits the value you actually have, and what happens when a value spills over the edge.
+
+## Objectives
+
+- Describe RAM as a numbered strip of bytes.
+- Choose the right integer type (`char`, `short`, `int`, `long`, `long long`) or floating-point type (`float`, `double`).
+- Use the `signed` and `unsigned` modifiers deliberately.
+- Measure variables and types in bytes with `sizeof`, and print the result with `%zu`.
+- Explain integer overflow and why money is never stored in a `float` or a `double`.
+
+## Why students struggle
+
+High-level languages hide how many bytes a variable takes, and many of them silently expand an integer when it grows. That habit of mind is dangerous in C, where every variable occupies a fixed number of physical bytes decided at compile time. Nothing steps in when the value stops fitting; the bits simply fall off the end.
+
+The second confusion is about decimals. Types such as `float` and `double` look like they hold money because they hold fractions, but they cannot represent `0.1` plus `0.2` exactly, so repeated additions slowly drift away from the pennies you expected. Integer overflow and binary rounding are the two failures this chapter exists to prevent.
+
+## The code, both ways
+
+Both programs declare the same six variable shapes, print the same measurements, and make the same two mistakes on purpose: an unsigned counter that rolls over, and a decimal sum that does not add up.
+
+### The money version
+
+```c
+// Money version (types_money.c)
+#include <stdio.h>
+#include <limits.h>    // INT_MAX, UCHAR_MAX
+#include <stdint.h>    // int32_t, int64_t
+
+int main(void) {
+    char grade = 'A';                     // 1 byte
+    short branchId = 104;                 // usually 2 bytes
+    int balancePence = 249900;            // usually 4 bytes (£2,499.00)
+    long long nationalReserve = 900000000000LL; // at least 8 bytes
+    unsigned char tillCounter = 255;      // 1 byte: 0 to 255 only
+    double indicativeRate = 0.1;          // 8-byte float (APPROXIMATE)
+
+    printf("Vault address of balancePence: %p\n", (void *)&balancePence);
+    printf("Sizes (bytes) -> char:%zu short:%zu int:%zu llong:%zu double:%zu\n",
+           sizeof grade, sizeof branchId, sizeof balancePence,
+           sizeof nationalReserve, sizeof indicativeRate);
+    printf("Max int on this machine: %d\n", INT_MAX);
+    printf("National reserve: %lld pence\n", nationalReserve);
+
+    // Unsigned overflow wraps around modulo 256:
+    tillCounter = (unsigned char)(tillCounter + 1);
+    printf("Till counter after 255 + 1: %u\n", tillCounter);
+
+    // Why banks NEVER use double for money:
+    printf("Float trap: 0.1 + 0.2 = %.17f\n", indicativeRate + 0.2);
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (types_football.c)
+#include <stdio.h>
+#include <limits.h>    // INT_MAX, UCHAR_MAX
+#include <stdint.h>    // int32_t, int64_t
+
+int main(void) {
+    char pitchZone = 'M';                 // 1 byte ('M' = Midfield)
+    short squadNumber = 14;               // usually 2 bytes
+    int seasonSeconds = 194400;           // usually 4 bytes (36 full matches)
+    long long globalTvViews = 4500000000LL; // at least 8 bytes
+    unsigned char turnstileClicks = 255;  // 1 byte: 0 to 255 only
+    double expectedGoals = 0.1;           // 8-byte float (APPROXIMATE)
+
+    printf("Seat address of seasonSeconds: %p\n", (void *)&seasonSeconds);
+    printf("Sizes (bytes) -> char:%zu short:%zu int:%zu llong:%zu double:%zu\n",
+           sizeof pitchZone, sizeof squadNumber, sizeof seasonSeconds,
+           sizeof globalTvViews, sizeof expectedGoals);
+    printf("Max int on this machine: %d\n", INT_MAX);
+    printf("Global TV views: %lld\n", globalTvViews);
+
+    // Unsigned overflow wraps around modulo 256:
+    turnstileClicks = (unsigned char)(turnstileClicks + 1);
+    printf("Turnstile counter after 255 + 1: %u\n", turnstileClicks);
+
+    // Why goals are counted in int, while xG uses double:
+    printf("Float trap: xG 0.1 + 0.2 = %.17f\n", expectedGoals + 0.2);
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-variables-and-types-predict"
+	questions={["Look at `tillCounter` / `turnstileClicks`, which is an `unsigned char` (1 byte, range `0` to `255`). What happens when we add `1` to `255`?","Does `0.1 + 0.2` print `0.30000000000000000`?","Will the hex address printed by `%p` be the exact same every time you run the program?"]}
+	answers={["It wraps around to `0`. An 8-bit unsigned integer holds binary `11111111` (`255`); adding `1` produces `1 00000000`, and only the lowest 8 bits (`00000000` = `0`) fit in the 1-byte box.","No. It prints `0.30000000000000004`, because `0.1` and `0.2` are repeating fractions in base-2 binary floating point.","No. Modern operating systems randomise memory addresses on each run (ASLR) for security."]}
+>
+
+**Expected output, money (sample address):**
+
+```text
+Vault address of balancePence: 0x16fdff1ac
+Sizes (bytes) -> char:1 short:2 int:4 llong:8 double:8
+Max int on this machine: 2147483647
+National reserve: 900000000000 pence
+Till counter after 255 + 1: 0
+Float trap: 0.1 + 0.2 = 0.30000000000000004
+```
+
+**Expected output, football (sample address):**
+
+```text
+Seat address of seasonSeconds: 0x16fdff1ac
+Sizes (bytes) -> char:1 short:2 int:4 llong:8 double:8
+Max int on this machine: 2147483647
+Global TV views: 4500000000
+Turnstile counter after 255 + 1: 0
+Float trap: xG 0.1 + 0.2 = 0.30000000000000004
+```
+
+</PredictCard>
+
+### Compile and run
+
+The same command compiles either theme; only the file name changes.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g types_money.c -o types_money
+./types_money
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Compiles against the ISO C17 standard, so the language does not silently depend on a compiler's favourite dialect. |
+| `-Wall -Wextra -Wpedantic` | Turns on the strict warning set. These warnings are the cheapest bug detector you own. |
+| `-g` | Keeps line numbers and variable names in the binary so a debugger can point at the exact statement. |
+| `-fsanitize=undefined` | Adds a runtime check that traps signed overflow, which the compiler is otherwise allowed to assume never happens. |
+| `-o types_money` | Names the executable instead of accepting the default `a.out`. |
+
+Without `-o`, the executable is written to a file called `a.out`, which is easy to lose among a folder of practice programs. Every program in this chapter is C17, and the same code also builds cleanly as `-std=c11`, because the widths of the types are not what the standard revision changed.
+
+<Eli5Block
+	topic="variables-and-types"
+	money={"Memory is the bank vault: a long corridor of numbered safe-deposit boxes, and each box holds exactly one byte, any value from 0 to 255. Ask for the address and the bank gives you the box number; ask for the variable and you get the cash inside it. The name you chose is only a sticky label on the drawer for humans, because the hardware behind the counter works entirely in box numbers.\n\nThe type is the size of the safe you rent. A char is one box; a short is two boxes bolted together; an int is four, which holds a balance up to about 2.14 billion pence; a long long is eight, the only honest size for a national reserve; and a double is eight boxes with scientific-notation compartments, for rates and ratios rather than cash. Add unsigned and the account refuses to go negative, doubling the positive room from 127 to 255 in the char case. Overflow is the mechanical three-digit counter on a coin sorter rolling from 999 back to 000. The golden rule never changes: money lives in whole pence inside an int or a long long, never in a float or a double."}
+	football={"Memory is the stadium: one continuous line of numbered seats, and every seat holds exactly one byte. The seat number is the address, and who is sitting in it is the value. The variable name is the name printed on your ticket — useful to you, ignored by the turnstile, which only cares about the seat number.\n\nThe type is the size of the seat block you booked. A char is a single seat, enough for one pitch-zone letter such as G, D, M or F. A short is a two-seat block for squad numbers. An int is a four-seat block for match seconds, league goals or a transfer fee. A long long is an eight-seat block for cumulative global broadcast views across a whole season, and a double is an eight-seat hospitality box where approximate analytics such as expected goals sit. Overflow is the old two-digit scoreboard rolling from 99 back to 00 — and, as with the coin counter, that tidy rollover only happens for unsigned types."}
+/>
+
+## What is really happening
+
+The C standard guarantees **minimum widths** for the built-in types, while the exact number of bytes you get depends on the CPU and the operating system. An `int` is at least 16 bits by law and 32 bits on every desktop compiler you will meet; a `long` is 8 bytes on macOS and Linux but stays 4 bytes on 64-bit Windows, which is why portable code prefers `long long` when it needs a guarantee.
+
+| Type | Typical 64-bit size | Minimum guaranteed range | Format specifier |
+|---|---|---|---|
+| `char` | 1 byte (8 bits) | `-128..127` or `0..255` (platform-defined sign) | `%c` or `%d` |
+| `unsigned char` | 1 byte (8 bits) | `0` to `255` | `%u` |
+| `short` | 2 bytes (16 bits) | `-32,768` to `32,767` | `%hd` |
+| `int` | 4 bytes (32 bits) | `-2,147,483,648` to `2,147,483,647` | `%d` |
+| `long` | 4 bytes on Win64, 8 bytes on macOS and Linux | At least 32 bits | `%ld` |
+| `long long` | 8 bytes (64 bits) | Up to `9,223,372,036,854,775,807` | `%lld` |
+| `float` | 4 bytes (IEEE 754) | About 6 to 7 significant decimal digits | `%f` |
+| `double` | 8 bytes (IEEE 754) | About 15 to 17 significant decimal digits | `%f` |
+
+When you need **exact** bit widths across every platform, include `<stdint.h>` and use the fixed-width names: `int8_t`, `uint8_t`, `int32_t`, `int64_t`. Those names state the width in the type itself, so a program that counts pence behaves the same on a laptop and a server.
+
+The `sizeof` operator reports the size of a type or a variable in **bytes**, and it is evaluated at **compile time** except for variable-length arrays. It yields a `size_t`, an unsigned integer type, which is why it is printed with `%zu` and not `%d`.
+
+The two kinds of overflow are not the same. **Unsigned overflow** is well defined by C: the value wraps around modulo two to the power of the type's width, so `255` plus `1` in an `unsigned char` is reliably `0`. **Signed overflow** — `INT_MAX + 1` on a signed `int` — is **undefined behaviour**. The compiler is allowed to assume it never happens and may optimise on that assumption, so the result is not a number you can predict; `-fsanitize=undefined` traps it at runtime instead.
+
+## Where the analogy stops
+
+A mechanical counter rolling over from `999` to `000` is a true picture for **unsigned** types only. For **signed** types such as `int`, overflowing past `INT_MAX` is undefined behaviour: the rulebook is torn up, and the printed value may be nonsense or the optimiser may delete the code that produces it. The physical analogy breaks a second time because a bank vault box exists forever with the same number, whereas a variable's memory boxes are recycled as soon as the function that owns them returns.
+
+## Common mistakes
+
+- **Using an uninitialised variable.** Writing `int balance; printf("%d\n", balance);` reads whatever leftover garbage bits happened to sit in those memory boxes.
+- **Storing currency in `float` or `double`.** Repeated additions produce penny-sized rounding discrepancies that a bank cannot reconcile.
+- **Assuming `int` can hold numbers above 2.14 billion.** A population count, or a reserve of `£30,000,000.00` written as `3,000,000,000` pence, overflows a 32-bit `int`. Use `long long` or `int64_t`.
+- **Printing `sizeof` with `%d` instead of `%zu`.** `sizeof` returns `size_t`, an unsigned 64-bit integer on 64-bit systems, so `%d` triggers a compiler warning and can print the wrong value.
+
+## Practice
+
+Three tasks follow: the first audits a vault balance in pence, the second overflows a turnstile counter on purpose, and the third prints the addresses of six variables so you can watch the widths become distances.
+
+<ExerciseCard {...vaultCapacity} />
+
+<ExerciseCard {...turnstileWrap} />
+
+<ExerciseCard {...memoryBoxInspector} />

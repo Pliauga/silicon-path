@@ -1,0 +1,217 @@
+---
+id: 13-static-variables
+title: 'Static Variables: Private State That Survives Function Calls'
+estimatedMinutes: 35
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		peakBalance,
+		challengeQuota,
+		sharedCounterSlip
+	} from '$lib/content/handbook/exercises/13-static-variables';
+</script>
+
+A normal local variable is created when its function is called and destroyed when the function returns. That default is usually right, and it is why a counter written as an ordinary local prints one on every call. `static` changes exactly one of those facts: the name stays private to the function, but the box now lives for the entire run of the program. This chapter is about that narrow, useful exception.
+
+## Objectives
+
+- Use `static` inside a function to create a variable with block scope and static storage duration.
+- Explain why such a variable is initialised only once, before `main` starts.
+- Explain why static locals are zero-initialised even without an explicit initialiser.
+- Recognise that a static initialiser must be a compile-time constant.
+- Explain how `static` at file scope gives a global variable or function internal linkage.
+
+## Why students struggle
+
+Normal locals have amnesia, and beginners meet that amnesia as a bug. You want a function to count how many times it has been called, or to issue sequential ticket numbers, so you write an ordinary `int count = 0;` inside it, increment the counter, and watch it print `1` on every single call. The obvious repair is a global variable, which works and then leaks the name to every other function in the file.
+
+The quieter confusion is about what `static` actually promises. It does not make the variable global, and it does not make it constant. It changes lifetime, not visibility: the name is still confined to the function, while the storage stays put. Because the declaration looks almost identical to the broken version, the one-word change is easy to miss and easy to mistrust.
+
+## The code, both ways
+
+Both programs keep two kinds of state: a counter that issues a sequence, and a running total that has to survive between calls. Read one version, then the other; only the nouns change.
+
+### The money version
+
+```c
+// Money version (static_money.c)
+#include <stdio.h>
+
+int issueNextReceiptNumber(void) {
+    // Initialised ONCE before the program starts; keeps its value between calls!
+    static int nextReceiptId = 1000;
+    nextReceiptId++;
+    return nextReceiptId;
+}
+
+int recordVaultDeposit(int amountPence) {
+    // static variables with no explicit initialiser start at 0 automatically:
+    static int cumulativeVaultPence;
+    int normalCallCounter = 0;   // normal local: resets to 0 on EVERY call!
+
+    cumulativeVaultPence += amountPence;
+    normalCallCounter++;
+
+    printf("  Deposit +%dp -> normalCallCounter=%d | static cumulative=%dp\n",
+           amountPence, normalCallCounter, cumulativeVaultPence);
+    return cumulativeVaultPence;
+}
+
+int main(void) {
+    printf("Receipt #%d issued\n", issueNextReceiptNumber());
+    printf("Receipt #%d issued\n", issueNextReceiptNumber());
+    printf("Receipt #%d issued\n\n", issueNextReceiptNumber());
+
+    recordVaultDeposit(2500);
+    recordVaultDeposit(4000);
+    recordVaultDeposit(1500);
+
+    // Uncommenting the next line fails to compile — cumulativeVaultPence is
+    // strictly private to recordVaultDeposit()!
+    // cumulativeVaultPence = 0;
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (static_football.c)
+#include <stdio.h>
+
+int clickTurnstile(void) {
+    // Initialised ONCE before kick-off; keeps its value between calls!
+    static int gateCount = 0;
+    gateCount++;
+    return gateCount;
+}
+
+int logPlayerSprintMetres(int sprintMetres) {
+    // static variables with no explicit initialiser start at 0 automatically:
+    static int totalDistanceMetres;
+    int singleSprintCounter = 0;   // normal local: resets to 0 on EVERY call!
+
+    totalDistanceMetres += sprintMetres;
+    singleSprintCounter++;
+
+    printf("  Sprint +%dm -> singleSprintCounter=%d | static total=%dm\n",
+           sprintMetres, singleSprintCounter, totalDistanceMetres);
+    return totalDistanceMetres;
+}
+
+int main(void) {
+    printf("Supporter #%d entered through Gate A\n", clickTurnstile());
+    printf("Supporter #%d entered through Gate A\n", clickTurnstile());
+    printf("Supporter #%d entered through Gate A\n\n", clickTurnstile());
+
+    logPlayerSprintMetres(45);
+    logPlayerSprintMetres(60);
+    logPlayerSprintMetres(35);
+
+    // Uncommenting the next line fails to compile — totalDistanceMetres is
+    // strictly private to logPlayerSprintMetres()!
+    // totalDistanceMetres = 0;
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-static-variables-predict"
+	questions={["Why does `static int nextReceiptId = 1000;` not reset `nextReceiptId` back to `1000` on the second and third calls to `issueNextReceiptNumber()`?","Look at `static int cumulativeVaultPence;` (which has no `= 0`). Does it contain garbage like an uninitialised normal local variable, or `0`?","Can `main()` read or modify `nextReceiptId` or `gateCount` directly by name?"]}
+	answers={["Because a `static` local variable is initialised **only once**, before `main()` even begins executing. On subsequent calls to the function, execution simply uses whatever value was left in that box from the previous call.","It is guaranteed by the C standard to be initialised to **`0`**. Unlike automatic (stack) variables, all variables with static storage duration live in the program's data or BSS segment and default to zero.","**No.** A `static` local variable still has **block scope**, so only code inside `issueNextReceiptNumber()` can see its name, which protects it from accidental tampering by other functions."]}
+>
+
+**Expected output, money:**
+
+```text
+Receipt #1001 issued
+Receipt #1002 issued
+Receipt #1003 issued
+
+  Deposit +2500p -> normalCallCounter=1 | static cumulative=2500p
+  Deposit +4000p -> normalCallCounter=1 | static cumulative=6500p
+  Deposit +1500p -> normalCallCounter=1 | static cumulative=8000p
+```
+
+**Expected output, football:**
+
+```text
+Supporter #1 entered through Gate A
+Supporter #2 entered through Gate A
+Supporter #3 entered through Gate A
+
+  Sprint +45m -> singleSprintCounter=1 | static total=45m
+  Sprint +60m -> singleSprintCounter=1 | static total=105m
+  Sprint +35m -> singleSprintCounter=1 | static total=140m
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save each program under the file name in its first comment, then build and run it.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g static_money.c -o static_money
+./static_money
+cc -std=c17 -Wall -Wextra -Wpedantic -g static_football.c -o static_football
+./static_football
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard, the version these programs target. |
+| `-Wall -Wextra -Wpedantic` | Turns on strict warnings; they catch unused values and non-standard extensions before you run anything. |
+| `-g` | Keeps line numbers and variable names for a debugger. |
+| `-o static_money` | Names the executable, so the two builds sit side by side instead of overwriting the default `a.out`. |
+
+The `-o` flag is the only reason the two programs do not collide on disk. Nothing here depends on a C17-only feature: static locals with constant initialisers are C89 material, so a C11 or C23 compiler accepts the same source unchanged.
+
+<Eli5Block
+	topic="static-variables"
+	money={"A normal local variable is the paper notepad on the teller's desk: it is issued when a customer arrives, written on during the visit, and shredded the moment they leave. The next customer gets a fresh sheet, which is why a local counter initialised to zero really does start at zero every single time.\n\nA static local is a locked wall safe built directly behind one specific service desk. Only the clerk at that desk has the key, so no other counter can see or change what is inside — that is local scope. But when the customer leaves, the safe stays bolted to the wall with its running total intact, ready for the next visit: that is static storage duration."}
+	football={"A normal local variable is the temporary chalk mark on the dugout whiteboard, wiped away after every set piece. The next drill starts from a clean board, which is why a local tally begins at zero for every arrival.\n\nA static local is the mechanical click-counter mounted inside Turnstile Gate A. Only Gate A can click it, because the counter is not on general display and no other gate can reach it — that is local scope. And it never resets between supporters: it keeps counting from kick-off to the final whistle, which is static storage duration."}
+/>
+
+## What is really happening
+
+A `static` local does not live on the **call stack**. Ordinary automatic variables appear on the stack when a function is entered and vanish when it returns, which is why their old contents are gone. A `static` local is placed in the program's **data or BSS segment** alongside global variables, and it exists from the moment the executable is loaded until `main` exits. Its **scope** is still the block that declares it, but its **storage duration** is now the whole run of the program.
+
+Initialisation happens once, during program startup, before `main` is entered. A static local with an explicit initialiser such as `= 1000` is written into the data segment at load time. A static local with no initialiser is placed in the BSS segment, which the operating system clears to zero, so it begins at `0` rather than at whatever bytes happened to be there. That is a guarantee of the C standard, not a courtesy of one compiler.
+
+| Property | Normal local (`int x;`) | Static local (`static int x;`) |
+|---|---|---|
+| Where it lives in RAM | Call stack | Static data or BSS segment |
+| Default initial value | Garbage (uninitialised) | `0`, zero-initialised automatically |
+| Created and destroyed | On every call and return | Once at startup, destroyed at exit |
+| Who can see the name | Only that function or block | Only that function or block |
+
+At file scope, `static` has a second and largely unrelated job. Placed on a global variable or a function near the top of a `.c` file, as in `static int helper(int x)`, it gives that symbol **internal linkage**: the name is private to that single translation unit and invisible to other `.c` files in the project. The lecture samples use exactly this for small helper functions, so the word earns its keep in two different places.
+
+## Where the analogy stops
+
+Because a `static` local has only **one** shared box in memory for that function, it cannot track two independent accounts or two independent turnstiles at the same time, and it is not safe if two CPU threads call the function simultaneously. The safe belongs to the desk, not to the customer. When you need separate state for multiple accounts or players, use a `struct` (Chapter 17) and pass a pointer to it, so each caller owns its own record.
+
+## Common mistakes
+
+- **Trying to initialise a `static` variable with a non-constant runtime expression.** A `static int count = startValue;` inside a function whose parameter is `startValue` is a compile error, because static storage is set up before `main` runs and the initialiser must be a compile-time constant such as `0` or `1000`.
+- **Assuming `static int count = 0;` resets `count` to `0` each time the function is called.** It initialises `count` once, when the program starts; every later call walks back into the same box and finds the previous value still there.
+
+## Practice
+
+These three programs use the same idea in three settings: a high-water mark, a quota, and an address that outlives the call.
+
+<ExerciseCard {...peakBalance} />
+
+<ExerciseCard {...challengeQuota} />
+
+<ExerciseCard {...sharedCounterSlip} />

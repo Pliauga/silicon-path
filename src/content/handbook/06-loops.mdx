@@ -1,0 +1,231 @@
+---
+id: 06-loops
+title: 'Loops: for, while, do-while, break, and continue'
+estimatedMinutes: 30
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		loanPayoff,
+		unbeatenRun,
+		loopBugs
+	} from '$lib/content/handbook/exercises/06-loops';
+</script>
+
+Most useful work is repetition: adding a month of interest, walking a team sheet, polling a sensor until it changes. C gives you three loop forms for that job, and they are closer than beginners expect. The decision is not which keyword is legal but where the test sits, and whether the body must run at least once.
+
+## Objectives
+
+- Choose `for`, `while`, or `do-while` for a repeating task, and say why.
+- Trace a loop through its four moments: initialisation, condition, body, update.
+- Skip one iteration with `continue`, leave a loop early with `break`.
+- Recognise off-by-one bounds and the two shapes of accidental infinite loop.
+
+## Why students struggle
+
+Choosing between `for` and `while` feels like a decision with a right answer, so beginners stall on it. It is not one: any `for` loop can be rewritten as a `while`, and the compiler will not complain. What bites is the boundary. A loop that should run four times runs five, the extra row looks almost plausible, and the mistake survives a reading.
+
+The other failures are quieter. Inside a `while`, nothing increments the counter for you, so a forgotten `months++` never finishes. A semicolon at the end of a loop header is worse: it becomes the whole body, the loop spins on an unchanging counter, and the braced block below is never reached.
+
+## The code, both ways
+
+Both programs walk the same four ideas in order: a fixed count, an unknown count, a body that must run once, and a seven-step sequence that skips a step then stops early.
+
+### The money version
+
+```c
+// Money version (loops_money.c)
+#include <stdio.h>
+
+int main(void) {
+    // 1. for loop: known number of repeats (4 years of 10% annual bonus)
+    int balancePence = 100000;   // £1,000.00
+    for (int year = 1; year <= 4; year++) {
+        balancePence += balancePence / 10;
+        printf("Year %d balance: %d pence (£%d.%02d)\n",
+               year, balancePence, balancePence / 100, balancePence % 100);
+    }
+
+    // 2. while loop: unknown number of repeats (save 15000p/month until >= 50000p)
+    int emergencyFundPence = 0;
+    int months = 0;
+    while (emergencyFundPence < 50000) {
+        emergencyFundPence += 15000;
+        months++;
+    }
+    printf("Emergency fund reached %d pence in %d months\n",
+           emergencyFundPence, months);
+
+    // 3. do-while loop: always runs at least once (ATM PIN prompt)
+    int pinAttempts = 0;
+    do {
+        pinAttempts++;
+        printf("ATM prompt #%d displayed\n", pinAttempts);
+    } while (pinAttempts < 2);
+
+    // 4. continue (skip one round) and break (stop loop early)
+    for (int day = 1; day <= 7; day++) {
+        if (day == 2) {
+            continue;   // Day 2 is a bank holiday: skip to day 3
+        }
+        if (day == 5) {
+            printf("Day %d: fraud alert! Freezing card.\n", day);
+            break;      // Exit loop immediately
+        }
+        printf("Day %d: direct debit processed\n", day);
+    }
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (loops_football.c)
+#include <stdio.h>
+
+int main(void) {
+    // 1. for loop: known number of repeats (4-round sprint conditioning drill)
+    int totalMetres = 1000;
+    for (int lap = 1; lap <= 4; lap++) {
+        totalMetres += totalMetres / 10;
+        printf("Lap %d cumulative distance: %d metres\n", lap, totalMetres);
+    }
+
+    // 2. while loop: unknown number of repeats (keep pressing until 50 touches)
+    int touches = 0;
+    int phases = 0;
+    while (touches < 50) {
+        touches += 15;
+        phases++;
+    }
+    printf("Reached %d touches in %d pressing phases\n", touches, phases);
+
+    // 3. do-while loop: always runs at least once (warm-up drill before check)
+    int warmUpSets = 0;
+    do {
+        warmUpSets++;
+        printf("Warm-up set #%d completed\n", warmUpSets);
+    } while (warmUpSets < 2);
+
+    // 4. continue (skip one round) and break (stop loop early)
+    for (int matchday = 1; matchday <= 7; matchday++) {
+        if (matchday == 2) {
+            continue;   // Matchday 2 postponed for cup tie: skip to matchday 3
+        }
+        if (matchday == 5) {
+            printf("Matchday %d: floodlight failure! Abandoning sequence.\n",
+                   matchday);
+            break;      // Exit loop immediately
+        }
+        printf("Matchday %d: fixture completed\n", matchday);
+    }
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-loops-predict"
+	questions={["In the `while` loop (`emergencyFundPence < 50000`, adding `15000` each month), what is the exact value of `emergencyFundPence` when the loop stops?","What is the difference between `while (false)` and `do { ... } while (false);`?","In the final `for` loop (`day = 1` to `7`), which days actually print `\"direct debit processed\"` / `\"fixture completed\"`?"]}
+	answers={["`60000`, after `4` months: `15000` to `30000` to `45000` to `60000`. On month 3 it is `45000`, still below `50000`, so it runs a 4th time.","`while (false)` checks before the first round, so its body runs 0 times. `do { ... } while (false);` checks after the body, so it always runs at least once.","Days `1`, `3`, and `4`. Day `2` is skipped by `continue`, and Day `5` triggers `break`, which exits before Days `5`, `6`, or `7` can finish."]}
+>
+
+**Expected output, money:**
+
+```text
+Year 1 balance: 110000 pence (£1100.00)
+Year 2 balance: 121000 pence (£1210.00)
+Year 3 balance: 133100 pence (£1331.00)
+Year 4 balance: 146410 pence (£1464.10)
+Emergency fund reached 60000 pence in 4 months
+ATM prompt #1 displayed
+ATM prompt #2 displayed
+Day 1: direct debit processed
+Day 3: direct debit processed
+Day 4: direct debit processed
+Day 5: fraud alert! Freezing card.
+```
+
+**Expected output, football:**
+
+```text
+Lap 1 cumulative distance: 1100 metres
+Lap 2 cumulative distance: 1210 metres
+Lap 3 cumulative distance: 1331 metres
+Lap 4 cumulative distance: 1464 metres
+Reached 60 touches in 4 pressing phases
+Warm-up set #1 completed
+Warm-up set #2 completed
+Matchday 1: fixture completed
+Matchday 3: fixture completed
+Matchday 4: fixture completed
+Matchday 5: floodlight failure! Abandoning sequence.
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save each program under the file name in its first comment, then build and run it.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g loops_money.c -o loops_money
+./loops_money
+cc -std=c17 -Wall -Wextra -Wpedantic -g loops_football.c -o loops_football
+./loops_football
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard both programs target. |
+| `-Wall` | The main warnings, including unused variables left behind by a loop rewrite. |
+| `-Wextra -Wpedantic` | Stricter checks; rejects compiler-specific extensions. |
+| `-g` | Keeps line numbers and names for a debugger. |
+| `-o loops_money` | Names the executable instead of taking the default `a.out`. |
+
+Because `-o` names the output, the two programs sit side by side rather than overwriting `a.out`. Everything here is standard C17: a declaration in a `for` header and `//` comments are C99 features, long settled.
+
+<Eli5Block
+	topic="loops"
+	money={"The for loop is a fixed-term standing order: fifty pounds on the first of every month for twelve months, with start, stop rule and step size all written on the top line. The while loop is a savings target instead: keep depositing until the balance reaches five hundred pounds, and if it is already there, you deposit nothing. The do-while loop is the ATM welcome screen, shown at least once before the machine asks whether you want another transaction.\n\nContinue is the bank holiday: today's processing is skipped, but tomorrow's standing order is still live. Break is cancelling the direct debit mandate: the remaining days never happen, because the loop stops on the spot."}
+	football={"The for loop is a five-kick penalty shootout: the counter is set up before the first ball is struck, so everyone knows it ends at five. The while loop is playing until the golden goal: nobody can say how many attacks it takes, only that play continues while the scores are level. The do-while loop is the first half, which the match always plays before the referee consults the clock.\n\nContinue is a one-match suspension: the player sits out this fixture and returns for the next. Break is an abandoned match: everyone leaves the pitch at once, whatever the fixture list promised."}
+/>
+
+## What is really happening
+
+A `for` loop is four moments in a fixed order, and the header carries three of them: `for (int i = 0; i < n; i++)`. The **initialisation** runs once, before any test, and the variable it declares belongs to the loop. The **condition** is evaluated before every iteration, so a loop whose test is false at the start never runs its body. When the condition is non-zero the **body** runs; then the **update** runs at the end of the iteration, and control jumps back to the condition.
+
+That order is the mechanism. The update comes last, so the body sees the value the condition just approved, and the counter moves only when the iteration is over. `continue` jumps to the update rather than skipping it, which is why it cannot hang a `for` loop on its own. A counter declared in the header leaves **scope** at the closing brace.
+
+`while` and `for` test before the body, so either can run zero times; a `while` is a `for` with the initialisation lifted above the loop and the update left in the body for you to remember. `do-while` tests after the body, so it always runs at least once, and it is the only loop in C that needs a semicolon after the closing parenthesis. `break` leaves the innermost loop at once; `continue` starts that loop's next iteration. Neither reaches an outer loop, which is why nested loops need a flag when the inner one must end the search.
+
+All three ask the same question: is this expression zero? A condition of `1` is the idiomatic forever loop, ended only by `break` or `return`, and `while (count)` keeps going for every non-zero value, including negative ones.
+
+## Where the analogy stops
+
+A standing order fires once a month and a fixture once a week, on a calendar you can watch. A C loop runs at the clock speed of the CPU, so a counter that reaches fifty million finishes before you can move the mouse. That speed makes failure abrupt: an accidental infinite loop, such as `while (balance > 0)` when the balance never falls, prints nothing, never ends, and the only exit is **Ctrl+C**.
+
+## Common mistakes
+
+- **Off-by-one bounds.** `for (int i = 0; i <= 5; i++)` runs six times, for `0` to `5`, not five. The idiom for a known count is `for (int i = 0; i < n; i++)`.
+- **A stray semicolon after the loop header.** `while (i < 5); { i++; }` makes the semicolon the entire body, so the loop spins forever on an unchanging `i` and the braced block is never reached.
+- **Never updating the condition variable in a `while`.** Nothing moves the counter for you, so the test stays true and the program hangs.
+- **`continue` before the update inside a `while`.** In a `for` loop, `continue` lands on the update step. In a `while` loop it jumps straight to the condition, so a counter that only increments at the bottom of the body never increments at all.
+
+## Practice
+
+Three programs: a loan paid off month by month, a ten-match run that skips one fixture, and a price chart whose loop bounds were tampered with.
+
+<ExerciseCard {...loanPayoff} />
+
+<ExerciseCard {...unbeatenRun} />
+
+<ExerciseCard {...loopBugs} />

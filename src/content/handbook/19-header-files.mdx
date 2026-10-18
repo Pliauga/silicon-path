@@ -1,0 +1,207 @@
+---
+id: 19-header-files
+title: 'Header Files: .h Interfaces, Header Guards, and Multi-File Projects'
+estimatedMinutes: 40
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		interestModule,
+		guardTwice,
+		linkerDiagnosis
+	} from '$lib/content/handbook/exercises/19-header-files';
+</script>
+
+Once a program outgrows a single screen, the fix is not a bigger file but a smaller contract. A **header file** (`.h`) publishes the types and functions a module offers, while a **source file** (`.c`) keeps the code that carries them out. This chapter is about that split, and about the two rituals that keep it honest: the include guard and the linker.
+
+## Objectives
+
+- Split a project into header files (`.h`) holding public declarations and source files (`.c`) holding function definitions.
+- Distinguish `#include <stdio.h>` for system headers from `#include "ledger.h"` for your own project headers.
+- Protect every header from double inclusion with an include guard built from `#ifndef`, `#define` and `#endif`.
+- Explain how the compiler and the **linker** combine several `.c` files into one executable.
+
+## Why students struggle
+
+Keeping everything in one `main.c` works until the file passes a few hundred lines, at which point navigation, review and reuse all collapse at once. Splitting the code is the obvious answer, and it is also where the trouble starts: the moment a project has two files, you have to decide what each file is allowed to say, and the compiler will hold you to that decision with error messages that mention files you never edited.
+
+The usual first attempt puts too much in the header. A function body or a non-`const` global definition inside a `.h` file compiles happily while exactly one `.c` file includes it, then fails with a `duplicate symbol` linker error the moment a second file includes the same header. The other common attempt puts too little in the header: no include guard, so a header reached along two different include paths is pasted twice into one translation unit, and the compiler reports a `redefinition` of a struct you only wrote once.
+
+## The code, both ways
+
+Both programs below present the same three-part split — interface, implementation, entry point — inlined into one file so you can compile it in a single step.
+
+### The money version
+
+```c
+// Money version (headers_money.c: ledger.h + ledger.c + main.c in one file)
+#include <stdio.h>
+
+/* === 1. Contents of "ledger.h" (with header guards) === */
+#ifndef LEDGER_H
+#define LEDGER_H
+
+typedef struct {
+    int accountId;
+    int balancePence;
+} VaultAccount;
+
+/* Function prototypes: the bank's published list of services. */
+void initAccount(VaultAccount *acc, int id, int openingPence);
+int applyAnnualBonus(VaultAccount *acc, int ratePercent);
+
+#endif /* LEDGER_H */
+
+/* === 2. Contents of "ledger.c" (the service implementations) === */
+void initAccount(VaultAccount *acc, int id, int openingPence) {
+    acc->accountId = id;
+    acc->balancePence = openingPence;
+}
+
+int applyAnnualBonus(VaultAccount *acc, int ratePercent) {
+    int bonus = (acc->balancePence * ratePercent) / 100;
+    acc->balancePence += bonus;
+    return bonus;
+}
+
+/* === 3. Contents of "main.c" (the customer entry point) === */
+int main(void) {
+    VaultAccount leo;
+    initAccount(&leo, 701, 50000);
+
+    int bonusPence = applyAnnualBonus(&leo, 6);
+    printf("Account #%d earned %dp bonus -> New balance: %dp (£%d.%02d)\n",
+           leo.accountId, bonusPence, leo.balancePence,
+           leo.balancePence / 100, leo.balancePence % 100);
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (headers_football.c: squad.h + squad.c + main.c in one file)
+#include <stdio.h>
+
+/* === 1. Contents of "squad.h" (with header guards) === */
+#ifndef SQUAD_H
+#define SQUAD_H
+
+typedef struct {
+    int shirtNumber;
+    int goals;
+    int assists;
+} StrikerStats;
+
+/* Function prototypes: the team sheet handed in before kick-off. */
+void initStriker(StrikerStats *s, int shirt, int goals, int assists);
+int totalGoalContributions(const StrikerStats *s);
+
+#endif /* SQUAD_H */
+
+/* === 2. Contents of "squad.c" (the set-piece implementations) === */
+void initStriker(StrikerStats *s, int shirt, int goals, int assists) {
+    s->shirtNumber = shirt;
+    s->goals = goals;
+    s->assists = assists;
+}
+
+int totalGoalContributions(const StrikerStats *s) {
+    return s->goals + s->assists;
+}
+
+/* === 3. Contents of "main.c" (kick-off) === */
+int main(void) {
+    StrikerStats leo;
+    initStriker(&leo, 9, 17, 8);
+
+    int total = totalGoalContributions(&leo);
+    printf("Striker #%d: %d goals + %d assists = %d goal contributions\n",
+           leo.shirtNumber, leo.goals, leo.assists, total);
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-header-files-predict"
+	questions={["What is the difference between `#include <stdio.h>` with angle brackets and `#include \"ledger.h\"` with double quotes?","Why does every `.h` file need `#ifndef LEDGER_H`, `#define LEDGER_H` and `#endif` wrapped around its contents?","With `main.c` and `ledger.c` on disk, what happens when you run `cc main.c -o bank` and forget to list `ledger.c`?"]}
+	answers={["`#include <...>` searches the system or compiler standard library directories first. `#include \"...\"` searches your own project directory first.","Because `#include` literally copy-pastes the header text into the `.c` file. If `main.c` includes both `\"ledger.h\"` and `\"audit.h\"`, and `\"audit.h\"` also includes `\"ledger.h\"`, then without the guard `VaultAccount` is pasted twice and the compiler reports a redefinition of `VaultAccount`.","`main.c` compiles fine, because `\"ledger.h\"` gave it the prototypes. The **linker** then fails with an undefined symbol for `initAccount`, because the machine code inside `ledger.c` was never provided. Compile both files: `cc -std=c17 -Wall -Wextra main.c ledger.c -o bank`."]}
+>
+
+**Expected output, money:**
+
+```text
+Account #701 earned 3000p bonus -> New balance: 53000p (£530.00)
+```
+
+**Expected output, football:**
+
+```text
+Striker #9: 17 goals + 8 assists = 25 goal contributions
+```
+
+</PredictCard>
+
+### Compile and run
+
+The programs above inline both halves so they build in one step. In a real split project, save each file under the name in its comment and list every `.c` file on the command line, as below.
+
+```sh
+cc -std=c17 -Wall -Wextra main.c ledger.c -o bank
+./bank
+```
+
+| Flag or argument | Meaning |
+|---|---|
+| `-std=c17` | Use the ISO C17 standard; modern compilers also accept `-std=c11` or `-std=c23` for the same source. |
+| `-Wall` | Turn on the standard set of warnings, including unused variables and format mismatches. |
+| `-Wextra` | Turn on the extra warnings `-Wall` leaves out, such as unused parameters. |
+| `-o bank` | Name the executable `bank` instead of the default `a.out`. |
+| `main.c ledger.c` | Both translation units, so the linker can resolve every prototype the headers declare. |
+
+Nothing is written to disk except the final executable, because the temporary object files (`main.o`, `ledger.o`) are deleted at the end of the build. Pass `-c` instead of `-o` and those object files stay behind for you to inspect or link later.
+
+<Eli5Block
+	topic="header-files"
+	money={"A header file is the bank's published brochure of services. It tells customers and other branches which account types exist and which service desks can be called, without revealing the internal vault wiring; the source file is the back office where each of those desks is actually staffed.\n\nAn include guard is a stamp on the brochure that says: if you already have a copy on your desk, ignore this duplicate. The linker is the clearing house at the end of the build, matching every service call in main.o to the real desk compiled into ledger.o."}
+	football={"A header file is the official team sheet handed to the referee and the opposition before kick-off: it lists the shirt numbers and the formation, and nothing about how the players actually play. The source file is the eleven players on the pitch executing those routines.\n\nAn include guard is the referee checking whether this team sheet is already in the folder before filing a second identical copy. The linker is the fourth official in the tunnel, confirming that every name on the team sheet actually turned up in an object file before allowing kick-off."}
+/>
+
+## What is really happening
+
+Each `.c` file is compiled on its own as a **translation unit**. The compiler never sees the other `.c` files in the project; all it knows about them is whatever the preprocessor has pasted in through `#include`. That is why a prototype is enough to call a function: the compiler only needs the argument types and the return type to generate a correct call, and it can leave the destination address as a blank to be filled in later. The definition, with the actual body, belongs in exactly one translation unit.
+
+The preprocessor is a text machine, not a linker. `#include "ledger.h"` pastes the contents of that file at the point of the directive, and the include guard is what makes the second paste a no-op. `#ifndef LEDGER_H` asks whether the macro is undefined; if it is, the file defines it and the contents are compiled. When the same header arrives again later in the same translation unit, `LEDGER_H` is already defined, so the contents are skipped and no struct is declared twice. The macro name is conventionally the file name in capitals.
+
+After compilation, `main.o` and `ledger.o` each contain machine code plus a table of **symbols**: names this file defines and names it still needs. The **linker** (`ld`, invoked by `cc` for you) builds one table from all the object files and matches every undefined reference to exactly one definition. Two definitions of the same name produce a `duplicate symbol` error; a reference with no definition produces an `undefined symbol` error. Neither is a compiler error: the source was valid, and the program is simply incomplete.
+
+That division of labour is the whole discipline. A header holds the include guard, the `#define` constants, the `typedef`, `enum` and `struct` definitions, and the function **prototypes**; the source file holds the function bodies, any `static` helper that should stay private to that file, and the single definition of each global variable. When a global must be shared, the header carries `extern int gTotal;` and exactly one `.c` file carries `int gTotal = 0;`. A source file includes its own header too, so the compiler can check that the published prototype and the written definition agree.
+
+## Where the analogy stops
+
+Beginners often assume `#include <stdio.h>` or `#include "ledger.h"` links the compiled library code, the way `import` works in Python or Java. In C, `#include` only pastes text declarations. To link another `.c` file, or an external library such as `-lm` for `math.h`, you must pass the file or the library flag to the compiler and linker command line.
+
+## Common mistakes
+
+- **Putting function bodies or global variable definitions inside a `.h` file.** This works while one `.c` file includes it, then explodes with a `duplicate symbol` linker error as soon as a second file includes the same header.
+- **Writing `#include "ledger.c"` instead of `#include "ledger.h"`.** Never include a `.c` file; include the header and pass every `.c` file to the compiler.
+- **Forgetting the include guard.** Without `#ifndef`, `#define` and `#endif`, a header reached along two include paths causes redefinition errors for every struct and typedef it declares.
+- **Assuming a clean compile means a complete program.** A missing `.c` file on the command line produces a linker error, not a compiler error, so the message names symbols rather than lines.
+
+## Practice
+
+These three programs use the same discipline three ways: a module split inside one file, a guard proven by pasting its header twice, and a broken file that has to be diagnosed.
+
+<ExerciseCard {...interestModule} />
+
+<ExerciseCard {...guardTwice} />
+
+<ExerciseCard {...linkerDiagnosis} />

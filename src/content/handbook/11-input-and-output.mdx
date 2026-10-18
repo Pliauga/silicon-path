@@ -1,0 +1,207 @@
+---
+id: 11-input-and-output
+title: 'Input and Output: stdio.h, printf, scanf, fgets, and getchar'
+estimatedMinutes: 32
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		ledgerParser,
+		receiptColumns,
+		scorelineFilter
+	} from '$lib/content/handbook/exercises/11-input-and-output';
+</script>
+
+Every program so far has spoken through `printf` in one direction only. This chapter opens the other direction: reading what the user types, without the program falling over. C gives you three standard streams and a handful of functions on top of them, and most beginner bugs here come from ignoring what one returned.
+
+## Objectives
+
+- Explain how `<stdio.h>` streams connect your program to the keyboard, the terminal and the error display.
+- Read single characters with `getchar()` and write them with `putchar()`.
+- Explain why `scanf("%d", &x)` needs the address-of operator, and why checking what it returns is mandatory.
+- Use `fgets()` with `sscanf()` to read a line safely inside a fixed-size buffer.
+
+## Why students struggle
+
+`scanf` is a minefield, and the mines sit between how it looks and what it does. Writing `scanf("%d", x)` hands over the value of `x` rather than its address, so the parsed number lands wherever that value points: a crash, or silent corruption of some unrelated variable.
+
+The second trap is quieter. Typing `500` and pressing Enter delivers four characters, and `scanf("%d", &x)` consumes the digits while leaving the newline in the stream, so the next `getchar()` or `fgets()` reads an empty line. A third waits in `scanf("%s", buf)`, which has no length limit and writes past the end of the array.
+
+## The code, both ways
+
+Both programs use three ideas: character output with `putchar`, checked parsing with `sscanf`, and stripping the newline a line buffer keeps. Neither reads the keyboard, because the input line is already a string.
+
+### The money version
+
+```c
+// Money version (io_money.c)
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    // 1. Character I/O with putchar
+    printf("Vault code prefix: ");
+    putchar('G');
+    putchar('B');
+    putchar('\n');
+
+    // 2. Safe formatted parsing from a line buffer (simulating fgets + sscanf)
+    // In interactive code, you read 'line' with: fgets(line, sizeof(line), stdin)
+    const char *rawInputLine = "Vance 14500\n";
+    char holder[16];
+    int depositPence = 0;
+
+    // %15s limits string input to at most 15 chars + '\0' (prevents overflow!)
+    // Always check that sscanf/scanf returns the expected number of matched items (2):
+    int matched = sscanf(rawInputLine, "%15s %d", holder, &depositPence);
+    if (matched == 2) {
+        printf("Parsed %d fields -> Holder: %s, Deposit: %d pence (£%d.%02d)\n",
+               matched, holder, depositPence,
+               depositPence / 100, depositPence % 100);
+    } else {
+        fprintf(stderr, "Error: malformed bank deposit slip!\n");
+    }
+
+    // 3. Stripping the trailing '\n' that fgets keeps:
+    char memo[32] = "Monthly ISA transfer\n";
+    memo[strcspn(memo, "\n")] = '\0';   // replaces '\n' with '\0'
+    printf("Cleaned memo: [%s]\n", memo);
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (io_football.c)
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    // 1. Character I/O with putchar
+    printf("Matchday group code: ");
+    putchar('F');
+    putchar('C');
+    putchar('\n');
+
+    // 2. Safe formatted parsing from a line buffer (simulating fgets + sscanf)
+    // In interactive code, you read 'line' with: fgets(line, sizeof(line), stdin)
+    const char *rawInputLine = "Rovers 3\n";
+    char club[16];
+    int goals = 0;
+
+    // %15s limits string input to at most 15 chars + '\0' (prevents overflow!)
+    // Always check that sscanf/scanf returns the expected number of matched items (2):
+    int matched = sscanf(rawInputLine, "%15s %d", club, &goals);
+    if (matched == 2) {
+        printf("Parsed %d fields -> Club: %s, Goals scored: %d\n",
+               matched, club, goals);
+    } else {
+        fprintf(stderr, "Error: invalid match report line!\n");
+    }
+
+    // 3. Stripping the trailing '\n' that fgets keeps:
+    char stadiumName[32] = "Valley Ground\n";
+    stadiumName[strcspn(stadiumName, "\n")] = '\0';   // replaces '\n' with '\0'
+    printf("Cleaned stadium: [%s]\n", stadiumName);
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-input-and-output-predict"
+	questions={["Look at `sscanf(rawInputLine, \"%15s %d\", holder, &depositPence)`. Why does `depositPence` have `&` in front of it, while `holder` does not?","What does `scanf` (or `sscanf`) return if the user types `hello` when `%d` was expected?","Why does `getchar()` return an `int` instead of a `char`?"]}
+	answers={["Because `scanf` and `sscanf` need a **memory address**, the claim slip, so they know where to store the result. `depositPence` is an `int`, so you pass `&depositPence`. `holder` is a `char` array, whose name **already decays to the address of its first element**.","It returns `0`: zero items were matched, and the target variable is left unchanged.","Because `getchar()` must return every byte value, `0` to `255`, plus `EOF` (`-1`, end of file); a one-byte `char` cannot hold 256 values plus `-1`."]}
+>
+
+**Expected output, money:**
+
+```text
+Vault code prefix: GB
+Parsed 2 fields -> Holder: Vance, Deposit: 14500 pence (£145.00)
+Cleaned memo: [Monthly ISA transfer]
+```
+
+**Expected output, football:**
+
+```text
+Matchday group code: FC
+Parsed 2 fields -> Club: Rovers, Goals scored: 3
+Cleaned stadium: [Valley Ground]
+```
+
+</PredictCard>
+
+### Compile and run
+
+The same command compiles either program; only the file name changes.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g io_money.c -o io_money
+./io_money
+
+cc -std=c17 -Wall -Wextra -Wpedantic -g io_football.c -o io_football
+./io_football
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Compiles against the ISO C17 standard, the version these programs target. |
+| `-Wall -Wextra -Wpedantic` | Turns on the strict warnings that catch a missing `&` or a mismatched format specifier before you run anything. |
+| `-g` | Keeps line numbers and variable information for a debugger. |
+| `-o io_money` | Names the executable `io_money` instead of the default `a.out`. |
+
+Each command writes an executable beside the source, so `./io_money` runs exactly that binary: the file changes only when you compile again. Every function used here is standard since C89, so `-std=c11` compiles both programs unchanged.
+
+<Eli5Block
+	topic="input-and-output"
+	money={"Three pneumatic tubes connect your program to the outside world. stdin is the incoming tube, where the customer posts slips from the keyboard. stdout is the receipt printer, where printf and putchar send their paper. stderr is the alarm display above the counter, written with fprintf, and it stays lit even when the receipts are redirected into a file.\n\nThe claim slip is what scanf is really asking for. C passes arguments by value, so a photocopy of your deposit box cannot hold the customer's money; you hand over the slip with the box number on it, and the ampersand is that slip. The tube has one more trap: typing 500 and pressing Enter sends four characters, 5, 0, 0 and a newline; scanf takes the digits and leaves the newline for the next fgets, which reads it as an empty line."}
+	football={"Three routes connect the ground to the outside. stdin is the turnstile scanner, reading each ticket. stdout is the stadium scoreboard, where printf and putchar paint the score. stderr is the fourth official's board, for corrections that must be seen even when the scoreboard feed is copied elsewhere.\n\nRather than let fans through an unguarded gate, fgets checks a whole row against a fixed maximum size, then sscanf reads the ticket details inside that row. The gate is only as wide as sizeof(buf) says, and a line that does not fit is split, not spilled. The football claim slip is the row itself: an array name already carries the address of its first seat, so no ampersand is needed."}
+/>
+
+## What is really happening
+
+A **stream** is an ordered sequence of bytes with a current position; `stdio.h` opens three before `main` runs. `stdin` is the keyboard, `stdout` the terminal's normal output, `stderr` its error output. `stdout` is buffered, so text can appear later than the write that produced it, while `stderr` is unbuffered: `fprintf(stderr, ...)` still reaches the terminal when `stdout` is redirected into a file.
+
+`scanf` is a parser, not a line reader. It skips leading whitespace for every conversion except `%c` and `%[`, reads as many characters as the conversion allows, converts them, and stores the result **through the pointer you supplied**: that is why an `int` needs `&x` and a `char` array does not. It returns how many items were assigned, or `EOF` at end of input. That return value is the only reliable evidence the variable now holds something meaningful.
+
+`getchar()` returns an `int` because it must report 256 byte values plus the sentinel `EOF`. `fgets(buf, n, stdin)` reads at most `n - 1` characters, stops after a newline, keeps it when it fits, and always terminates the buffer with a null byte; `sscanf` then parses the line you hold. Picture `stdin` as a conveyor belt: `scanf("%d", &x)` lifts the digits off the front and leaves the newline for the next reader.
+
+| Function | Prototype or usage | Key behaviour |
+|---|---|---|
+| `getchar()` | `int ch = getchar();` | Reads one byte from `stdin`, or returns `EOF` (`-1`) at end of input. |
+| `putchar(c)` | `putchar('A');` | Writes one character to `stdout`. |
+| `printf(...)` | `printf("Val: %d\n", x);` | Formats and writes to `stdout`; returns the number of characters printed. |
+| `scanf(...)` | `if (scanf("%d", &x) == 1)` | Skips leading whitespace for most specifiers except `%c`, parses input, returns the count of matched items, or `EOF`. |
+| `fgets(buf, n, stdin)` | `if (fgets(buf, sizeof buf, stdin) != NULL)` | Reads at most `n - 1` characters, stopping at `'\n'`, **keeps `'\n'` if it fits**, and always appends `'\0'`. |
+
+**Never use `gets()`.** It was removed from the C standard in C11 because it takes no buffer length, making overflow unavoidable. Use `fgets(buf, sizeof(buf), stdin)`, where size and buffer cannot drift apart.
+
+## Where the analogy stops
+
+The pneumatic tube is a lie in one detail. On a terminal, characters do not arrive one keystroke at a time: the operating system buffers a whole line inside the terminal driver until you press Enter. That is why a program in a `getchar()` loop seems to ignore you, and why the leftover newline is such a reliable trap. The stream is real, but delivery is a batch, not a trickle.
+
+## Common mistakes
+
+- **Forgetting `&` in `scanf("%d", x)`.** This passes the value of `x` as if it were an address, which segfaults immediately.
+- **Unbounded `scanf("%s", buf)`.** A word longer than `sizeof(buf) - 1` overflows the array. Give the field a maximum width (`"%15s"` for `char buf[16]`) or use `fgets`.
+- **Ignoring `scanf`'s return value.** When it fails on non-numeric input, `x` keeps its old or uninitialised value and the bad characters stay stuck in `stdin`.
+- **Mixing `scanf("%d", ...)` with `fgets(...)` or `scanf("%c", ...)`.** Because `%d` leaves the newline in `stdin`, the next `fgets` returns an empty line; a leading space in `scanf(" %c", &ch)` skips it.
+
+## Practice
+
+Three exercises follow: a ledger parser that checks every parse, a scoreline filter built on `putchar`, and a receipt table that must line up to the column.
+
+<ExerciseCard {...ledgerParser} />
+
+<ExerciseCard {...scorelineFilter} />
+
+<ExerciseCard {...receiptColumns} />

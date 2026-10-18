@@ -1,0 +1,213 @@
+---
+id: 20-the-preprocessor
+title: 'The Preprocessor: #define Macros, Parenthesis Traps, and Conditional Compilation'
+estimatedMinutes: 40
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		vatPrecedence,
+		clampInjuryTime,
+		arrayLen
+	} from '$lib/content/handbook/exercises/20-the-preprocessor';
+</script>
+
+The preprocessor is a separate program that rewrites your source before the compiler reads it, and a macro is nothing more than text it pastes in place for you. That one fact explains almost every surprise in this chapter: why `SQUARE(2 + 3)` can compute 11, why a macro argument may be evaluated twice, and why a disabled `#if` block disappears so completely that the compiler never complains about it. Directives are not statements, macros are not functions, and the preprocessor has no idea what any of your variables mean.
+
+## Objectives
+
+- Explain how the C preprocessor transforms source code before compilation begins.
+- Write object-like macros such as `#define LIMIT 100` and function-like macros such as `MAX(a, b)`.
+- Explain why every macro parameter and the entire macro body must be wrapped in parentheses.
+- Use `#undef`, conditional compilation (`#ifdef`, `#ifndef`, `#if`, `#else`, `#endif`), and the built-in macros `__FILE__`, `__LINE__` and `__func__`.
+- Read the output of `cc -E` and say exactly what the compiler will see.
+
+## Why students struggle
+
+A function-like macro looks exactly like a function call, so beginners assume it evaluates its arguments like one. It does not. If you write `#define SQUARE(x) x * x` and call `SQUARE(2 + 3)`, the preprocessor pastes `2 + 3 * 2 + 3`, which C evaluates as 11 rather than 25. The expansion is invisible, so the mistake is too: the program compiles without a warning and produces the wrong number.
+
+The second surprise is about cost rather than arithmetic. A real function evaluates each argument once and checks its type; a macro does neither. `MAX_PENCE(x++, y)` increments `x` twice, because the parameter appears twice in the body, and a macro will happily accept a `double` where an `int` was intended. The parentheses rule is the visible symptom of that difference; the usual repair is a function.
+
+## The code, both ways
+
+Both programs make the same three moves in the same order: a scaling macro whose argument is an arithmetic expression, a two-argument maximum macro, and a compile-time trace flag. Only the nouns change.
+
+### The money version
+
+```c
+// Money version (preprocessor_money.c)
+#include <stdio.h>
+
+// 1. Safe function-like macros: parenthesise EVERY parameter AND the outer expression!
+#define POUNDS_TO_PENCE(gbp) ((gbp) * 100)
+#define MAX_PENCE(a, b)      (((a) > (b)) ? (a) : (b))
+
+// 2. Conditional compilation flag (can also be passed via 'cc -DAUDIT_TRACE')
+#define AUDIT_TRACE 1
+
+int main(void) {
+    // Why parentheses around (gbp) matter: POUNDS_TO_PENCE(10 + 5)
+    // expands to ((10 + 5) * 100) = 1500p (without parens: 10 + 5 * 100 = 510p!)
+    int depositPence = POUNDS_TO_PENCE(10 + 5);
+    int reservePence = 1200;
+    int largerPence = MAX_PENCE(depositPence, reservePence);
+
+    printf("Deposit (10 + 5 GBP): %d pence\n", depositPence);
+    printf("Larger amount:        %d pence\n", largerPence);
+
+#if AUDIT_TRACE
+    printf("[AUDIT %s:%d] Verified deposit of %dp\n",
+           __FILE__, __LINE__, depositPence);
+#else
+    printf("[AUDIT] Trace disabled\n");
+#endif
+
+    // 3. #undef removes a macro definition from this line onward:
+    #define TEMP_FEE 250
+    printf("Temporary fee macro:  %d pence\n", TEMP_FEE);
+    #undef TEMP_FEE
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (preprocessor_football.c)
+#include <stdio.h>
+
+// 1. Safe function-like macros: parenthesise EVERY parameter AND the outer expression!
+#define MINS_TO_SECS(m)   ((m) * 60)
+#define MAX_GOALS(a, b)   (((a) > (b)) ? (a) : (b))
+
+// 2. Conditional compilation flag (can also be passed via 'cc -DVAR_DEBUG')
+#define VAR_DEBUG 1
+
+int main(void) {
+    // Why parentheses around (m) matter: MINS_TO_SECS(45 + 3)
+    // expands to ((45 + 3) * 60) = 2880s (without parens: 45 + 3 * 60 = 225s!)
+    int halfDurationSecs = MINS_TO_SECS(45 + 3);
+    int leoGoals = 16;
+    int samiraGoals = 19;
+    int topScorerGoals = MAX_GOALS(leoGoals, samiraGoals);
+
+    printf("First half (45 + 3 mins): %d seconds\n", halfDurationSecs);
+    printf("Top scorer tally:         %d goals\n", topScorerGoals);
+
+#if VAR_DEBUG
+    printf("[VAR LOG %s:%d] Checked half duration = %ds\n",
+           __FILE__, __LINE__, halfDurationSecs);
+#else
+    printf("[VAR LOG] Telemetry disabled\n");
+#endif
+
+    // 3. #undef removes a macro definition from this line onward:
+    #define EXTRA_TIME_MINS 30
+    printf("Extra time macro:         %d minutes\n", EXTRA_TIME_MINS);
+    #undef EXTRA_TIME_MINS
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-the-preprocessor-predict"
+	questions={["Suppose someone wrote `#define BAD_DOUBLE(x) x * 2` with no parentheses and called `BAD_DOUBLE(10 + 5)`. What text does the preprocessor paste, and what number does C calculate?","What if someone wrote `#define BAD_DOUBLE(x) (x) * 2` — parentheses around `x`, but not around the whole expression — and then calculated `100 / BAD_DOUBLE(5)`?","Why should you never pass an expression containing `++`, such as `MAX_PENCE(x++, y)`, into a macro?"]}
+	answers={["It pastes `10 + 5 * 2`. Multiplication binds tighter than addition, so C computes `10 + 10 = 20` rather than `30`.","`100 / BAD_DOUBLE(5)` expands to `100 / (5) * 2`. Division and multiplication share a precedence level and associate left to right, so C computes `(100 / 5) * 2 = 40` rather than `100 / 10 = 10`. Both the parameter and the entire body need parentheses: `((x) * 2)`.","Because `MAX_PENCE(a, b)` expands to `(((a) > (b)) ? (a) : (b))`, in which `a` appears twice. An argument of `x++` becomes `(((x++) > (y)) ? (x++) : (y))`, incrementing `x` twice inside one expression."]}
+>
+
+**Expected output, money:**
+
+```text
+Deposit (10 + 5 GBP): 1500 pence
+Larger amount:        1500 pence
+[AUDIT preprocessor_money.c:23] Verified deposit of 1500p
+Temporary fee macro:  250 pence
+```
+
+**Expected output, football:**
+
+```text
+First half (45 + 3 mins): 2880 seconds
+Top scorer tally:         19 goals
+[VAR LOG preprocessor_football.c:24] Checked half duration = 2880s
+Extra time macro:         30 minutes
+```
+
+</PredictCard>
+
+### Compile and run
+
+The file name in each program's first comment is the name to save; only the source name changes between the two builds.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g preprocessor_money.c -o preprocessor_money
+./preprocessor_money
+cc -std=c17 -Wall -Wextra -Wpedantic -g preprocessor_football.c -o preprocessor_football
+./preprocessor_football
+cc -E preprocessor_money.c
+```
+
+| Flag | Meaning |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard used throughout this book. These programs also build cleanly with `-std=c11`. |
+| `-Wall -Wextra -Wpedantic` | Turns on strict warnings, including unused parameters and non-standard extensions. |
+| `-E` | Stops after preprocessing and prints the expanded source: precisely the text the compiler will parse. |
+| `-D NAME=value` | Defines a macro before the first line of source is read, so a build flag can live on the command line instead of in the file. |
+| `-o preprocessor_money` | Names the executable, so the two builds sit side by side rather than overwriting `a.out`. |
+
+The `-o` names are the only reason the two binaries coexist on disk; without one, each build overwrites `a.out`. Nothing here needs a C17-only feature — these macros and directives are C89 material — but `__func__` arrived in C99, so keep at least `-std=c99` if you change the flag.
+
+<Eli5Block
+	topic="the-preprocessor"
+	money={"The preprocessor is the mailroom clerk who handles every paper form before it reaches the compliance department. The clerk prices nothing and checks no arithmetic: they staple, replace, and discard paper, then carry the stack upstairs. The compiler is the compliance department, the first reader who actually understands the form.\n\nEach directive is a sticky note for that clerk. One note says staple this entire other document here, which is #include. Another says wherever you see this word, write this text instead, which is #define. A third says if the audit flag is switched on, keep this paragraph on the form, and if it is off, black it out so the department never sees it, which is #ifdef and #endif. Because the work is clerical, the clerk will paste a whole expression into the middle of another one without adding a single bracket, and that is why the bracket discipline in this chapter is not decoration."}
+	football={"The preprocessor is kit-room preparation before the referee's inspection. Kit staff lay out boots, number the shirts, and remove anything the laws do not allow; the referee then inspects what is left on the peg. The referee is the compiler, and he never sees the kit that was taken away.\n\nConditional compilation is the telemetry decision. During training you fit GPS trackers into the players' vests, switch them on with a define, and collect the numbers; for a cup final you strip the trackers out completely so they add zero weight on match day. The kit is not ignored at the final, it is physically absent, and that is the difference between a runtime check and a preprocessor block."}
+/>
+
+## What is really happening
+
+Compiling a C file is not one program but a pipeline. The compiler driver, `cc`, hands your source to a **preprocessor** first, and the preprocessor's only job is to rewrite text: it splices in header files, substitutes macro bodies, resolves conditional directives, and deletes the lines it has decided to discard. What leaves that stage is one expanded file, the **translation unit**, which is what the compiler proper parses. Nothing in the preprocessor understands types, variables, scopes, or functions; it moves preprocessing tokens around.
+
+The `-E` flag stops the driver at the end of that stage, which makes the rewrite visible. `cc -E preprocessor_money.c` prints thousands of lines of expanded declarations, then your own code with every macro replaced. An **object-like macro** such as `#define LIMIT 100` is a plain token substitution: `LIMIT` has no type, no address, and no storage, and `#undef LIMIT` ends its life for the rest of the file. A **function-like macro** is the same substitution with parameters, and the definition only counts as function-like when the opening parenthesis touches the name — `#define SQUARE (x) ...` defines an object-like macro called `SQUARE`.
+
+**Conditional compilation** is the part that surprises people who expect a runtime test. `#ifdef NAME` and `#ifndef NAME` ask whether a macro is defined; `#if` and `#elif` evaluate an integer constant expression, in which any identifier that is not a macro counts as 0. Everything between a false condition and its `#endif` is removed, not skipped at runtime, and `-DNAME=0` on the command line can flip the branch without editing the source. The built-in macros are how a diagnostic knows where it is: `__FILE__` expands to the source file name, `__LINE__` to the current line number, and `__func__` to the enclosing function name.
+
+| Directive | Purpose | Example |
+|---|---|---|
+| `#include <file>` | Pastes a header's contents at this point. | `#include <stdio.h>` |
+| `#define NAME value` | Object-like substitution. | `#define MAX_USERS 100` |
+| `#define FN(x) ((x) * 2)` | Function-like macro; no space before `(`. | `#define ABS(x) (((x) < 0) ? -(x) : (x))` |
+| `#undef NAME` | Ends a macro definition from here on. | `#undef TEMP_FEE` |
+| `#ifdef` / `#ifndef` | Keeps a block only if `NAME` is defined, or is not. | `#ifndef HEADER_H` |
+| `#if` / `#elif` / `#else` | Keeps a block based on a compile-time integer condition. | `#if AUDIT_LEVEL >= 2` |
+| `#endif` | Closes any open conditional block. | `#endif` |
+
+Given all that, prefer a function whenever one will do: a normal or `static inline` function checks argument types, evaluates each argument exactly once, and can be stepped into in a debugger. Reserve macros for jobs only the preprocessor can do — header guards, build-time switches, compile-time constants, and idioms that must see an argument's declared type, such as the `ARRAY_LEN` macro in the third exercise.
+
+## Where the analogy stops
+
+When the clerk blacked out a paragraph, the form that reached compliance was shorter, and the department judged only what remained. An inactive `#if` block behaves the same way: the lines are deleted before the compiler runs, so even nonsense inside them compiles without complaint. Runtime control flow is not like that at all. Code inside a false `if (0)` branch is still parsed and type-checked, so a broken statement there is a hard error even though it can never execute. A preprocessor condition decides what exists in the translation unit; an `if` decides what runs.
+
+## Common mistakes
+
+- **Putting a space between the macro name and `(`.** `#define SQUARE (x) ((x) * (x))` defines an object-like macro that expands to the text `(x) ((x) * (x))`, so a later `SQUARE(5)` becomes `(x) ((x) * (x))(5)` and fails to compile. The parenthesis must touch the name.
+- **Parenthesising the parameters but not the whole body, or neither.** `#define BAD_DOUBLE(x) (x) * 2` still breaks inside `100 / BAD_DOUBLE(5)`, which becomes `(100 / (5)) * 2`. Every parameter gets a pair, and the body gets one more: `((x) * 2)`.
+- **Passing an expression with a side effect into a macro that names its parameter twice.** `MAX_PENCE(x++, y)` increments `x` twice in one expression, whereas a function would increment it once. Store the value in a temporary first, or use a function.
+- **Expecting a macro to have a type or an address.** `#define LIMIT 100` creates no variable: there is nothing to point at, nothing to inspect in a debugger, and no type checking on what `LIMIT` is mixed with.
+
+## Practice
+
+These three programs push the idea in three directions: a tax macro that silently computes the wrong answer, a debug build flag with a clamped value, and an array-length macro that removes hardcoded bounds.
+
+<ExerciseCard {...vatPrecedence} />
+
+<ExerciseCard {...clampInjuryTime} />
+
+<ExerciseCard {...arrayLen} />

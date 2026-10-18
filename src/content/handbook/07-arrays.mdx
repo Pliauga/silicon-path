@@ -1,0 +1,221 @@
+---
+id: 07-arrays
+title: 'Arrays: Contiguous Memory Rows and 2D Grids'
+estimatedMinutes: 30
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		reversedCashflows,
+		cleanSheets,
+		standTotals
+	} from '$lib/content/handbook/exercises/07-arrays';
+</script>
+
+A variable holds one value. An array holds a row of them, bolted side by side in memory with no gaps, and it lets you reach any one of them with a single piece of arithmetic. That arithmetic is the whole idea of this chapter: the row is contiguous, the index is an offset from the start, and nothing in the language checks where the offset lands.
+
+## Objectives
+
+- Declare, initialise, and iterate over one-dimensional and two-dimensional arrays.
+- Explain why C arrays are **zero-indexed** and stored in **contiguous memory**.
+- Compute the number of elements with `sizeof(arr) / sizeof(arr[0])`.
+- Explain why C checks no array bounds at runtime, and what an out-of-bounds access actually does.
+
+## Why students struggle
+
+Declare `int deposits[5];` and the valid indices are `0`, `1`, `2`, `3`, and `4`. There is no `deposits[5]`. Beginners write five because five is the number in the declaration, and the compiler accepts it without a word. In Java or Python the same mistake stops the program with an index error; in C it does not.
+
+Instead the read or write lands in whichever variable happens to occupy the next box, and execution carries on with quietly corrupted data. The damage surfaces later, in another function, as a wrong total or a loop that never ends. Here the mistake is not a syntax error, so the habits matter more than the syntax: loop while the index is strictly less than the count, and learn the sanitizer flags that turn silence into a loud report.
+
+## The code, both ways
+
+Both programs walk a row of five integers, print each element beside the address it occupies, then read a two-dimensional table one row at a time.
+
+### The money version
+
+```c
+// Money version (arrays_money.c)
+#include <stdio.h>
+
+int main(void) {
+    // 1D array: 5 daily deposits in pence
+    int depositsPence[5] = {1200, 3500, 800, 4200, 1500};
+
+    // Total bytes divided by bytes of 1 element = number of elements (5)
+    size_t count = sizeof(depositsPence) / sizeof(depositsPence[0]);
+
+    int totalPence = 0;
+    int maxDeposit = depositsPence[0];
+
+    printf("Array has %zu elements (%zu bytes total):\n",
+           count, sizeof(depositsPence));
+
+    for (size_t i = 0; i < count; i++) {
+        printf("  depositsPence[%zu] = %4d pence (at box %p)\n",
+               i, depositsPence[i], (void *)&depositsPence[i]);
+        totalPence += depositsPence[i];
+        if (depositsPence[i] > maxDeposit) {
+            maxDeposit = depositsPence[i];
+        }
+    }
+    printf("Total: %d pence | Largest deposit: %d pence\n\n",
+           totalPence, maxDeposit);
+
+    // 2D array: 2 branches x 3 quarters (in £ thousands)
+    int branchRevenue[2][3] = {
+        {120, 135, 150},   // Branch 0 (North)
+        {95,  110, 140}    // Branch 1 (South)
+    };
+
+    for (size_t b = 0; b < 2; b++) {
+        printf("Branch %zu quarterly revenue: %d, %d, %d\n",
+               b, branchRevenue[b][0], branchRevenue[b][1], branchRevenue[b][2]);
+    }
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (arrays_football.c)
+#include <stdio.h>
+
+int main(void) {
+    // 1D array: goals scored by Rovers in 5 consecutive matches
+    int matchGoals[5] = {2, 0, 4, 1, 3};
+
+    // Total bytes divided by bytes of 1 element = number of elements (5)
+    size_t count = sizeof(matchGoals) / sizeof(matchGoals[0]);
+
+    int totalGoals = 0;
+    int bestHaul = matchGoals[0];
+
+    printf("Array has %zu elements (%zu bytes total):\n",
+           count, sizeof(matchGoals));
+
+    for (size_t i = 0; i < count; i++) {
+        printf("  matchGoals[%zu] = %d goals (at seat %p)\n",
+               i, matchGoals[i], (void *)&matchGoals[i]);
+        totalGoals += matchGoals[i];
+        if (matchGoals[i] > bestHaul) {
+            bestHaul = matchGoals[i];
+        }
+    }
+    printf("Total: %d goals | Best single match: %d goals\n\n",
+           totalGoals, bestHaul);
+
+    // 2D array: 2 strikers x 3 cup rounds (goals scored)
+    int cupGoals[2][3] = {
+        {1, 2, 0},   // Striker 0 (Leo Vance)
+        {0, 1, 3}    // Striker 1 (Samira Khan)
+    };
+
+    for (size_t s = 0; s < 2; s++) {
+        printf("Striker %zu cup rounds: %d, %d, %d\n",
+               s, cupGoals[s][0], cupGoals[s][1], cupGoals[s][2]);
+    }
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-arrays-predict"
+	questions={["Look at the memory addresses printed for `depositsPence[0]`, `depositsPence[1]`, `depositsPence[2]`, and so on. How many bytes apart is each element?","Why does the first element have index `[0]` instead of `[1]`?","What does `int ledger[10] = {0};` put inside all ten elements of `ledger`?"]}
+	answers={["Exactly **4 bytes** apart (`sizeof(int)`), because C guarantees that array elements sit side by side in one unbroken block of memory.","Because the index is an **offset**: it means how many elements to step forward from the start of the array. The first element is zero steps from the start.","When you provide an initialiser list shorter than the array length, C automatically zero-initialises all the remaining elements, so `{0}` sets all ten elements to `0`."]}
+>
+
+**Expected output, money (sample addresses):**
+
+```text
+Array has 5 elements (20 bytes total):
+  depositsPence[0] = 1200 pence (at box 0x16fdff190)
+  depositsPence[1] = 3500 pence (at box 0x16fdff194)
+  depositsPence[2] =  800 pence (at box 0x16fdff198)
+  depositsPence[3] = 4200 pence (at box 0x16fdff19c)
+  depositsPence[4] = 1500 pence (at box 0x16fdff1a0)
+Total: 11200 pence | Largest deposit: 4200 pence
+
+Branch 0 quarterly revenue: 120, 135, 150
+Branch 1 quarterly revenue: 95, 110, 140
+```
+
+**Expected output, football (sample addresses):**
+
+```text
+Array has 5 elements (20 bytes total):
+  matchGoals[0] = 2 goals (at seat 0x16fdff190)
+  matchGoals[1] = 0 goals (at seat 0x16fdff194)
+  matchGoals[2] = 4 goals (at seat 0x16fdff198)
+  matchGoals[3] = 1 goals (at seat 0x16fdff19c)
+  matchGoals[4] = 3 goals (at seat 0x16fdff1a0)
+Total: 10 goals | Best single match: 4 goals
+
+Striker 0 cup rounds: 1, 2, 0
+Striker 1 cup rounds: 0, 1, 3
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save each program under the file name in its first comment, then compile and run.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g arrays_money.c -o arrays_money
+./arrays_money
+cc -std=c17 -Wall -Wextra -Wpedantic -g arrays_football.c -o arrays_football
+./arrays_football
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard, the dialect these programs are written in. |
+| `-Wall -Wextra -Wpedantic` | Turns on the standard warnings and rejects compiler-specific extensions. |
+| `-g` | Keeps line numbers and variable names for a debugger. |
+| `-o arrays_money` | Names the executable; without it every build overwrites `a.out`. |
+| `-fsanitize=address,undefined` | Adds the runtime alarms that catch an out-of-bounds access at the moment it happens. |
+
+The `-o` flag is what lets both programs live side by side in one directory instead of replacing `a.out` each time. Everything here is ordinary C17, and the same source compiles unchanged as C11; the sanitizer build is worth keeping in a second terminal while you experiment.
+
+<Eli5Block
+	topic="arrays"
+	money={"An array is a row of identical safe-deposit boxes bolted side by side in the vault wall, with no gaps between them. The index is not a name printed on a door; it is how many safes you walk past from the first one. Safe 0 is directly in front of you, safe 4 is four steps to the right, and the row has no fifth safe at all.\n\nWalking one step past the end of your row opens safe number six, which belongs to another customer: the vault hardware does not stop you unless the alarms are switched on with AddressSanitizer. A two-dimensional array is the bank ledger, two rows of three columns, stored in the vault row by row rather than as a stack of pages."}
+	football={"An array is a contiguous row of five reserved seats in Block A of the stadium. The index counts how many seats from the aisle seat, so the aisle seat is seat 0 and the last seat in the row is seat 4.\n\nSitting in the sixth seat means sitting in a season-ticket holder's place from another group, and nothing in the stadium checks your ticket as you shuffle along. A two-dimensional array is a seating block with two rows and three seats per row, laid out one row after another rather than one block per row."}
+/>
+
+## What is really happening
+
+Contiguity buys one multiplication and one addition. Because an `int` array is a run of four-byte cells, `arr[i]` lives at the base address of `arr` plus `i` times `sizeof(int)`, so reading the first element and reading the ten-thousandth cost exactly the same. This is **constant-time random access**, and it is why arrays underpin almost every other structure in the language: a string's characters, a hash table's buckets, and a heap's nodes are all runs of cells addressed this way.
+
+**Initialisation** has three shortcuts worth memorising. A partial list fills the named elements and zero-initialises the rest, so `int a[5] = {10, 20};` leaves the final three at zero. Empty brackets let the compiler count the initialisers and fix the size for you, as in `int a[] = {10, 20, 30};`, which allocates three cells. A bare local declaration, `int a[5];`, initialises nothing at all: the five cells contain whatever the stack held before, so treat `int a[5] = {0};` as the default and opt out only when you mean it.
+
+**Row-major order** is what makes a two-dimensional array a one-dimensional array in disguise. `int grid[2][3]` is six `int`s in a single block, laid out as `grid[0][0]`, `grid[0][1]`, `grid[0][2]`, then immediately `grid[1][0]`, `grid[1][1]`, `grid[1][2]`. The compiler turns the two indices into one flat offset, base plus `(row * 3 + column) * sizeof(int)`, which is why the row length has to be part of the type: without it, the arithmetic cannot know where a row ends.
+
+## Where the analogy stops
+
+Inside the bank, the row of safes has a fixed count painted on the wall, and the ledger has a printed page. A C array carries neither: the address of the first element is all you get, and no count travels with it. That is why `sizeof(arr) / sizeof(arr[0])` works at all — it measures the block the compiler allocated — but only in the scope where the array was declared. Hand the array to a function — the subject of Chapters 9 and 10 — and it **decays** into a pointer to its first element, a single address with no length attached, so the count must be passed across as a separate parameter.
+
+## Common mistakes
+
+- **Looping with `i <= count` instead of `i < count`.** The final pass reads `arr[count]`, one cell past the border of the array and into whichever variable sits next: a buffer overflow, and undefined behaviour. Compile with `-fsanitize=address,undefined` to catch out-of-bounds accesses immediately.
+- **Trying to assign one array to another with `=`.** `arrB = arrA;` does not compile after declaration. Copy element by element in a loop, or use `memcpy`.
+- **Trying to resize a fixed array.** Once `int arr[5]` is declared, its size is fixed for its entire lifetime; choose a larger size, or allocate dynamically in a later chapter.
+
+## Practice
+
+Three programs: a transaction log reversed in place, a season tallied across two arrays at once, and a ticket-sales grid summed row by row.
+
+<ExerciseCard {...reversedCashflows} />
+
+<ExerciseCard {...cleanSheets} />
+
+<ExerciseCard {...standTotals} />

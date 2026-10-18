@@ -1,0 +1,186 @@
+---
+id: 18-command-line-parameters
+title: 'Command Line Parameters: argc, argv, and Safe Argument Parsing'
+estimatedMinutes: 40
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		penceSplitter,
+		matchCli,
+		nullSentinelBugs
+	} from '$lib/content/handbook/exercises/18-command-line-parameters';
+</script>
+
+A program launched from a shell can be handed text at the moment it starts, and every C program that reads that text reads it through two parameters on `main`. The idea is small enough to describe in a paragraph, yet it is where your program first meets the operating system's process setup: the shell splits a command line into words, the kernel copies those words into the new process, and `main` receives a count and a pointer to the first of them. Trust a missing argument, or misread the count, and the result is a segmentation fault rather than a friendly message.
+
+## Objectives
+
+- Write `int main(int argc, char *argv[])` so a program accepts arguments from the terminal shell.
+- Explain what `argc` counts and what `argv` points at, and why `argv[0]` is the program name.
+- Explain why the C standard guarantees that `argv[argc]` is `NULL`, and walk the array using that sentinel.
+- Convert a numeric argument with `strtol` and detect text that is not a number, instead of trusting `atoi`.
+
+## Why students struggle
+
+The first surprise is arithmetic. Type `./cli_money` with nothing after it and `argc` is `1`, not `0`, because slot zero of the argument vector is the program's own name. The count includes the program. Beginners subtract in the wrong place, loop from index zero, and parse the executable's name as though it were a deposit.
+
+The second surprise is type. Every argument is text: `argv[1]` is a `char *` pointing at characters, so `argv[1] + 5` moves the pointer five bytes along the string instead of adding five to a number. And when no argument exists, `argv[1]` is a null pointer; reading it without checking `if (argc >= 2)` crashes before `strtol` can complain.
+
+## The code, both ways
+
+Both programs read two arguments, fall back to fixed test values when the shell supplies none, and convert the numeric one with `strtol`; only the nouns change.
+
+### The money version
+
+```c
+// Money version (cli_money.c)
+#include <stdio.h>
+#include <stdlib.h>    // strtol
+
+int main(int argc, char *argv[]) {
+    printf("Argument count (argc): %d\n", argc);
+    printf("Program name (argv[0]): %s\n", argv[0]);
+
+    // Default test arguments if the user ran './cli_money' with no extra args:
+    const char *holderArg = (argc >= 2) ? argv[1] : "Vance";
+    const char *depositArg = (argc >= 3) ? argv[2] : "12500";
+
+    // Convert the string depositArg ("12500") into a long integer safely:
+    char *endPtr = NULL;
+    long depositPence = strtol(depositArg, &endPtr, 10);
+
+    // If endPtr == depositArg or *endPtr != '\0', the text was not a pure number!
+    if (endPtr == depositArg || *endPtr != '\0') {
+        fprintf(stderr, "Error: '%s' is not a valid integer in pence!\n",
+                depositArg);
+        return 1;
+    }
+
+    printf("Holder:  %s\n", holderArg);
+    printf("Deposit: %ld pence (£%ld.%02ld)\n",
+           depositPence, depositPence / 100, depositPence % 100);
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (cli_football.c)
+#include <stdio.h>
+#include <stdlib.h>    // strtol
+
+int main(int argc, char *argv[]) {
+    printf("Argument count (argc): %d\n", argc);
+    printf("Program name (argv[0]): %s\n", argv[0]);
+
+    // Default test arguments if the user ran './cli_football' with no extra args:
+    const char *clubArg = (argc >= 2) ? argv[1] : "Rovers";
+    const char *winsArg = (argc >= 3) ? argv[2] : "18";
+
+    // Convert the string winsArg ("18") into a long integer safely:
+    char *endPtr = NULL;
+    long wins = strtol(winsArg, &endPtr, 10);
+
+    // If endPtr == winsArg or *endPtr != '\0', the text was not a pure number!
+    if (endPtr == winsArg || *endPtr != '\0') {
+        fprintf(stderr, "Error: '%s' is not a valid win count!\n", winsArg);
+        return 1;
+    }
+
+    printf("Club:          %s\n", clubArg);
+    printf("Points from %ld wins: %ld\n", wins, wins * 3);
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-command-line-parameters-predict"
+	questions={["If you run `./cli_money Vance 12500`, what is `argc`, and what are `argv[0]`, `argv[1]`, `argv[2]` and `argv[3]`?","What happens if you read `argv[1]` without first checking `if (argc >= 2)` when the user typed only `./cli_money`?","Why do professional C programmers use `strtol(str, &endPtr, 10)` instead of `atoi(str)`?"]}
+	answers={["`argc` is `3`, `argv[0]` is `\"./cli_money\"`, `argv[1]` is `\"Vance\"`, `argv[2]` is `\"12500\"`, and `argv[3]` — which is `argv[argc]` — is guaranteed by the C standard to be `NULL`.","When `argc` is `1`, `argv[1]` is a null pointer. Passing it to `strtol`, `atoi` or `strcmp` dereferences that pointer, and the program dies with a segmentation fault.","`atoi(\"abc\")` silently returns `0`, so you cannot tell a typo from a genuine zero, and an out-of-range number is undefined behaviour. `strtol` writes `endPtr` to the character where parsing stopped, so `endPtr == str` or `*endPtr != '\\0'` proves that the whole string was a number."]}
+>
+
+**Expected output, money, run as `./cli_money`:**
+
+```text
+Argument count (argc): 1
+Program name (argv[0]): ./cli_money
+Holder:  Vance
+Deposit: 12500 pence (£125.00)
+```
+
+**Expected output, football, run as `./cli_football`:**
+
+```text
+Argument count (argc): 1
+Program name (argv[0]): ./cli_football
+Club:          Rovers
+Points from 18 wins: 54
+```
+
+</PredictCard>
+
+### Compile and run
+
+The flags are the ones you have used throughout the book; only the executable name changes.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g -Werror cli_money.c -o cli_money
+./cli_money Vance 12500
+```
+
+| Flag | Meaning |
+|---|---|
+| `-std=c17` | Compile against the ISO C17 standard, which is the dialect the handbook exercises use. |
+| `-Wall -Wextra -Wpedantic` | Ask for every useful diagnostic, so a discarded `const` or a bad format string is caught early. |
+| `-g` | Keep line numbers and variable names available to a debugger. |
+| `-o cli_money` | Name the output file `cli_money` instead of the default `a.out`. |
+| `-Werror` | Treat warnings as errors, which is what the handbook's exercise checker does. |
+
+The compiler writes one executable and nothing else, so `cli_money` is the whole program; `-std=c17` pins the dialect it is checked against, and `-Werror` makes that check binding.
+
+<Eli5Block
+	topic="command-line-arguments"
+	money={"The envelope of instructions is handed over at opening time. main is the bank manager receiving it, and argc is the number of slips inside; the count is never zero, because slip 0 is the name of the branch itself, the name the program was launched under. Two words after the program name therefore make the count three, not two.\n\nargv is the stack of claim slips, one per slot. Each slip is a char pointer to a single null-terminated string, and the last slot in the stack is a blank slip marked NULL, so the manager can see the pile has ended without counting it first."}
+	football={"The matchday instruction sheet is handed to the captain at kick-off. main is the captain reading it, and argc counts how many items are written on the line, starting with the fixture name itself rather than with the first player.\n\nargv[0] is the fixture, which is the program name; argv[1] is the first name after it; argv[argc] is a VOID ticket that marks the end of the list. Reading the sheet until that void ticket appears visits every real argument and then stops on its own."}
+/>
+
+## What is really happening
+
+The C standard defines two portable forms of `main`: `int main(void)` for programs that ignore the command line, and `int main(int argc, char *argv[])` for programs that read it. The second is often written `int main(int argc, char **argv)`, and the two spellings mean the same thing, because an array parameter is a pointer to its first element. `argc` is the **argument count**; `argv` is the **argument vector**, an array of `char *` with `argc + 1` usable slots.
+
+At launch the shell splits the line on unquoted spaces, and the kernel copies each word into the new process's stack as a null-terminated string. `argv[0]` points at the name the program was invoked by, `argv[1]` at the first word after it, and so on up to `argv[argc - 1]`. The final slot, `argv[argc]`, holds a **null pointer** — a guarantee the standard makes precisely so that a loop can stop without consulting the count. Quoting is the shell's business, not C's: `./cli_money "Leo Vance" 12500` delivers three words, because the quotes group the name into one argument, and nothing in `argv` records that the quotes were there.
+
+The value `main` returns is the **exit status**. Returning `0`, or `EXIT_SUCCESS` from `<stdlib.h>`, reports success; returning `1`, or `EXIT_FAILURE`, reports failure. A script chaining commands with `&&` stops at the first non-zero status, which is why both error paths return `1`.
+
+`strtol` turns text into a `long` and reports where it stopped. Passing the address of a `char *` as its second argument fills in a pointer to the first character that was not consumed, so a complete parse ends on the string's terminator. It also sets `errno` to `ERANGE` when the number is out of range. `atoi` reports nothing at all: it returns `int`, and no value it can return means this text was not a number.
+
+## Where the analogy stops
+
+Even when the command line reads `12500`, the operating system never hands `main` an integer. `argv[2]` points at six bytes — the characters `'1'`, `'2'`, `'5'`, `'0'`, `'0'` and a terminating zero byte — and the number 12500 exists nowhere in that parcel until a parser builds it. The envelope makes the handover feel complete, but what arrives is paper, and every figure on it must be read again. That is why `strtol` returns a value and a stopping point: the stopping point proves you read the whole slip.
+
+## Common mistakes
+
+- **Reading `argv[1]` without checking `if (argc >= 2)`.** With no argument, `argv[1]` is a null pointer that `strtol`, `atoi` and `strcmp` all dereference, so the program dies instead of reporting a bad command line.
+- **Writing `int x = argv[1];` or `argv[1] + 10`.** `argv[1]` is a pointer to characters, not a number. The addition moves the pointer ten bytes into the string and leaves the digits untouched.
+- **Comparing a flag with `argv[1] == "-v"`.** As in the strings chapter, `==` compares addresses, not contents. Use `strcmp(argv[1], "-v") == 0`.
+- **Trusting `atoi`.** It returns `0` for both `"0"` and `"abc"`, and overflow is undefined behaviour. Parse with `strtol` and inspect the stopping point.
+
+## Practice
+
+All three exercises keep `int main(int argc, char *argv[])`. The in-browser runner supplies no arguments, so each falls back to a simulated array when `argc` is `1` and still produces its authored output.
+
+<ExerciseCard {...penceSplitter} />
+
+<ExerciseCard {...matchCli} />
+
+<ExerciseCard {...nullSentinelBugs} />

@@ -1,0 +1,243 @@
+---
+id: 10-functions
+title: 'Functions: Service Desks, Pass-by-Value, and Pointer Parameters'
+estimatedMinutes: 40
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		transferPence,
+		shirtSwap,
+		knockoutMatches
+	} from '$lib/content/handbook/exercises/10-functions';
+</script>
+
+A function names a piece of work so you can call it instead of copying its lines. C makes one promise about that call and never breaks it: the function receives copies of your arguments, so it cannot touch the caller's variables unless you hand it their addresses. This chapter is about that rule and the signature vocabulary that keeps it honest.
+
+## Objectives
+
+- Declare a prototype above `main` and define the function below it.
+- Explain why C is entirely pass-by-value: every argument arrives as a copy in a new stack frame.
+- Use pointer parameters when a function must change a caller's variable or report several results.
+- Pass an array to a function with its length as a `size_t`.
+
+## Why students struggle
+
+The surprise usually arrives in a lab. You write `void addBonus(int balance) { balance += 500; }`, call `addBonus(myBalance);`, print `myBalance`, and it is unchanged. Nothing failed and nothing warned: the function updated a photocopy in a box of its own, and that box ceased to exist at `return`.
+
+The second difficulty is the signature. A prototype must match the definition exactly, an array parameter is really a pointer, and `int func()` in C17 means an unspecified argument list rather than none. Get one wrong and the message often points at the call site, not the cause.
+
+## The code, both ways
+
+Both programs do the same four things in the same order — return a computed receipt, try to change a balance by value, change it through a pointer, then sum an array — and only the nouns change.
+
+### The money version
+
+```c
+// Money version (functions_money.c)
+#include <stdio.h>
+
+// Function prototypes (tell the compiler the signatures up front)
+int computeInterestPence(int principalPence, int ratePercent);
+void tryDepositByValue(int balanceCopy, int amountPence);
+void depositViaSlip(int *balanceSlip, int amountPence);
+int sumDeposits(const int deposits[], size_t count);
+
+int main(void) {
+    int leoBalance = 20000;   // £200.00
+
+    // 1. Returning a calculated receipt
+    int interest = computeInterestPence(leoBalance, 5);
+    printf("5%% interest on %dp is %dp\n", leoBalance, interest);
+
+    // 2. Pass-by-value (handing the clerk a PHOTOCOPY — original unchanged!)
+    tryDepositByValue(leoBalance, 5000);
+    printf("After tryDepositByValue: leoBalance is STILL %dp\n", leoBalance);
+
+    // 3. Passing a pointer (handing the clerk the CLAIM SLIP — original updated!)
+    depositViaSlip(&leoBalance, 5000);
+    printf("After depositViaSlip:    leoBalance is NOW   %dp\n", leoBalance);
+
+    // 4. Passing an array + its length
+    int weekDeposits[4] = {1200, 800, 2500, 1500};
+    printf("4-day deposit total: %dp\n", sumDeposits(weekDeposits, 4));
+
+    return 0;
+}
+
+int computeInterestPence(int principalPence, int ratePercent) {
+    return (principalPence * ratePercent) / 100;
+}
+
+void tryDepositByValue(int balanceCopy, int amountPence) {
+    balanceCopy += amountPence;   // only modifies the local photocopy!
+    printf("  [Inside tryDepositByValue] photocopy is %dp\n", balanceCopy);
+}
+
+void depositViaSlip(int *balanceSlip, int amountPence) {
+    *balanceSlip += amountPence;  // opens the caller's vault box and adds cash!
+}
+
+int sumDeposits(const int deposits[], size_t count) {
+    int total = 0;
+    for (size_t i = 0; i < count; i++) {
+        total += deposits[i];
+    }
+    return total;
+}
+```
+
+### The football version
+
+```c
+// Football version (functions_football.c)
+#include <stdio.h>
+
+// Function prototypes (the team sheet handed to the referee before kick-off)
+int computeLeaguePoints(int wins, int draws);
+void tryAwardGoalByValue(int goalsCopy, int added);
+void awardGoalViaTicket(int *goalsTicket, int added);
+int sumMatchGoals(const int goals[], size_t count);
+
+int main(void) {
+    int leoGoals = 10;
+
+    // 1. Returning a calculated result
+    int pts = computeLeaguePoints(12, 5);
+    printf("12 wins, 5 draws = %d league points\n", pts);
+
+    // 2. Pass-by-value (handing the scout a PHOTO — original unchanged!)
+    tryAwardGoalByValue(leoGoals, 2);
+    printf("After tryAwardGoalByValue: leoGoals is STILL %d\n", leoGoals);
+
+    // 3. Passing a pointer (handing over the SEAT TICKET — original updated!)
+    awardGoalViaTicket(&leoGoals, 2);
+    printf("After awardGoalViaTicket:  leoGoals is NOW   %d\n", leoGoals);
+
+    // 4. Passing an array + its length
+    int recentGoals[4] = {2, 1, 0, 3};
+    printf("4-match goal total: %d\n", sumMatchGoals(recentGoals, 4));
+
+    return 0;
+}
+
+int computeLeaguePoints(int wins, int draws) {
+    return (wins * 3) + draws;
+}
+
+void tryAwardGoalByValue(int goalsCopy, int added) {
+    goalsCopy += added;   // only draws on the scout's photo!
+    printf("  [Inside tryAwardGoalByValue] photo shows %d\n", goalsCopy);
+}
+
+void awardGoalViaTicket(int *goalsTicket, int added) {
+    *goalsTicket += added; // walks to the real seat and updates the tally!
+}
+
+int sumMatchGoals(const int goals[], size_t count) {
+    int total = 0;
+    for (size_t i = 0; i < count; i++) {
+        total += goals[i];
+    }
+    return total;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-functions-predict"
+	questions={["Why does `tryDepositByValue(leoBalance, 5000)` leave `leoBalance` at `20000`, whereas `depositViaSlip(&leoBalance, 5000)` changes `leoBalance` to `25000`?","Why did we mark the array parameter in `sumDeposits(const int deposits[], size_t count)` as `const int`?","What happens if you call a function in `main` that is defined **below** `main`, and you forgot to put a **function prototype** above `main`?"]}
+	answers={["`tryDepositByValue` receives a copy of `20000` in its own stack box, `balanceCopy`, and destroys that box when it returns. `depositViaSlip` receives `&leoBalance`, a copy of the *address*, so `*balanceSlip += 5000` modifies `leoBalance` in `main`'s frame.","Because arrays decay to pointers when passed. Without `const`, `sumDeposits` could modify the caller's array, for instance with `deposits[0] = 0`; `const int deposits[]` promises that it only **reads**.","The compiler reads top to bottom. If it meets a call before either the prototype or the definition, C17 reports an implicit-declaration diagnostic: an error under `-Werror`, a warning otherwise."]}
+>
+
+**Expected output, money:**
+
+```text
+5% interest on 20000p is 1000p
+  [Inside tryDepositByValue] photocopy is 25000p
+After tryDepositByValue: leoBalance is STILL 20000p
+After depositViaSlip:    leoBalance is NOW   25000p
+4-day deposit total: 6000p
+```
+
+**Expected output, football:**
+
+```text
+12 wins, 5 draws = 41 league points
+  [Inside tryAwardGoalByValue] photo shows 12
+After tryAwardGoalByValue: leoGoals is STILL 10
+After awardGoalViaTicket:  leoGoals is NOW   12
+4-match goal total: 6
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save it as `functions_money.c` and build with the handbook's flags.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g functions_money.c -o functions_money
+./functions_money
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | The ISO C17 standard this handbook teaches. |
+| `-Wall -Wextra -Wpedantic` | Strict warnings; they catch a prototype that disagrees with its definition. |
+| `-g` | Line numbers and names for the debugger. |
+| `-o functions_money` | Names the executable; without it the compiler writes `a.out`. |
+| `./functions_money` | Runs the binary, not the source. |
+
+The football program builds with the same command once you rename the file to `functions_football.c`; the executable appears only after linking succeeds, so a failed build leaves the previous binary in place and runs stale code. Both target C17, though `-std=c23` is also accepted and finally makes a bare `()` mean `(void)`.
+
+<Eli5Block
+	topic="pass-by-value"
+	money={"A function is a service desk at the bank: an Interest Desk, a Deposit Desk, an Audit Desk. You walk to the desk that owns the work, hand over its forms, and receive the result. A function prototype is the lobby signboard listing every desk, the forms it takes, and the receipt it returns.\n\nPass-by-value is a photocopy of your statement. The clerk may scribble on it and shred it at the end of the appointment, and your real vault box in main is untouched. Pass-by-pointer is a claim slip bearing your box number: the clerk walks into the vault, opens the box you own, and puts the cash inside. The return value is the official receipt handed back when the job is done."}
+	football={"A function is a named set-piece routine the coach calls from the touchline, without dictating the runs again from scratch. A function prototype registers that routine on the pre-match team sheet, so its shape is on paper before kick-off.\n\nPass-by-value is a printed photograph of the scoreboard. An analyst can write plus two on it and the stadium scoreboard still reads ten. Pass-by-pointer is handing over the seat ticket: the analyst walks to the real seat, finds the official tally, and updates the number everyone can see."}
+/>
+
+## What is really happening
+
+**C has no pass-by-reference.** Every call copies. `depositViaSlip(&leoBalance, 5000)` copies the eight-byte address into `balanceSlip`, a local variable of that function. What makes the call useful is the kind of value copied: an address you may follow. `*balanceSlip += 5000` writes through it into `main`'s frame, which is still alive because `main` has not returned.
+
+**Array parameters decay to pointers.** In a parameter list, `int arr[]` and `int *arr` are the same declaration; the brackets are documentation, not a type. Inside the function `arr` is an eight-byte pointer, so `sizeof(arr)` is `8`, not the array's size, which is why every array parameter here comes with `size_t count`. The `const` promises that the pointed-at integers are read-only.
+
+**Returning several values.** A function returns one value, so extra results travel through output parameters: `void getMinMax(const int deposits[], size_t count, int *outMin, int *outMax)` writes into addresses the caller already owns.
+
+Draw `main`'s frame beside the callee's, cross out the callee's frame at `return`, and the rule becomes obvious.
+
+## Where the analogy stops
+
+A bank clerk remembers your face from five minutes ago; a C function has complete amnesia between calls. At `return` its whole stack frame — desk, photocopier, claim slips — is wiped clean, and every local in it ceases to exist; only the receipt survives. A function therefore cannot accumulate state across calls unless the variable is `static`, giving it a life outside the frame (Chapter 13), and a pointer to a local dies with it: the address looks valid while the storage is gone.
+
+## Common mistakes
+
+- **The classic broken `swap(int a, int b)`.** The parameters are copies, so the swap succeeds inside the function and is destroyed on return. The working version takes addresses and swaps what they point at.
+- **Calling `sizeof` on an array parameter.** Inside `void f(int arr[])`, `sizeof(arr)` is `8`: a pointer's width, not a length.
+- **Writing `int func()` where you mean `int func(void)`.** In C17 empty parentheses in a declaration mean *unspecified* arguments, so the compiler stops checking calls.
+
+The two swap versions, side by side:
+
+```c
+// BROKEN: only swaps the local photocopies a and b!
+void brokenSwap(int a, int b) { int t = a; a = b; b = t; }
+
+// CORRECT: swaps the caller's boxes via pointers!
+void swap(int *a, int *b) { int t = *a; *a = *b; *b = t; }
+```
+
+## Practice
+
+Three programs follow: a guarded transfer between two accounts, a shirt swap with an attendance range, and a recursive match counter.
+
+<ExerciseCard {...transferPence} />
+
+<ExerciseCard {...shirtSwap} />
+
+<ExerciseCard {...knockoutMatches} />

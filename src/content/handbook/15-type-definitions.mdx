@@ -1,0 +1,190 @@
+---
+id: 15-type-definitions
+title: 'Type Definitions (typedef): Meaningful Type Aliases'
+estimatedMinutes: 35
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import {
+		basisPointFee,
+		formGuidePoints,
+		bonusRuleBugs
+	} from '$lib/content/handbook/exercises/15-type-definitions';
+</script>
+
+An `int64_t` tells you the width of a box but nothing about what the box is for. `typedef` lets you keep the box and change the label: `typedef int64_t Pence;` says that every `Pence` in the program is an 8-byte signed integer holding money in minor units. The compiler's behaviour does not change at all, but the reader's does, and that is the entire point of the feature.
+
+## Objectives
+
+- Use `typedef` to create clear, domain-specific aliases for existing C types, such as `typedef int64_t Pence;` or `typedef int ShirtNumber;`.
+- Explain how `typedef` works with fixed-width integers, arrays, `enum`, and `struct`.
+- Understand that `typedef` creates a **synonym**, not a brand-new incompatible type.
+- Explain why hiding a pointer inside a `typedef` is usually a bad idea.
+
+## Why students struggle
+
+Beginners often confuse the word order of `typedef` (`typedef <existing_type> <new_alias>;`) with that of the preprocessor (`#define <NAME> <VALUE>`), and they mix up which of the two names is new. The syntax reads backwards from the way people say it aloud: you do not "make `Pence` an int", you write an ordinary declaration and put `typedef` in front of it.
+
+The second confusion is about strength. Writing `typedef int Pence;` and `typedef int AccountId;` looks like it should create two distinct types, so a student expects the compiler to reject `pence + accountId`. It does not. Both are just `int` wearing different name badges, and the compiler checks the types, not the badges.
+
+## The code, both ways
+
+Every chapter shows the same idea twice: read the version that maps onto something you already know, then read the other one.
+
+### The money version
+
+```c
+// Money version (typedef_money.c)
+#include <stdio.h>
+#include <stdint.h>
+#include <inttypes.h>
+
+// Syntax: typedef <existing_type> <new_alias_name>;
+typedef int64_t Pence;
+typedef uint32_t AccountNumber;
+typedef unsigned char CreditTier;
+
+Pence addInterest(Pence principal, int ratePercent) {
+    return principal + (principal * ratePercent) / 100;
+}
+
+int main(void) {
+    AccountNumber accId = 40881920U;
+    CreditTier tier = 1;
+    Pence openingBalance = 250000;   // £2,500.00
+    Pence closingBalance = addInterest(openingBalance, 4);
+
+    printf("Account #%" PRIu32 " (Tier %u)\n", accId, (unsigned int)tier);
+    printf("Opening balance: %" PRId64 " pence (£%" PRId64 ".%02" PRId64 ")\n",
+           openingBalance, openingBalance / 100, openingBalance % 100);
+    printf("Closing balance: %" PRId64 " pence (£%" PRId64 ".%02" PRId64 ")\n",
+           closingBalance, closingBalance / 100, closingBalance % 100);
+    printf("sizeof(Pence) = %zu bytes\n", sizeof(Pence));
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (typedef_football.c)
+#include <stdio.h>
+#include <stdint.h>
+#include <inttypes.h>
+
+// Syntax: typedef <existing_type> <new_alias_name>;
+typedef int32_t MatchSeconds;
+typedef uint16_t ShirtNumber;
+typedef int32_t LeaguePoints;
+
+LeaguePoints calculatePoints(int wins, int draws) {
+    return (wins * 3) + draws;
+}
+
+int main(void) {
+    ShirtNumber strikerShirt = 9;
+    MatchSeconds timeOnPitch = 5490;   // 91 mins 30 secs
+    LeaguePoints roversPoints = calculatePoints(19, 6);
+
+    printf("Striker #%u played %" PRId32 " seconds (%" PRId32 "m %02" PRId32 "s)\n",
+           (unsigned int)strikerShirt,
+           timeOnPitch, timeOnPitch / 60, timeOnPitch % 60);
+    printf("Rovers total: %" PRId32 " league points\n", roversPoints);
+    printf("sizeof(MatchSeconds) = %zu bytes\n", sizeof(MatchSeconds));
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-type-definitions-predict"
+	questions={["How do you remember the word order in `typedef int64_t Pence;` — which word is the new alias name?","Look at `size_t`, `int32_t`, and `uint64_t`, which you have been using since Chapter 2. How are those defined inside `<stddef.h>` and `<stdint.h>`?","What is the difference between `typedef int *IntPtr;` and `#define IntPtr int *` when you declare two variables on one line: `IntPtr a, b;`?"]}
+	answers={["Think of `typedef` as putting `typedef` in front of a normal variable declaration. If `int64_t x;` declares a variable `x`, then `typedef int64_t Pence;` declares `Pence` as a **type alias** for `int64_t`, and it ends with a semicolon.","They are all `typedef` aliases in the C standard library. On a 64-bit machine, for example, `<stddef.h>` contains `typedef unsigned long size_t;`.","With `typedef int *IntPtr;`, `IntPtr a, b;` makes **both `a` and `b` pointers to `int`**, because `IntPtr` is one indivisible type name. With `#define IntPtr int *`, text replacement turns the line into `int *a, b;` — making `a` a pointer and `b` a plain `int`."]}
+>
+
+**Expected output, money:**
+
+```text
+Account #40881920 (Tier 1)
+Opening balance: 250000 pence (£2500.00)
+Closing balance: 260000 pence (£2600.00)
+sizeof(Pence) = 8 bytes
+```
+
+**Expected output, football:**
+
+```text
+Striker #9 played 5490 seconds (91m 30s)
+Rovers total: 63 league points
+sizeof(MatchSeconds) = 4 bytes
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save each program under the file name in its first comment, then build and run both.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g typedef_money.c -o typedef_money
+./typedef_money
+cc -std=c17 -Wall -Wextra -Wpedantic -g typedef_football.c -o typedef_football
+./typedef_football
+```
+
+| Flag | Meaning |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard that these programs target; a C11 or C23 compiler accepts the same source. |
+| `-Wall -Wextra -Wpedantic` | Turns on strict warnings, which is what catches a format string that disagrees with its argument and most accidental type mismatches. |
+| `-g` | Keeps line numbers and variable names for a debugger. |
+| `-o typedef_money` | Names the executable, so the two builds sit side by side instead of overwriting the default `a.out`. |
+
+Two source files produce two separate executables; nothing is shared between them at compile time, because each program is a single translation unit. If you change `typedef int64_t Pence;` to `typedef int32_t Pence;`, the printed `sizeof(Pence)` becomes `4`, and the compiler starts warning that the `PRId64` conversions no longer match — the width follows the type the alias names, never the alias itself.
+
+<Eli5Block
+	topic="type-definitions"
+	money={"Think of a bank rulebook that talks about vault safe sizes. Instead of telling every clerk to use an 8-byte signed integer for balances and a 4-byte unsigned integer for account numbers, the rulebook defines two official terms: Pence means the 8-byte safe, and AccountNumber means the 4-byte safe. The steel is unchanged; only the vocabulary is.\n\nThat vocabulary pays off the day the bank grows. A small credit union can write typedef int32_t Pence; and later, as an international bank, change that single line to typedef int64_t Pence;. Every Pence variable and every function signature that mentions Pence is upgraded at once, because they were all referring to the same label rather than to a width they had each chosen for themselves."}
+	football={"Think of a stadium where each block of seats carries a printed designation: ShirtNumber, MatchSeconds, LeaguePoints. Any steward reading the coach's tactical sheet can tell at a glance whether a number means seconds on the clock, a shirt on a player's back, or points in the league table. The seats themselves are identical concrete; the designations are what stop two identical numbers from being confused.\n\nAnd if the league later issues larger shirt numbers, the printer changes the designation on the label sheet once, and every block bearing that label is reprinted. Nobody has to walk the stadium rewriting individual seats, which is what would happen if each sheet had been printed with its own private width."}
+/>
+
+## What is really happening
+
+`typedef` creates an **alias**, not a distinct type. To the compiler, `Pence` and `int64_t` are entirely interchangeable synonyms: they have the same size, the same alignment, the same arithmetic, and the same conversion rules, and a function taking `Pence` can be called with any `int64_t` expression. What the alias buys you is documentation for human readers and portability across hardware: when the width must change, one declaration changes and every use follows.
+
+The places where this earns its keep are the ordinary ones. Self-documenting domain units — `Pence`, `MatchSeconds`, `BasisPoints` — stop a pounds variable from being silently handed to a function expecting pence. Platform-independent standard names such as `size_t`, `ptrdiff_t`, `int32_t` and `uint64_t` are themselves nothing but `typedef` aliases chosen by the C library so that code does not have to name a machine-specific type. And `typedef` cleans up `enum` and `struct` declarations, which is why Chapters 16 and 17 lean on it:
+
+```c
+typedef struct {
+    int id;
+    int balancePence;
+} Account;   // lets you write 'Account a;' instead of 'struct Account a;'
+```
+
+The declaration form is worth internalising because it explains every other use. A `typedef` declaration is an ordinary declaration with the word `typedef` in front, so wherever the variable name would have gone, the new type name goes instead. That is why `typedef char FormGuide[6];` names an array type, and why `typedef int (*BonusRule)(int basePence);` names a function pointer type: in both cases the alias occupies exactly the position the variable would have occupied.
+
+## Where the analogy stops
+
+In strongly typed languages such as Rust or Ada you can create a newtype, where adding an `AccountNumber` to a `Pence` is a compiler error. In C, `typedef` is purely a **nickname**: if both `Pence` and `MatchSeconds` are aliases for `int32_t`, the compiler will not stop you assigning one to the other, and it will not warn. The rulebook analogy is honest about vocabulary and dishonest about enforcement, so the discipline of keeping units apart is yours, not the compiler's.
+
+## Common mistakes
+
+- **Reversing the order (`typedef NewName int;`).** In C the existing type always comes first and the new alias name comes last, immediately before the semicolon: `typedef int NewName;`.
+- **Forgetting the trailing semicolon.** Unlike `#define`, a `typedef` is a declaration and **must** end with `;`. A missing semicolon there produces errors on the following lines, which makes the real mistake harder to spot.
+- **Hiding a pointer star inside a `typedef`.** Writing `typedef int *AccountSlip;` hides the fact that a variable is a pointer, so readers forget to check for `NULL` and misread `const AccountSlip` as if the pointed-to value were constant. Keep the `*` visible in variable and parameter declarations.
+
+## Practice
+
+These three programs use the same feature in three settings: money aliases with a fee function, a fixed-size array alias for a form guide, and a bug hunt through a function-pointer alias.
+
+<ExerciseCard {...basisPointFee} />
+
+<ExerciseCard {...formGuidePoints} />
+
+<ExerciseCard {...bonusRuleBugs} />

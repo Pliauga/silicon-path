@@ -1,0 +1,220 @@
+---
+id: 09-pointers
+title: 'Pointers: Claim Slips, Stadium Tickets, and Array Decay'
+estimatedMinutes: 40
+hasExercise: true
+---
+
+<script>
+	import PredictCard from '$lib/components/lesson/PredictCard.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import PointerSandbox from '$lib/components/viz/PointerSandbox.svelte';
+	import LazyStudy from '$lib/components/viz/LazyStudy.svelte';
+	import StackHeapVisualizer from '$lib/components/viz/StackHeapVisualizer.svelte';
+	import {
+		vaultTransfer,
+		squadPointerWalk,
+		richestAccount
+	} from '$lib/content/handbook/exercises/09-pointers';
+</script>
+
+An `int` holds a number. A pointer holds the address of a number, which is a different kind of thing: a place rather than a value. Once you can name a place, you can read it, write it, pass it to a function, or walk along a row of them. That is the whole chapter.
+
+## Objectives
+
+- Explain what a pointer is: a variable that stores a memory address.
+- Use `&` (address-of) to obtain an address and `*` (dereference) to read or modify the value stored there.
+- Initialise pointers safely with `NULL` from `stddef.h`, and test before you dereference.
+- Explain how an array name decays to a pointer to its first element, and why `p + i` steps by `sizeof(*p)` bytes.
+
+## Why students struggle
+
+Pointers are where most students stall, and most of the stall is one symbol doing two jobs. In `int *p;` the star belongs to the type: `p` holds the address of an `int`. In `*p = 500;` the same star is an instruction: follow the address in `p`, arrive at the target box, write `500` inside. The declaration describes a shape; the expression performs an action.
+
+The second stall is believing that a pointer contains the value. It contains an address, so `p = q` copies that address and leaves both pointers aimed at one box, while `*p = *q` copies one box's contents into another. An uninitialised pointer holds whatever number was left in its memory, and its first dereference jumps to an address nobody chose.
+
+## The code, both ways
+
+Both programs do the same four things — take an address, dereference it, guard a `NULL` pointer, walk an array — and only the nouns change.
+
+### The money version
+
+```c
+// Money version (pointers_money.c)
+#include <stdio.h>
+#include <stddef.h>    // NULL
+
+int main(void) {
+    int vaultBalance = 15000;          // £150.00 in a vault box
+    int *claimSlip = &vaultBalance;    // claimSlip holds the box number of vaultBalance
+    int *voidedSlip = NULL;            // points to NO box (safe empty state)
+
+    printf("vaultBalance value:   %d pence\n", vaultBalance);
+    printf("vaultBalance box #:   %p\n", (void *)&vaultBalance);
+    printf("claimSlip holds:      %p\n", (void *)claimSlip);
+    printf("Open box (*claimSlip): %d pence\n", *claimSlip);
+
+    // Modify vaultBalance indirectly through the claim slip:
+    *claimSlip += 5000;
+    printf("After *claimSlip += 5000, vaultBalance is now: %d pence\n\n",
+           vaultBalance);
+
+    // Always check for NULL before dereferencing:
+    if (voidedSlip == NULL) {
+        printf("voidedSlip is NULL — do not open!\n\n");
+    }
+
+    // Pointers & Arrays: array name decays to &deposits[0]
+    int deposits[3] = {1000, 2000, 3000};
+    int *p = deposits;   // same as &deposits[0]
+    for (int i = 0; i < 3; i++) {
+        printf("*(p + %d) = %d pence (at box %p)\n",
+               i, *(p + i), (void *)(p + i));
+    }
+
+    return 0;
+}
+```
+
+### The football version
+
+```c
+// Football version (pointers_football.c)
+#include <stdio.h>
+#include <stddef.h>    // NULL
+
+int main(void) {
+    int leoGoals = 14;                 // 14 goals in Leo's reserved seat
+    int *ticket = &leoGoals;           // ticket holds the seat number of leoGoals
+    int *voidTicket = NULL;            // ticket stamped VOID (points to no seat)
+
+    printf("leoGoals value:      %d goals\n", leoGoals);
+    printf("leoGoals seat #:     %p\n", (void *)&leoGoals);
+    printf("ticket holds:        %p\n", (void *)ticket);
+    printf("Visit seat (*ticket): %d goals\n", *ticket);
+
+    // Modify leoGoals indirectly using the ticket:
+    *ticket += 2;
+    printf("After *ticket += 2, leoGoals is now: %d goals\n\n",
+           leoGoals);
+
+    // Always check for NULL before walking to the seat:
+    if (voidTicket == NULL) {
+        printf("voidTicket is NULL — do not enter stand!\n\n");
+    }
+
+    // Pointers & Arrays: array name decays to &goalsByMatch[0]
+    int goalsByMatch[3] = {1, 3, 2};
+    int *p = goalsByMatch;   // same as &goalsByMatch[0]
+    for (int i = 0; i < 3; i++) {
+        printf("*(p + %d) = %d goals (at seat %p)\n",
+               i, *(p + i), (void *)(p + i));
+    }
+
+    return 0;
+}
+```
+
+### Predict before you run
+
+<PredictCard
+	id="handbook-pointers-predict"
+	questions={["When we execute `*claimSlip += 5000;` (or `*ticket += 2;`), why does `vaultBalance` (or `leoGoals`) change even though we never wrote `vaultBalance = ...`?","If `p` is an `int *` pointing to address `0x1000` (and `sizeof(int)` is `4`), what address does `p + 1` evaluate to: `0x1001` or `0x1004`?","What is the difference between `p` (no star), `*p` (with star), and `&p` (with ampersand)?"]}
+	answers={["Because `claimSlip` stores the **address** of `vaultBalance`. Dereferencing `*claimSlip` reaches that box directly and updates the number inside it.","**`0x1004`.** Pointer arithmetic scales by `sizeof(*p)`, so adding `1` to an `int *` steps one whole `int` — four bytes — along the row.","`p` is the box number written on the slip (`&vaultBalance`); `*p` is the cash inside it (`vaultBalance`); `&p` is the box number where the slip `p` itself is stored."]}
+>
+
+**Expected output, money (sample addresses):**
+
+```text
+vaultBalance value:   15000 pence
+vaultBalance box #:   0x16fdff1ac
+claimSlip holds:      0x16fdff1ac
+Open box (*claimSlip): 15000 pence
+After *claimSlip += 5000, vaultBalance is now: 20000 pence
+
+voidedSlip is NULL — do not open!
+
+*(p + 0) = 1000 pence (at box 0x16fdff1a0)
+*(p + 1) = 2000 pence (at box 0x16fdff1a4)
+*(p + 2) = 3000 pence (at box 0x16fdff1a8)
+```
+
+**Expected output, football (sample addresses):**
+
+```text
+leoGoals value:      14 goals
+leoGoals seat #:     0x16fdff1ac
+ticket holds:        0x16fdff1ac
+Visit seat (*ticket): 14 goals
+After *ticket += 2, leoGoals is now: 16 goals
+
+voidTicket is NULL — do not enter stand!
+
+*(p + 0) = 1 goals (at seat 0x16fdff1a0)
+*(p + 1) = 3 goals (at seat 0x16fdff1a4)
+*(p + 2) = 2 goals (at seat 0x16fdff1a8)
+```
+
+</PredictCard>
+
+### Compile and run
+
+Save the money program as `pointers_money.c` and build it with the flags the handbook uses everywhere.
+
+```sh
+cc -std=c17 -Wall -Wextra -Wpedantic -g pointers_money.c -o pointers_money
+./pointers_money
+```
+
+| Name | What it does for you |
+|---|---|
+| `-std=c17` | Selects the ISO C17 standard this handbook teaches. |
+| `-Wall -Wextra -Wpedantic` | Strict warnings; they catch a stray star or mismatched pointer type before you run. |
+| `-g` | Keeps line numbers and names for the debugger. |
+| `-o pointers_money` | Names the executable; without it the compiler writes `a.out`. |
+| `./pointers_money` | Runs the binary, not the source file. |
+
+The football program compiles with the same command once you rename the file. Addresses in the output are placeholders, so rebuild after every edit; an old binary only shows old addresses. These programs target C17, though the compiler also accepts `-std=c23`, which adds `nullptr` alongside `NULL`.
+
+<Eli5Block
+	topic="pointers"
+	money={"A pointer is a claim slip with a vault box number written on it. The slip holds no cash; it tells you which box to open, which is why copying a slip never copies the money. Writing &vaultBalance asks the vault to write that box number onto a slip for you.\n\nA slip stamped VOID is a null pointer: it names no box deliberately, so you test before walking into the vault. An uninitialised pointer is a slip with a random number scribbled on it, and opening that box is a segmentation fault. Pointer arithmetic means the next safe in the row, because the slip knows each safe is four bytes wide."}
+	football={"A pointer is a match ticket with a seat number printed on it. The ticket is not the tally kept in that seat; it only tells you where to walk, which is why lending a copy does not hand over your goals. Writing &leoGoals prints a ticket bearing that seat number.\n\nA ticket stamped VOID is a null pointer: it names no seat, so you check it before entering the stand. An uninitialised pointer is a forged ticket with a random number, and the stewards eject you with SIGSEGV. Pointer arithmetic steps to the next four-seat block, because the ticket knows how wide one block is."}
+/>
+
+<PointerSandbox />
+
+## What is really happening
+
+On a 64-bit machine **every pointer is eight bytes wide**, whether it is an `int *`, a `char *`, or a `void *`, because every address is 64 bits. So why the type? Two reasons. `*p` must know how many bytes to read and how to interpret them: four for an `int`, one for a `char`. And pointer arithmetic must know what one step means, since `p + 1` on an `int *` advances four bytes while on a `char *` it advances one.
+
+**Array-pointer equivalence** follows. The compiler defines `arr[i]` as exact shorthand for `*(arr + i)`, which is why the loop above walks `deposits` through `p` without an index. An array name in an expression **decays** to a pointer to its first element, except as the operand of `sizeof` or `&`: that is why `sizeof(deposits)` gives twelve, not eight.
+
+Read `const` and pointers from right to left. `const int *p` is a pointer to a `const int`: move `p` freely, never modify `*p`. `int *const p` is a `const` pointer to an `int`: modify `*p`, but `p` is locked to one box. C23 adds `nullptr` as a type-safe null constant beside `NULL`.
+
+Those addresses live in an address space with two ends. The stack grows down from the ceiling, one frame per call; the heap grows up from the floor, one allocation at a time. The model below lets you allocate both until they meet — and shows what happens when they do.
+
+<LazyStudy label="Stack and heap — interactive 3D study" fig="09" caption="Stack and heap memory collision" size="tall">
+	<StackHeapVisualizer />
+</LazyStudy>
+
+## Where the analogy stops
+
+A paper claim slip is much smaller than a steel safe; in a 64-bit computer the comparison inverts, because a pointer is eight bytes, **larger** than the one-byte `char` or four-byte `int` it points at. Pointers to `int` do not save space. You use them to share or modify a variable across functions, the subject of Chapter 10, or to walk arrays and dynamic structures whose size you learn only at run time.
+
+## Common mistakes
+
+- **Dereferencing an uninitialised or `NULL` pointer.** `*p = 100;` on a `NULL` pointer crashes with a segmentation fault, or does something worse and undefined. Test `if (p != NULL)` first.
+- **Confusing `*p = *q` with `p = q`.** `p = q;` copies the address, so both slips point at one box; `*p = *q;` copies the value, leaving the addresses alone.
+- **Assuming `sizeof(p)` measures the array.** On a 64-bit machine it returns `8`, the width of the pointer itself. Keep the array's own name when you need its size.
+
+## Practice
+
+Three programs follow: a transfer between two boxes, a pointer walk across a squad row, and a maximum tracked by repointing.
+
+<ExerciseCard {...vaultTransfer} />
+
+<ExerciseCard {...squadPointerWalk} />
+
+<ExerciseCard {...richestAccount} />
