@@ -1,0 +1,423 @@
+---
+id: 16-01-contiguous
+title: Contiguous Allocation
+module: 16
+lecture: 'Lecture 16 — Memory Management'
+slides: '2–14'
+estimatedMinutes: 18
+prerequisites: ['10-03-system-calls']
+tags: ['memory', 'fragmentation', 'first-fit', 'best-fit']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## One region per request
+
+The simplest way to manage memory is to hand out one contiguous run of
+bytes per request and remember exactly where it starts and how long it
+is. No tables, no indirection: a pointer and a length. Every allocator
+from `malloc` down to the kernel's physical frame allocator starts here.
+
+The bookkeeping is a list of blocks sorted by address. Each block is
+either **free** or **in use**, and its neighbours are known by their
+position in the list rather than by stored pointers. To satisfy a
+request, find a free block big enough, split it into the part you hand
+out and the remainder, and mark the front half used. To release, mark a
+block free and merge it with any free neighbours, because two adjacent
+free blocks are the same resource as one large one.
+
+That merge step is where most of the interesting behaviour comes from.
+Without it, a program that allocates and frees repeatedly ends up with a
+heap peppered with useless one-byte gaps even though more than enough
+total memory exists. With it, the only holes left are the ones genuinely
+pinned between live blocks.
+
+## What you'll be able to do
+
+- Explain the difference between internal and external fragmentation.
+- Trace first fit, best fit, and worst fit over the same request script.
+- Say why best fit can leave the heap in a worse shape than first fit.
+- Coalesce adjacent free blocks and describe what happens if you do not.
+
+## Two kinds of waste
+
+The vocabulary is worth getting straight, because the two forms have
+opposite fixes.
+
+| | Internal fragmentation | External fragmentation |
+| --- | --- | --- |
+| Where the waste is | Inside an allocated block | In the free list |
+| Cause | The allocator rounds up to a fixed unit | Many small holes, each too small to use |
+| Who notices | The program that asked for 5 and got 16 | The program that asks for 16 and is refused |
+| Fix | Smaller unit, or a size class per request | Compaction, or a different allocation scheme |
+
+A contiguous allocator with exact-size splits has no internal
+fragmentation: ask for 12 bytes and the block is 12 bytes. Paging, in
+the next lesson, trades that away — it rounds every request up to 4096 —
+in exchange for eliminating the external kind. Neither is free, and no
+scheme removes both.
+
+External fragmentation is the interesting one because it is
+*statistical*. You cannot predict from a sequence of requests whether the
+heap will fragment, only measure it. That is why the three placement
+policies below are worth comparing on a fixed script rather than
+reasoning about in the abstract.
+
+First fit takes the first hole that is big enough. Best fit takes the
+smallest hole that works, on the theory that it wastes the least space.
+Worst fit takes the largest hole, on the theory that the leftover will
+still be big enough to be useful. Only one of these theories survives
+contact with a real workload, and the program below shows which.
+
+<TheoryBlock label="Why it matters for C" title="Your heap is exactly this list">
+
+	`malloc` maintains a free list with exactly this structure, plus
+	headers. glibc's allocator rounds requests into size classes, splits
+	and coalesces chunks, and keeps bins for common sizes — but the
+	underlying question is still "which free chunk do I take". The
+	practical consequence: a program that allocates many small blocks,
+	frees some of them in a scattered order, then asks for one large block
+	can fail with plenty of memory free. That failure is external
+	fragmentation, and no amount of `malloc` tuning removes it.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="fragmentation"
+	football="A coach needs a stretch of pitch forty metres long. There are fifty metres of free space, but split into two patches of twenty-five with a training drill in between. The total is enough and no single patch works. Nobody is using the wrong amount of ground; the ground is in the wrong places."
+	money="A shop needs a twenty-metre display run. The warehouse has thirty metres free in total, but as three ten-metre gaps between pallets. The space exists and cannot be used, and the only fixes are moving the pallets or storing the goods in smaller units."
+/>
+
+## Three policies, one script
+
+The program keeps a 64-byte heap as a block list. It allocates five
+blocks, frees two of them to punch holes of different sizes, then asks
+for an 8-byte block and a 16-byte one. All three policies run the same
+script, so any difference in the result is the policy's doing.
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+/* Three placement policies over the same 64-byte heap.
+ *
+ * A contiguous allocator keeps one list of blocks in address order, each
+ * either free or in use, and answers one question per request: which
+ * free block do I split? The three classic answers differ only in how
+ * they rank the candidates. Splitting and coalescing are identical, so
+ * any divergence below is the policy's doing. */
+
+#define HEAP      64
+#define MAX_BLOCKS 16
+
+struct block {
+    int start;
+    int size;
+    int used;
+};
+
+struct heap {
+    struct block blocks[MAX_BLOCKS];
+    int count;
+};
+
+enum strategy { FIRST, BEST, WORST };
+
+static void heap_reset(struct heap *h)
+{
+    h->count = 1;
+    h->blocks[0] = (struct block){0, HEAP, 0};
+}
+
+static int free_holes(const struct heap *h, int *largest)
+{
+    int holes = 0;
+    *largest = 0;
+
+    for (int i = 0; i < h->count; i++) {
+        if (!h->blocks[i].used) {
+            holes++;
+            if (h->blocks[i].size > *largest) {
+                *largest = h->blocks[i].size;
+            }
+        }
+    }
+    return holes;
+}
+
+static int pick(const struct heap *h, int size, enum strategy strategy)
+{
+    int choice = -1;
+
+    for (int i = 0; i < h->count; i++) {
+        const struct block *b = &h->blocks[i];
+        if (b->used || b->size < size) {
+            continue;
+        }
+        if (strategy == FIRST) {
+            return i;                    /* lowest address */
+        }
+        if (choice == -1) {
+            choice = i;
+        } else if (strategy == BEST && b->size < h->blocks[choice].size) {
+            choice = i;                  /* smallest hole that fits */
+        } else if (strategy == WORST && b->size > h->blocks[choice].size) {
+            choice = i;                  /* largest hole */
+        }
+    }
+    return choice;
+}
+
+/* Allocate `size` bytes and return the block index in use, or -1. */
+static int allocate(struct heap *h, int size, enum strategy strategy)
+{
+    int slot = pick(h, size, strategy);
+    if (slot == -1) {
+        return -1;
+    }
+
+    struct block *b = &h->blocks[slot];
+    int leftover = b->size - size;
+
+    if (leftover > 0) {
+        /* Shift everything above the slot up to make room for the tail. */
+        for (int k = h->count; k > slot + 1; k--) {
+            h->blocks[k] = h->blocks[k - 1];
+        }
+        h->count += 1;
+        h->blocks[slot + 1] = (struct block){b->start + size, leftover, 0};
+    }
+    h->blocks[slot].size = size;
+    h->blocks[slot].used = 1;
+    return slot;
+}
+
+/* Mark a block free, then merge it with any adjacent free neighbours.
+ * Without this step the heap becomes a confetti of one-byte holes; with
+ * it, the only holes left are the ones pinned between live blocks --
+ * which is external fragmentation, and the reason a 16-byte request can
+ * fail on a heap with 16 bytes free. */
+static void release(struct heap *h, int slot)
+{
+    if (slot < 0 || slot >= h->count) {
+        return;
+    }
+    h->blocks[slot].used = 0;
+
+    for (int i = 0; i + 1 < h->count; ) {
+        if (!h->blocks[i].used && !h->blocks[i + 1].used) {
+            h->blocks[i].size += h->blocks[i + 1].size;
+            for (int k = i + 1; k < h->count - 1; k++) {
+                h->blocks[k] = h->blocks[k + 1];
+            }
+            h->count -= 1;
+        } else {
+            i++;
+        }
+    }
+}
+
+/* An ASCII map of the heap, sixteen bytes per character column. */
+static void draw(const struct heap *h)
+{
+    char row[HEAP + 1];
+    char ruler[HEAP + 1];
+
+    memset(row, ' ', sizeof row);
+    row[HEAP] = '\0';
+    for (int i = 0; i < h->count; i++) {
+        char mark = h->blocks[i].used ? '#' : '.';
+        for (int k = 0; k < h->blocks[i].size; k++) {
+            row[h->blocks[i].start + k] = mark;
+        }
+    }
+
+    for (int i = 0; i < HEAP; i++) {
+        ruler[i] = (i % 8 == 0) ? '|' : '-';
+    }
+    ruler[HEAP] = '\0';
+
+    printf("  %s\n  %s\n", ruler, row);
+}
+
+int main(void)
+{
+    /* The script: fill most of the heap, then punch two holes with
+     * different sizes, then ask for an 8-byte block and a 16-byte one.
+     * The hole sizes are 12 and 8, so the 8-byte request is the first
+     * point at which the three policies can disagree. */
+    const int sizes[] = {12, 20, 8, 12, 8};
+    const int n = (int)(sizeof sizes / sizeof sizes[0]);
+    const char *names[] = {"first fit", "best fit", "worst fit"};
+
+    for (int s = FIRST; s <= WORST; s++) {
+        struct heap h;
+        int handles[5];
+
+        heap_reset(&h);
+        for (int i = 0; i < n; i++) {
+            handles[i] = allocate(&h, sizes[i], (enum strategy)s);
+        }
+
+        /* Free the first and third allocations: a 12-byte hole low in the
+         * heap and an 8-byte hole in the middle, separated by live data. */
+        release(&h, handles[0]);
+        release(&h, handles[2]);
+
+        int filled = allocate(&h, 8, (enum strategy)s);
+        int big = allocate(&h, 16, (enum strategy)s);
+
+        int largest = 0;
+        int holes = free_holes(&h, &largest);
+
+        printf("%s\n", names[s]);
+        draw(&h);
+        printf("  holes %d, largest %d bytes, 8-byte request %s, "
+               "16-byte request %s\n\n",
+               holes, largest,
+               filled == -1 ? "refused" : "placed",
+               big == -1 ? "refused" : "placed");
+    }
+
+    printf("each row is the same heap after the same operations.\n");
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+first fit
+  |-------|-------|-------|-------|-------|-------|-------|-------
+  ########....####################........####################....
+  holes 3, largest 8 bytes, 8-byte request placed, 16-byte request refused
+
+best fit
+  |-------|-------|-------|-------|-------|-------|-------|-------
+  ............################################################....
+  holes 2, largest 12 bytes, 8-byte request placed, 16-byte request refused
+
+worst fit
+  |-------|-------|-------|-------|-------|-------|-------|-------
+  ########....####################........####################....
+  holes 3, largest 8 bytes, 8-byte request placed, 16-byte request refused
+
+each row is the same heap after the same operations.
+```
+
+Read the map left to right: `#` is in use, `.` is free, and the `|`
+marks every eighth byte. The first and third rows are identical, which
+is not a bug — see below.
+
+**First fit** took the first hole big enough, which was the 12-byte one
+low in the heap, leaving a 4-byte remainder. The 8-byte hole in the
+middle stayed untouched until the 16-byte request, which failed because
+the largest hole is 8.
+
+**Best fit** picked the 8-byte hole for the 8-byte request, leaving no
+remainder at all, and the 12-byte hole survived intact. This is the only
+row where a 16-byte request would still fail — 12 is not 16 — but it is
+the row with the *fewest* holes and the *largest* remaining hole. Best
+fit used the smallest sufficient block correctly, and the heap is in the
+best shape of the three.
+
+**Worst fit** is identical to first fit here, and the reason is
+instructive: at the moment the 8-byte request arrives, the two holes are
+12 and 8, and the largest is 12 — the same block first fit took. Worst
+fit and first fit coincide whenever the first hole that fits is also the
+largest. That happens often on a heap whose low addresses were filled
+first, which is exactly what a growth-by-allocation program produces.
+
+The honest summary is that this script does not separate first fit from
+worst fit, and it barely separates either from best fit. Real allocator
+benchmarks run millions of requests drawn from a distribution, because a
+handful of requests is not enough data to rank the policies. What this
+program *does* show is the mechanism, and the fact that the difference
+between the policies is three lines of comparison.
+
+The 16-byte refusal in all three rows is the point of the whole lesson.
+Count the free bytes at the end of the first row: 4 at address 8, 8 at
+address 32, and 4 at address 60. That is 16 bytes free — exactly what the
+next request asks for — and the request is refused, because no single
+run is longer than 8. The bottom row is the same total split into
+12 + 4. Fragmentation is not a shortage of memory; it is a shortage of
+*consecutive* memory.
+
+<ExerciseCard
+	id="m16-compact"
+	concept="external fragmentation, compaction"
+	prompt="First-fit on a 64-byte heap. Start with five used blocks in address order — A 10 bytes at 0, B 8 at 10, C 12 at 18, D 6 at 30, E 20 at 36 — plus one free tail of 8 bytes at 56. Free B and D so the heap has three holes, print it, request 16 bytes, then compact (slide the live blocks towards zero in address order so the holes become one tail) and request 16 again. Print exactly:&#10;before compaction&#10;  used A start=0 size=10&#10;  free start=10 size=8&#10;  used C start=18 size=12&#10;  free start=30 size=6&#10;  used E start=36 size=20&#10;  free start=56 size=8&#10;free total 22 largest 8&#10;request 16: failed&#10;after compaction&#10;  used A start=0 size=10&#10;  used C start=10 size=12&#10;  used E start=22 size=20&#10;  free start=42 size=22&#10;request 16: granted&#10;free total 6&#10;The granted request splits the 22-byte tail, so 6 bytes are left. Nothing else is printed."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define HEAP 64&#10;#define MAX_BLOCKS 16&#10;&#10;struct block &#123; int start; int size; int used; &#125;;&#10;struct heap  &#123; struct block blocks[MAX_BLOCKS]; int count; &#125;;&#10;&#10;/* TODO: write compact() that preserves order and updates starts.&#10; * Then ask what breaks if a program still holds a pointer. */&#10;&#10;int main(void) &#123;&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="before compaction&#10;  used A start=0 size=10&#10;  free start=10 size=8&#10;  used C start=18 size=12&#10;  free start=30 size=6&#10;  used E start=36 size=20&#10;  free start=56 size=8&#10;free total 22 largest 8&#10;request 16: failed&#10;after compaction&#10;  used A start=0 size=10&#10;  used C start=10 size=12&#10;  used E start=22 size=20&#10;  free start=42 size=22&#10;request 16: granted&#10;free total 6&#10;"
+	hints={[
+		'Total free space is 22 bytes before compaction and the request only needs 16, so the failure is about contiguity: the largest single hole is 8.',
+		'Compaction rewrites each live block to a running cursor and appends one 22-byte tail at offset 42, which first-fit then splits into a 16-byte block and a 6-byte remainder.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* First-fit on a 64-byte heap. Two blocks are freed, which leaves three&#10; * holes whose largest is 8 bytes; compaction slides the live blocks to&#10; * zero and turns the holes into one 22-byte tail. */&#10;&#10;#define HEAP 64&#10;#define MAX_BLOCKS 16&#10;&#10;struct block &#123;&#10;    const char *name;&#10;    int start;&#10;    int size;&#10;    int used;&#10;&#125;;&#10;&#10;static struct block blocks[MAX_BLOCKS];&#10;static int block_count;&#10;&#10;static int total_free(void) &#123;&#10;    int total = 0;&#10;&#10;    for (int i = 0; i &lt; block_count; i++) &#123;&#10;        if (!blocks[i].used) &#123;&#10;            total += blocks[i].size;&#10;        &#125;&#10;    &#125;&#10;    return total;&#10;&#125;&#10;&#10;static int largest_free(void) &#123;&#10;    int best = 0;&#10;&#10;    for (int i = 0; i &lt; block_count; i++) &#123;&#10;        if (!blocks[i].used &amp;&amp; blocks[i].size &gt; best) &#123;&#10;            best = blocks[i].size;&#10;        &#125;&#10;    &#125;&#10;    return best;&#10;&#125;&#10;&#10;static void print_heap(void) &#123;&#10;    for (int i = 0; i &lt; block_count; i++) &#123;&#10;        if (blocks[i].used) &#123;&#10;            printf(&quot;  used %s start=%d size=%d\n&quot;, blocks[i].name,&#10;                   blocks[i].start, blocks[i].size);&#10;        &#125; else &#123;&#10;            printf(&quot;  free start=%d size=%d\n&quot;, blocks[i].start,&#10;                   blocks[i].size);&#10;        &#125;&#10;    &#125;&#10;&#125;&#10;&#10;/* Returns 1 when the request was placed. */&#10;static int alloc_first_fit(int size) &#123;&#10;    for (int i = 0; i &lt; block_count; i++) &#123;&#10;        if (blocks[i].used || blocks[i].size &lt; size) &#123;&#10;            continue;&#10;        &#125;&#10;        if (blocks[i].size == size) &#123;&#10;            blocks[i].used = 1;&#10;            blocks[i].name = &quot;R&quot;;&#10;            return 1;&#10;        &#125;&#10;        /* split: the tail of the hole becomes a smaller free block */&#10;        for (int j = block_count; j &gt; i + 1; j--) &#123;&#10;            blocks[j] = blocks[j - 1];&#10;        &#125;&#10;        block_count++;&#10;        blocks[i + 1].name = &quot;&quot;;&#10;        blocks[i + 1].start = blocks[i].start + size;&#10;        blocks[i + 1].size = blocks[i].size - size;&#10;        blocks[i + 1].used = 0;&#10;        blocks[i].size = size;&#10;        blocks[i].used = 1;&#10;        blocks[i].name = &quot;R&quot;;&#10;        return 1;&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;&#10;static void compact(void) &#123;&#10;    int cursor = 0;&#10;    int kept = 0;&#10;&#10;    for (int i = 0; i &lt; block_count; i++) &#123;&#10;        if (!blocks[i].used) &#123;&#10;            continue;&#10;        &#125;&#10;        blocks[kept] = blocks[i];&#10;        blocks[kept].start = cursor;&#10;        cursor += blocks[kept].size;&#10;        kept++;&#10;    &#125;&#10;    block_count = kept;&#10;    if (cursor &lt; HEAP) &#123;&#10;        blocks[block_count].name = &quot;&quot;;&#10;        blocks[block_count].start = cursor;&#10;        blocks[block_count].size = HEAP - cursor;&#10;        blocks[block_count].used = 0;&#10;        block_count++;&#10;    &#125;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    blocks[0] = (struct block)&#123;&quot;A&quot;, 0, 10, 1&#125;;&#10;    blocks[1] = (struct block)&#123;&quot;B&quot;, 10, 8, 1&#125;;&#10;    blocks[2] = (struct block)&#123;&quot;C&quot;, 18, 12, 1&#125;;&#10;    blocks[3] = (struct block)&#123;&quot;D&quot;, 30, 6, 1&#125;;&#10;    blocks[4] = (struct block)&#123;&quot;E&quot;, 36, 20, 1&#125;;&#10;    blocks[5] = (struct block)&#123;&quot;&quot;, 56, 8, 0&#125;;&#10;    block_count = 6;&#10;&#10;    blocks[1].used = 0; /* B is freed */&#10;    blocks[3].used = 0; /* D is freed */&#10;&#10;    printf(&quot;before compaction\n&quot;);&#10;    print_heap();&#10;    printf(&quot;free total %d largest %d\n&quot;, total_free(), largest_free());&#10;    printf(&quot;request 16: %s\n&quot;, alloc_first_fit(16) ? &quot;granted&quot; : &quot;failed&quot;);&#10;&#10;    compact();&#10;    printf(&quot;after compaction\n&quot;);&#10;    print_heap();&#10;    printf(&quot;request 16: %s\n&quot;, alloc_first_fit(16) ? &quot;granted&quot; : &quot;failed&quot;);&#10;    printf(&quot;free total %d\n&quot;, total_free());&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Splitting a block but forgetting to grow the list
+
+When a free block is split, the block list gets one entry longer. If the
+new entry is written past the end of the array — or if `count` is not
+incremented — the allocator appears to work until the heap reaches
+`MAX_BLOCKS`, at which point it either corrupts memory or silently loses
+the remainder. Every allocator has a maximum number of blocks for exactly
+this reason.
+
+### Coalescing only with the next block
+
+Two-pass bugs are common: the release loop merges `i` with `i+1`, then
+moves on, so a chain of three free blocks becomes two. The loop in the
+program above deliberately does not advance on a merge, so a run of any
+length collapses in one call. Test it by freeing four adjacent blocks and
+checking the hole count is one, not three.
+
+### Assuming best fit always wins
+
+Best fit leaves the smallest remainders, which sounds optimal and often
+is, but it also leaves many tiny fragments that are useless to any later
+request. First fit tends to leave one large hole at the end of the heap,
+which is more useful in practice — and it is faster, because it stops
+scanning at the first hit. The measurement in the output above happens to
+favour best fit on hole count; a different script would not.
+
+### Trusting an address to stay valid after compaction
+
+Compaction is impossible for a general-purpose allocator because the
+program holds raw pointers to the blocks. Moving a block invalidates
+every pointer to it, and C has no mechanism to update them — this is
+precisely the problem paging solves by moving the *mapping* instead of
+the data.
+
+### Reporting fragmentation as a percentage of free memory
+
+"40% fragmented" is meaningless without saying which request sizes fail.
+The only useful statement is "an N-byte request cannot be satisfied by a
+hole of size M", which is a fact about the largest hole, not about the
+total.
+
+<QuizCard
+	id="m16-quiz-fit"
+	question="A heap has free blocks of 10, 6, and 14 bytes in address order. Requests arrive for 6, then 10, then 12 bytes. Which policies place all three, and what does the result say about relying on the largest hole as a measure of health?"
+	options={[
+		'Only best-fit places all three: 6 in the 6-byte hole, 10 in the 10, and 12 in the 14. First-fit puts the 6 into the 10-byte hole and then the 12 has nowhere to go. The largest hole was 14 throughout, so the biggest hole says nothing about whether a request fits.',
+		'First-fit and best-fit both place all three, because the total free space is 30 bytes and every request is smaller than that.',
+		'Neither can place all three, because the 12-byte request is bigger than any two holes combined.',
+		'Worst-fit places all three, since it never leaves a hole smaller than the request it just satisfied.'
+	]}
+	answer={0}
+	explanation="Best-fit spends the exact holes first, so the 14 is still available when the 12 arrives; first-fit burns the 10 on the 6 and fragments what is left. Health depends on the distribution of hole sizes and the request sizes, not on the maximum hole."
+/>
+
+<LectureReference lecture="Lecture 16 — Memory Management" slides="2–14" />

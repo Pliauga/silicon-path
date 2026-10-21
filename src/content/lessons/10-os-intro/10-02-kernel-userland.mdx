@@ -1,0 +1,169 @@
+---
+id: 10-02-kernel-userland
+title: Kernel & Userland
+module: 10
+lecture: 'Lecture 10 — Operating Systems'
+slides: '17–29'
+estimatedMinutes: 15
+prerequisites: ['10-01-what-is-an-os']
+tags: ['kernel', 'privilege', 'errors']
+hasExercise: false
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Two modes on one CPU
+
+The CPU has an instruction that says "from now on, only privileged instructions
+may run". The kernel runs in **kernel mode** (the lecture also calls it
+supervisor mode); your code runs in **user mode**. The switch between them is
+not a flag your program sets. It is a hardware-level transition that happens in
+one direction only: the kernel decides when to come back.
+
+The consequences are sharper than they sound:
+
+- A user-mode program cannot execute `hlt`, disable interrupts, or write to a
+  page table. Attempting it traps into the kernel.
+- A user-mode program cannot read another process's memory. The kernel owns the
+  address space mapping.
+- A bug in a user-mode program kills that program. A bug in kernel mode kills
+  the machine.
+
+That asymmetry is why the kernel is small and the userland is enormous.
+
+## What you'll be able to do
+
+- Distinguish kernel mode from user mode and say what each one forbids.
+- Sort a given piece of software into the kernel or the userland and say why.
+- Explain why a failed privileged request returns an error code instead of killing the program.
+- Read `strerror(errno)` to turn a refusal into a sentence you can act on.
+
+## What lives on each side
+
+| Userland | Kernel |
+| --- | --- |
+| the shell, your editor, every process you start | the scheduler, the memory manager, drivers |
+| the C library (`printf`, `malloc`) | system call implementations |
+| anything you compile from a `.c` file | code that was already running at boot |
+
+Notice where the C standard library sits. `printf` is userland. It buffers
+characters in a `FILE *` and eventually calls `write`, which is where the
+privilege boundary is crossed. That two-step is why output can be lost when a
+program crashes before it flushes.
+
+<TheoryBlock label="Why it matters for C" title="A refused request is an error code, not a crash">
+
+	Crossing into the kernel is a function call with a return value. The kernel does not kill your
+	program for asking something it is not allowed to do — it returns `-1` and sets `errno`. That
+	design is deliberate: a program can probe for a capability, get a clean refusal, and carry on with
+	a fallback path. The alternative, terminating on refusal, would make every program fragile against
+	the one environment where it lacks a privilege. So the habit is: check the return value, read
+	`errno` immediately, and treat `EACCES` or `EPERM` as a normal branch rather than a fatal condition.
+</TheoryBlock>
+
+<Eli5Block
+	topic="privilege-mode"
+	football="The referee carries the whistle. Players can kick the ball but only the referee can stop play, and nobody else touches the scoreboard. A player who grabs the scoreboard is not just wrong — the whole match stops until they are removed. The kernel is the referee; your program is a player with bounded rights."
+	money="Only the vault manager can open the vault door; tellers can accept deposits at the window and nothing more. If a teller could open the vault, one dishonest teller would end the bank. Restricting that one action is cheaper than vetting every teller forever — the same trade the CPU makes with privilege levels."
+/>
+
+## When userland asks for something it cannot have
+
+`setuid(0)` asks the kernel to make the calling process the superuser. An
+ordinary process may ask. Only the kernel may grant, and for a normal user the
+answer is no.
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+int main(void) {
+    /* setuid(0) means "make me the superuser". An ordinary program is
+       allowed to ask. Only the kernel may answer, and it says no. */
+    errno = 0;
+    if (setuid(0) != 0) {
+        printf("the request was refused\n");
+        printf("errno  = %d\n", errno);
+        printf("reason = %s\n", strerror(errno));
+    } else {
+        printf("this process was already privileged\n");
+    }
+
+    /* The program kept running. A refused system call is not a crash:
+       it is an error code the caller is expected to check. */
+    printf("still running after the refusal: yes\n");
+    printf("privilege level: %s\n", getuid() == 0 ? "root" : "ordinary user");
+    return 0;
+}
+```
+
+`unistd.h`, `setuid`, and `getuid` are POSIX. On Windows the equivalent concept
+exists — access tokens — but the calls are different and this program will not
+compile there.
+
+## Expected output
+
+Run as an ordinary user (not with `sudo`):
+
+```text
+the request was refused
+errno  = 1
+reason = Operation not permitted
+still running after the refusal: yes
+privilege level: ordinary user
+```
+
+If you *do* run it as root, the first branch is skipped and the output changes.
+That is a real property of the program, not a defect: the kernel's answer
+depends on who is asking.
+
+`errno` is 1, which POSIX names `EPERM`. The number itself is not portable — only
+the macro is. Writing `if (errno == 1)` is fragile; `if (errno == EPERM)` is not.
+
+## Common pitfalls
+
+### Reading `errno` when nothing failed
+
+`errno` is only meaningful immediately after a call that returned failure. It is
+not reset on success, and any function you call in between — including
+`printf` — may overwrite it. Set `errno = 0` before the call if you intend to
+distinguish "failed with this error" from "failed with no error recorded".
+
+### Using `strerror` and assuming the wording
+
+`strerror` returns a human-readable string that is *not* part of the C standard's
+required wording and is localized. The output above says "Operation not
+permitted"; another system or locale may say something else. Compare `errno`
+against `EPERM` in code. Print the string only for humans.
+
+### Believing userland can fix a permission error
+
+If the kernel returns `EPERM`, retrying the same call with the same privileges
+returns `EPERM` again. The fix is either to change what the process is allowed
+to do (run it differently, adjust permissions) or to handle the failure. There
+is no third option, and a retry loop is how a program becomes a space heater.
+
+<QuizCard
+	id="os-privilege-quiz-1"
+	question="A program calls setuid(0), gets -1, and errno is EPERM. It loops and calls setuid(0) again. What happens on the second call, and why?"
+	options={[
+		'It fails again with EPERM. A privilege check is re-evaluated on every call, so retrying the same request without changing anything returns the same denial',
+		'It succeeds on the second attempt, because the kernel caches the first request and grants it after a retry',
+		'It arrives in the kernel this time and changes the uid, because the first call already passed the security check',
+		'It returns 0 the second time, because the first call consumed the EPERM error and the second is a no-op'
+	]}
+	answer={0}
+	explanation="setuid either succeeds and changes the credentials or fails and changes nothing; a permission denial is not transient, so calling it in a loop just produces the same EPERM forever."
+/>
+
+<LectureReference lecture="Lecture 10 — Operating Systems" slides="17–29" />

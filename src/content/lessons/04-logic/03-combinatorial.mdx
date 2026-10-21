@@ -1,0 +1,329 @@
+---
+id: 04-03-combinatorial
+title: Combinatorial Circuits
+module: 4
+lecture: 'Lecture 04 — Boolean Logic'
+slides: '31–46'
+estimatedMinutes: 18
+prerequisites: ['04-02-boolean']
+tags: ['adders', 'circuits', 'lookup-table']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Output depends only on input
+
+A **combinatorial** circuit has no memory. Its output is a function of
+its current inputs and nothing else — no clock, no stored state, no
+history. A gate is combinatorial; a chain of gates is combinatorial; the
+arithmetic unit of a processor is combinatorial right up to the point
+where it writes a result into a register.
+
+That property is what makes these circuits analysable. You can write a
+truth table with as many rows as there are input combinations, and the
+table *is* the circuit's specification. Sixteen rows for four inputs.
+That is small enough to check by hand and small enough to put in a test.
+
+## What you'll be able to do
+
+- Build a full adder from `^` and `&`, and say why XOR is the sum bit.
+- Chain four adders and explain what the carry does between stages.
+- Turn a table of sixteen outputs into a function using bit tests.
+- Say which circuits are combinatorial and which need a clock.
+
+## The half adder and the full adder
+
+Adding two bits gives a sum and a carry. `1 + 1` is `10` in binary: sum 0,
+carry 1. That is a **half adder**, and its two outputs are two gates:
+
+| `a` | `b` | sum `a ^ b` | carry `a & b` |
+| --- | --- | ----------- | ------------- |
+| 0 | 0 | 0 | 0 |
+| 0 | 1 | 1 | 0 |
+| 1 | 0 | 1 | 0 |
+| 1 | 1 | 0 | 1 |
+
+XOR gives the sum bit because it is addition without the carry. AND gives
+the carry because a carry happens exactly when both inputs are 1.
+
+A **full adder** adds a third input, the carry coming in from the bit
+below. It is two half adders and an OR:
+
+- `sum = a ^ b ^ carry_in`
+- `carry_out = (a & b) | ((a ^ b) & carry_in)`
+
+Chain four of those, feeding each carry out into the next carry in, and
+you have a four-bit adder. The chain is why this design is called
+**ripple carry**: the answer at bit 3 is not final until the carry has
+rippled through bits 0, 1, and 2.
+
+<Eli5Block
+	topic="combinatorial"
+	football="A league table is computed from this season's results alone. Change a result and the table changes; nothing else about the table depends on last year. There is no memory in it — you can recompute the whole thing from scratch at any moment and get the same answer."
+	money="A shop's total for a basket is the sum of the prices in it, nothing more. It does not remember yesterday's basket, and it does not care what order you scan the items. Give it the same basket twice and it produces the same total twice."
+/>
+
+<TheoryBlock label="Why it matters for C" title="The adder is why `+` works">
+
+	Every `+` in your source eventually becomes an adder network like the
+	one below. That is also why signed and unsigned addition use the *same*
+	circuit: two's complement was chosen so that the bit-level operation is
+	identical and only the interpretation of the result differs. Overflow
+	flags are a side effect of the top carry, not a separate mechanism.
+</TheoryBlock>
+
+## Four bits, built from gates
+
+The program below implements a full adder in four lines, then chains four
+of them. It prints the whole truth table of one full adder — all eight
+rows — and then five additions at nibble width, including two that
+overflow.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* A full adder is two XORs and three AND/OR gates. That is the entire
+ * arithmetic unit of a four-bit machine. */
+static void full_adder(int a, int b, int carry_in, int *sum, int *carry_out) {
+    int differ = a ^ b;
+    *sum = differ ^ carry_in;
+    *carry_out = (differ & carry_in) | (a & b);
+}
+
+/* Four full adders in a row. The carry out of bit n is the carry in to
+ * bit n + 1, which is why the loop must run low bit first. */
+static uint8_t ripple_carry(uint8_t a, uint8_t b, int carry_in, int *carry_out) {
+    uint8_t result = 0;
+    int carry = carry_in;
+
+    for (int bit = 0; bit < 4; bit++) {
+        int sum;
+        full_adder((a >> bit) & 1, (b >> bit) & 1, carry, &sum, &carry);
+        result |= (uint8_t)(sum << bit);
+    }
+    *carry_out = carry;
+    return result;
+}
+
+static void bits4(uint8_t value) {
+    for (int bit = 3; bit >= 0; bit--) {
+        printf("%u", (unsigned)((value >> bit) & 1u));
+    }
+}
+
+int main(void) {
+    printf("one full adder, all eight input combinations:\n");
+    printf(" a  b  cin | sum  cout\n");
+    for (unsigned i = 0; i < 8u; i++) {
+        int a = (int)((i >> 2) & 1u);
+        int b = (int)((i >> 1) & 1u);
+        int cin = (int)(i & 1u);
+        int sum, cout;
+        full_adder(a, b, cin, &sum, &cout);
+        printf(" %d  %d   %d  |  %d     %d\n", a, b, cin, sum, cout);
+    }
+
+    printf("\nfour bits chained together:\n");
+    printf("  a    b   | sum  cout  value\n");
+    const uint8_t pairs[5][2] = {{3, 4}, {7, 8}, {9, 7}, {15, 1}, {12, 12}};
+    for (int i = 0; i < 5; i++) {
+        int carry_out;
+        uint8_t sum = ripple_carry(pairs[i][0], pairs[i][1], 0, &carry_out);
+        printf(" ");
+        bits4(pairs[i][0]);
+        printf(" ");
+        bits4(pairs[i][1]);
+        printf("  | ");
+        bits4(sum);
+        printf("   %d    %2u\n", carry_out,
+               (unsigned)pairs[i][0] + (unsigned)pairs[i][1]);
+    }
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+one full adder, all eight input combinations:
+ a  b  cin | sum  cout
+ 0  0   0  |  0     0
+ 0  0   1  |  1     0
+ 0  1   0  |  1     0
+ 0  1   1  |  0     1
+ 1  0   0  |  1     0
+ 1  0   1  |  0     1
+ 1  1   0  |  0     1
+ 1  1   1  |  1     1
+
+four bits chained together:
+  a    b   | sum  cout  value
+ 0011 0100  | 0111   0     7
+ 0111 1000  | 1111   0    15
+ 1001 0111  | 0000   1    16
+ 1111 0001  | 0000   1    16
+ 1100 1100  | 1000   1    24
+```
+
+The truth table is complete: eight rows, every combination of three
+inputs, and the `sum` column is an odd parity count — a property worth
+noticing, because it is exactly why XOR appears twice.
+
+In the second table, rows 3 and 4 both print `0000` with a carry out. Those
+are the overflows: `9 + 7` is 16 and `15 + 1` is 16, neither of which fits
+in four bits. The five-bit answer would be `10000`, and the circuit
+produces the low four bits plus a carry. That carry bit is the hardware
+origin of an overflow flag — and the reason `9 + 7` in a four-bit
+register reads as 0.
+
+Row 5, `12 + 12` is 24, which prints `1000` with carry 1: 8 + 16. Read it
+as five bits and it is correct.
+
+## From a table to a function
+
+The same technique turns any sixteen-row table into code. To map a nibble
+to a hex character, test each bit and add its weight to the character.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* A hex digit chosen by testing individual bits, with no arithmetic on
+ * the nibble as a whole and no table indexed by value. */
+
+static char hex_digit(uint8_t nibble) {
+    char out = '0';
+
+    if (nibble & 0x8u) out += 8;
+    if (nibble & 0x4u) out += 4;
+    if (nibble & 0x2u) out += 2;
+    if (nibble & 0x1u) out += 1;
+
+    /* 10..15 become A..F; the gap between '9' and 'A' is seven. */
+    if (out > '9') {
+        out = (char)(out + 7);
+    }
+    return out;
+}
+
+int main(void) {
+    printf("nibble  bits    digit\n");
+    for (unsigned n = 0; n < 16u; n++) {
+        uint8_t v = (uint8_t)n;
+        printf("  %2u    ", n);
+        for (int bit = 3; bit >= 0; bit--) {
+            printf("%u", (unsigned)((v >> bit) & 1u));
+        }
+        printf("    %c\n", hex_digit(v));
+    }
+
+    printf("\na byte as two digits:\n");
+    uint8_t byte = 0xBEu;
+    printf("  0x%02X -> %c%c\n", byte, hex_digit((uint8_t)(byte >> 4)),
+           hex_digit((uint8_t)(byte & 0x0Fu)));
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+nibble  bits    digit
+   0    0000    0
+   1    0001    1
+   2    0010    2
+   3    0011    3
+   4    0100    4
+   5    0101    5
+   6    0110    6
+   7    0111    7
+   8    1000    8
+   9    1001    9
+  10    1010    A
+  11    1011    B
+  12    1100    C
+  13    1101    D
+  14    1110    E
+  15    1111    F
+
+a byte as two digits:
+  0xBE -> BE
+```
+
+Each of the four `if` statements adds the weight of one bit if that bit is
+set, so the digit's value is assembled from the bits rather than looked
+up. That is a sum-of-products circuit written in C: four product terms,
+combined with OR, which here is the repeated addition.
+
+The `+ 7` step handles the jump from `'9'` to `'A'`. Those characters are
+not adjacent in ASCII — there are seven punctuation codes between them —
+so a value of 10 would otherwise land on `':'`. The magic number is 7,
+and it is worth knowing why rather than copying it.
+
+## Common pitfalls
+
+### Building a ripple-carry adder and expecting it to be fast
+
+Each stage waits for the carry from the one below, so the delay grows
+with width. A 64-bit ripple-carry adder is genuinely slower than a
+64-bit design that computes carries in parallel. Real CPUs use carry-lookahead
+or carry-select, which are the same logic rearranged for depth rather than
+gate count.
+
+### Confusing combinatorial with sequential
+
+A combinatorial circuit has no clock and no state, so it cannot count or
+remember. The moment you add a register to hold the output, the design
+becomes sequential and needs a clock to decide *when* the value is
+captured. That boundary is the subject of the next module.
+
+### Using `+` inside a bit-test table
+
+The nibble function deliberately never adds the nibble to `'0'` as a
+whole. Doing so works for 0–9 and breaks at 10, where the arithmetic
+produces punctuation. When a table has a discontinuity, build it from
+conditions rather than from arithmetic and hope.
+
+### Testing a circuit on three inputs
+
+A three-input function has eight rows, and testing five of them tests
+nothing in particular. Enumerate the full space in the test: it is eight
+iterations, and it is the difference between "it worked when I tried it"
+and "it is correct".
+
+<ExerciseCard
+	id="m04-adder-extend"
+	concept="ripple-carry subtraction"
+	prompt="Extend the four-bit adder to eight bits and give it a subtract mode: when the mode flag is set, invert every bit of b and set the carry-in to 1, which computes a - b in two's complement. Run each of the four rows the starter defines and print exactly one line per row in the form `9 - 4 = 5 carry=1` — the two operands, the operator that matches the mode, the eight-bit sum, and the carry-out as the last field. 9 - 4 must come out as 5."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;/* Eight-bit ripple carry with an invert flag on the b operand. */&#10;static uint8_t add8(uint8_t a, uint8_t b, int subtract, int *carry_out) &#123;&#10;    /* TODO: for bit 0 to 7, XOR the bits with the carry in, and carry out when two agree */&#10;    (void)a;&#10;    (void)b;&#10;    (void)subtract;&#10;    *carry_out = 0;&#10;    return 0;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    struct row &#123;&#10;        uint8_t a;&#10;        uint8_t b;&#10;        int subtract;&#10;    &#125;;&#10;    struct row rows[] = &#123;&#123;9, 4, 1&#125;, &#123;4, 9, 1&#125;, &#123;200, 100, 0&#125;, &#123;255, 1, 0&#125;&#125;;&#10;    /* TODO: print &quot;9 - 4 = 5 carry=1&quot; for each row */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="9 - 4 = 5 carry=1&#10;4 - 9 = 251 carry=0&#10;200 + 100 = 44 carry=1&#10;255 + 1 = 0 carry=1&#10;"
+	hints={[
+		'In subtract mode the b input enters the adder inverted while carry_in starts at 1; that is exactly ~b + 1 added to a, which is a - b.',
+		'For each bit: sum_bit = a_bit ^ b_bit ^ carry, and the new carry is 1 when at least two of those three are 1. Print the carry-out as 1 for a borrow-free subtraction.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;/* Eight-bit ripple-carry adder. When subtract is set, every bit of b is&#10; * inverted and carry_in is 1, which is how two's complement subtraction is&#10; * built out of the same adder. */&#10;static uint8_t add8(uint8_t a, uint8_t b, int subtract, int *carry_out) &#123;&#10;    unsigned inverted = subtract ? (~(unsigned)b &amp; 0xFFu) : (unsigned)b;&#10;    unsigned carry = subtract ? 1u : 0u;&#10;    unsigned sum = 0;&#10;&#10;    for (int bit = 0; bit &lt; 8; bit++) &#123;&#10;        unsigned a_bit = ((unsigned)a &gt;&gt; bit) &amp; 1u;&#10;        unsigned b_bit = (inverted &gt;&gt; bit) &amp; 1u;&#10;        unsigned sum_bit = a_bit ^ b_bit ^ carry;&#10;        carry = (a_bit &amp; b_bit) | (a_bit &amp; carry) | (b_bit &amp; carry);&#10;        sum |= sum_bit &lt;&lt; bit;&#10;    &#125;&#10;&#10;    *carry_out = (int)carry;&#10;    return (uint8_t)sum;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    struct row &#123;&#10;        uint8_t a;&#10;        uint8_t b;&#10;        int subtract;&#10;    &#125;;&#10;    struct row rows[] = &#123;&#123;9, 4, 1&#125;, &#123;4, 9, 1&#125;, &#123;200, 100, 0&#125;, &#123;255, 1, 0&#125;&#125;;&#10;&#10;    for (int i = 0; i &lt; 4; i++) &#123;&#10;        int carry = 0;&#10;        uint8_t sum = add8(rows[i].a, rows[i].b, rows[i].subtract, &amp;carry);&#10;        printf(&quot;%u %c %u = %u carry=%d\n&quot;, (unsigned)rows[i].a,&#10;               rows[i].subtract ? '-' : '+', (unsigned)rows[i].b,&#10;               (unsigned)sum, carry);&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m04-quiz-carry"
+	question="In a four-bit ripple-carry adder, 9 + 7 produces a sum of 0000 and a carry out of 1. What five-bit value does that represent, and which single bit did the four-bit result discard?"
+	options={[
+		'10000 = 16 — the carry-out bit is bit 4, worth 16',
+		'00000 = 0 — the sign bit absorbed the overflow',
+		'10001 = 17 — the carry plus a sticky bit from the addition',
+		'01000 = 8 — the top bit of each operand was discarded'
+	]}
+	answer={0}
+	explanation="9 + 7 = 16, which is 10000 in binary. A four-bit adder keeps only the low four bits, 0000, and reports the fifth bit as the carry-out, so the discarded bit is worth 16."
+/>
+
+<LectureReference lecture="Lecture 04 — Boolean Logic" slides="31–46" />

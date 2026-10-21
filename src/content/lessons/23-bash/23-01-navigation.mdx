@@ -1,0 +1,134 @@
+---
+id: 23-01-navigation
+title: 'Finding Your Way'
+module: 23
+lecture: 'Module 23 — Bash & Scripting'
+slides: 'supplementary'
+estimatedMinutes: 12
+prerequisites: []
+tags: ['bash', 'filesystem', 'navigation']
+hasExercise: false
+hasQuiz: false
+---
+
+<script>
+	import BashTerminal from '$lib/components/viz/BashTerminal.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+</script>
+
+## The shell is a program that runs other programs
+
+When you open a terminal you are talking to a shell — usually Bash. It is
+not part of the kernel and it is not magic. It is an ordinary program whose
+job is to read a line of text, decide what you asked for, and start the
+program that does it.
+
+That is why everything in this module has a name you can read. `ls` is a
+file on disk. `cd` is built into the shell because a child process cannot
+change its parent's directory. `echo` is both, depending on your system.
+The prompt you see is not an invitation to chat; it is a report.
+
+```
+student@silicon-path:~$
+```
+
+Read it as four facts: **who** you are (`student`), **what machine** you are
+on, **where** you are (`~`, which means your home directory), and that the
+shell is **ready for a command** (`$`).
+
+## Three questions, three commands
+
+Every navigation session is the same loop: where am I, what is here, how do I
+move. The shell answers those with three commands and nothing else is needed
+to get started.
+
+| Question | Command | What it prints |
+| --- | --- | --- |
+| Where am I? | `pwd` | the absolute path of the current directory |
+| What is here? | `ls` | the names in the current directory |
+| How do I move? | `cd path` | nothing on success — a silent command is a successful one |
+
+`ls -l` asks for the long form: permissions, owner, size, date, name. The
+first column is the one this module will spend the next lesson on. For now,
+note that directories end in `/` and files do not.
+
+## Two ways to name a file
+
+An **absolute** path starts at the root of the filesystem, `/`, and means the
+same place no matter where you are standing. A **relative** path starts from
+where you are now. The difference matters the moment you move.
+
+| Path | Kind | Means |
+| --- | --- | --- |
+| `/home/student/lab/data.txt` | absolute | that file, from anywhere |
+| `lab/data.txt` | relative | `lab/` inside the current directory |
+| `./notes.txt` | relative | explicitly "here" |
+| `../reports` | relative | the sibling called `reports` |
+| `~` | shorthand | your home directory |
+
+Two dots mean "the parent". One dot means "this directory" — and it is not
+decoration: `./script.sh` is how you tell the shell to run a file from the
+current directory rather than search `$PATH` for it. That distinction is the
+whole reason a script needs an execute bit, which is lesson 2.
+
+## Making space
+
+Reading the filesystem is half of it. The other half is creating things, and
+the shell creates with small, composable commands rather than a wizard.
+
+| Command | Does |
+| --- | --- |
+| `mkdir lab2` | creates one directory |
+| `mkdir -p a/b/c` | creates the whole chain, quietly |
+| `touch report.txt` | creates an empty file, or updates its timestamp |
+| `echo hello > out.txt` | writes `hello` into a file, replacing it |
+| `echo more >> out.txt` | appends instead of replacing |
+
+`>` and `>>` are the shell doing the work, not `echo`. `echo` only ever
+prints to standard output; the shell is what points standard output at a
+file. This is the same mechanism that will let you pipe one program into
+another later, and it is why an unlucky `>` can destroy a file's contents
+without any warning.
+
+<TheoryBlock label="Why it matters for C" title="Your program inherits all of this">
+
+A C program started from the shell receives three open streams — standard
+input, standard output, standard error — already connected to whatever the
+shell set up. When you write `printf`, you write to file descriptor 1, and
+the shell decides where descriptor 1 points. Redirection is not a feature of
+the program; it is a rearrangement of the file table the program inherits.
+That is why `printf` and `ls` and `cat` all redirect the same way.
+
+</TheoryBlock>
+
+## A terminal you can break
+
+The practice shell below is a real state machine, not a recording. The files
+live in memory, so a mistyped `rm` cannot cost you anything — but the rules
+are the rules: `cd` into a directory needs execute permission on it, `cat`
+needs read, and writing over a file needs write.
+
+<BashTerminal />
+
+Work through this short sequence. Do not read it as a list of spells; after
+each command, say out loud what changed in the prompt or the output.
+
+1. `pwd` — confirm where you are.
+2. `ls` — see the practice files. `notes.txt`, `greet.sh`, `loop.sh`, `lab/`, `reports/`.
+3. `cd lab` — the prompt becomes `~/lab`.
+4. `ls` — now you see `data.txt`.
+5. `cd ..` — back to `~`. Two dots are the parent directory, not "back".
+6. `mkdir -p projects/c/hello` — three directories at once.
+7. `cd projects/c/hello` and `pwd` — the path is long, the command was short.
+8. `cd ~` — return home from anywhere.
+
+## What to carry forward
+
+The prompt is a status line, and `pwd`/`ls`/`cd` are how you keep it honest.
+Relative paths are interpreted from wherever you are, so "it worked a minute
+ago" usually means you moved. And `./` is not a flourish — it is the
+difference between running a file and asking the shell to search for it on
+`$PATH`.
+
+Next: those permission letters in `ls -l`, and why a script can be readable
+and still refuse to run.

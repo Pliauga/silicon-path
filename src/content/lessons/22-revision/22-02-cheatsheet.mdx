@@ -1,0 +1,389 @@
+---
+id: 22-02-cheatsheet
+title: Cheatsheet
+module: 22
+lecture: 'Lecture 22 — Revision'
+slides: '16–30'
+estimatedMinutes: 15
+prerequisites: ['22-01-big-picture']
+tags: ['reference', 'syntax', 'limits']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The page you keep open
+
+A cheatsheet is not a summary. It is the set of facts that are cheap to look up
+and expensive to get wrong: the exact `printf` specifier for a `size_t`, the
+precedence of `&` against `==`, whether `long` is four bytes here or eight.
+Facts you can derive from first principles do not belong here; facts whose
+wrong form compiles silently do.
+
+Everything in the tables below is standard C11. The program at the end prints
+the numbers that vary between platforms, so you can check the ones on *your*
+machine rather than trusting a table written on someone else's.
+
+## What you'll be able to do
+
+- Pick the right `printf` specifier without guessing.
+- State the precedence traps that actually cause bugs.
+- Recognise the five undefined-behaviour patterns that appear most often.
+- Check a platform's type sizes and limits with one compiled program.
+
+## Types and their guaranteed minimums
+
+| Type | Minimum size | Typical | Range if typical |
+| --- | --- | --- | --- |
+| `char` | 1 | 1 | −127..127 or 0..255 |
+| `short` | 2 | 2 | ±32,767 |
+| `int` | 2 | 4 | ±2,147,483,647 |
+| `long` | 4 | 8 (LP64), 4 (LLP64) | ±9.2×10¹⁸ |
+| `long long` | 8 | 8 | ±9.2×10¹⁸ |
+| `float` | — | 4 | ~7 digits |
+| `double` | — | 8 | ~15 digits |
+| `size_t` | 2 | 8 | 0..2⁶⁴−1 |
+| `ptrdiff_t` | 2 | 8 | ±2⁶³ |
+
+The standard guarantees only the minimums and the ordering
+`char ≤ short ≤ int ≤ long ≤ long long`. It does **not** guarantee that `int`
+is 4 bytes, and code that assumes it is wrong on some embedded targets. Use
+`<stdint.h>`'s `int32_t` when the width matters.
+
+<TheoryBlock label="Why it matters for C" title="Every typedef here corresponds to a register">
+
+	`int` is the machine's natural word — 32 bits on the x86 you are probably
+	using, 16 on a 1970s minicomputer, 64 on some modern DSPs. `size_t` is the
+	width of a pointer, because it must be able to express any object's size in
+	the address space. `ptrdiff_t` is signed because a difference can be
+	negative. These are not arbitrary choices; each one is a statement about the
+	hardware the language was designed to describe.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="cheatsheet"
+	football="A referee's card lists the pitch dimensions, the number of players, and what counts as offside. Nobody memorises it because it is short and getting a line wrong changes the result. It is not a coaching manual; it is the reference you check in the moment."
+	money="A kitchen's wall card lists oven temperatures, conversions, and which shelf things go on. The cook knows how to cook; the card stops them guessing whether 180 is fan or conventional. It is pinned up because guessing costs a whole service."
+/>
+
+## Operators by precedence, the ones that bite
+
+| Level | Operators | Associativity | Trap |
+| --- | --- | --- | --- |
+| 1 | `()` `[]` `.` `->` `++` `--` (postfix) | left | `*p++` is `*(p++)` |
+| 2 | `!` `~` `++` `--` (prefix) `*` `&` `sizeof` | right | `*p++` again |
+| 3 | `*` `/` `%` | left | `%` on negatives truncates toward zero |
+| 4 | `+` `-` | left | pointer + int is scaled |
+| 5 | `<<` `>>` | left | shifting by ≥ width is UB |
+| 6 | `<` `<=` `>` `>=` | left | |
+| 7 | `==` `!=` | left | `a & b == c` is `a & (b == c)` |
+| 8 | `&` | left | **below** `==`, the classic bug |
+| 9 | `^` | left | |
+| 10 | `\|` | left | |
+| 11 | `&&` | left | short-circuits |
+| 12 | `\|\|` | left | short-circuits |
+| 13 | `?:` | right | |
+| 14 | `=` `+=` etc. | right | `a = b = c` assigns c to b to a |
+| 15 | `,` | left | |
+
+Two rules cover most real bugs: **bitwise binds looser than comparison**, so
+always parenthesise `(flags & MASK) == VALUE`; and **`sizeof` takes an
+expression, not a type**, so `sizeof x` and `sizeof(x)` differ in meaning when
+`x` is a type name in disguise.
+
+## printf specifiers
+
+| Type | Specifier | Note |
+| --- | --- | --- |
+| `int` | `%d` | |
+| `unsigned` | `%u` | `%d` on an unsigned is UB for large values |
+| `long` | `%ld` | missing `l` truncates on LP64 |
+| `long long` | `%lld` | |
+| `size_t` | `%zu` | `%d` prints garbage |
+| `ptrdiff_t` | `%td` | |
+| `intmax_t` | `%jd` | |
+| `double` | `%f` `%e` `%g` | `%f` on a float promotes, so both are fine |
+| `char` | `%c` | |
+| string | `%s` | |
+| pointer | `%p` | cast to `void *` first |
+| hex | `%x` `%X` | |
+| octal | `%o` | |
+| `%` | `%%` | |
+
+The `-Wall -Wextra` pair catches most of these because the compiler reads the
+format string and checks the argument types. A cast that silences the warning
+usually hides a real bug.
+
+## The five undefined behaviours you will meet
+
+| Pattern | Why it is UB | What to write instead |
+| --- | --- | --- |
+| signed overflow `INT_MAX + 1` | the standard permits any result | check first, or compute in `unsigned` |
+| `arr[5]` on a 5-element array | out of bounds, no check | bound the index |
+| `x << 32` on a 32-bit `int` | shift ≥ width | mask the count |
+| reading an uninitialised variable | indeterminate value | initialise or restructure |
+| `free(p); free(p);` | double free | set `p = NULL` after freeing |
+| `printf("%d", d)` for `double` | wrong type in varargs | `%f` |
+
+Undefined behaviour is not "it crashes." It is "the compiler may assume it
+never happens" — which means an `if (x + 1 < x)` overflow check can be deleted
+by the optimiser, because a correct program cannot overflow.
+
+## One program, your platform's numbers
+
+```c
+#include <float.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+
+/* The numbers a C programmer should never guess: type sizes, integer limits,
+ * and the traps that follow from them. Everything printed here comes from
+ * <limits.h>, <float.h> and sizeof on this machine — the point of running it
+ * is that several values differ between platforms. */
+
+struct packed_pair {
+    char  c;
+    int   i;
+};
+
+struct reordered_pair {
+    int   i;
+    char  c;
+};
+
+struct three_fields {
+    char   a;
+    short  b;
+    int    c;
+};
+
+int main(void) {
+    printf("=== type sizes (bytes) ===\n");
+    printf("%-16s %s\n", "type", "sizeof");
+    printf("%-16s %s\n", "char", "1 (guaranteed by the standard)");
+    printf("%-16s %zu\n", "short", sizeof(short));
+    printf("%-16s %zu\n", "int", sizeof(int));
+    printf("%-16s %zu\n", "long", sizeof(long));
+    printf("%-16s %zu\n", "long long", sizeof(long long));
+    printf("%-16s %zu\n", "float", sizeof(float));
+    printf("%-16s %zu\n", "double", sizeof(double));
+    printf("%-16s %zu\n", "void *", sizeof(void *));
+    printf("%-16s %zu\n", "size_t", sizeof(size_t));
+
+    printf("\n=== fixed-width types are guaranteed ===\n");
+    printf("int8_t %zu, int16_t %zu, int32_t %zu, int64_t %zu\n",
+           sizeof(int8_t), sizeof(int16_t), sizeof(int32_t), sizeof(int64_t));
+
+    printf("\n=== integer limits ===\n");
+    printf("%-22s %d\n", "INT_MAX", INT_MAX);
+    printf("%-22s %d\n", "INT_MIN", INT_MIN);
+    printf("%-22s %u\n", "UINT_MAX", UINT_MAX);
+    printf("%-22s %ld\n", "LONG_MAX", LONG_MAX);
+    printf("%-22s %lld\n", "LLONG_MAX", LLONG_MAX);
+    printf("%-22s %zu\n", "SIZE_MAX", SIZE_MAX);
+
+    printf("\n=== floating point ===\n");
+    printf("%-22s %d\n", "FLT_DIG (decimal)", FLT_DIG);
+    printf("%-22s %d\n", "DBL_DIG (decimal)", DBL_DIG);
+    printf("%-22s %d\n", "FLT_MAX_EXP", FLT_MAX_EXP);
+    printf("%-22s %d\n", "DBL_MAX_EXP", DBL_MAX_EXP);
+
+    printf("\n=== the overflow trap ===\n");
+    int big = INT_MAX;
+    printf("INT_MAX            = %d\n", big);
+    printf("INT_MAX + 1 wraps  = %d   (signed overflow is undefined)\n",
+           (int)((unsigned)big + 1u));
+    unsigned ubig = UINT_MAX;
+    printf("UINT_MAX           = %u\n", ubig);
+    printf("UINT_MAX + 1 wraps = %u   (unsigned wraps, defined)\n", ubig + 1u);
+
+    printf("\n=== struct padding ===\n");
+    printf("struct { char; int; }        %zu bytes\n", sizeof(struct packed_pair));
+    printf("struct { int; char; }        %zu bytes\n", sizeof(struct reordered_pair));
+    printf("struct { char; short; int; } %zu bytes\n", sizeof(struct three_fields));
+    printf("char + int would be 5 if packed; padding makes it %zu\n",
+           sizeof(struct packed_pair));
+
+    printf("\n=== pointer arithmetic ===\n");
+    int arr[5] = {10, 20, 30, 40, 50};
+    /* Addresses themselves vary per run (ASLR), so compare positions
+       rather than print them. The byte distance is what matters. */
+    printf("&arr[1] - &arr[0] = %td elements, %td bytes\n",
+           &arr[1] - &arr[0],
+           (char *)&arr[1] - (char *)&arr[0]);
+    printf("an int* advances by sizeof(int) = %zu bytes per step\n", sizeof(int));
+    printf("*(arr + 2)   = %d\n", *(arr + 2));
+    printf("2[arr]       = %d  (same as *(arr + 2))\n", 2[arr]);
+    printf("&arr[4]-&arr[0] = %td elements\n", &arr[4] - &arr[0]);
+    printf("(void *)ptr + 1 advances 1 byte; an int* + 1 advances %zu\n",
+           sizeof(int));
+
+    printf("\n=== printf specifiers ===\n");
+    int    i = -42;
+    unsigned u = 42u;
+    double d = 3.14159265358979;
+    char   s[] = "text";
+    char   ch = 'A';
+    printf("int      %%d      %d\n", i);
+    printf("unsigned %%u      %u\n", u);
+    printf("hex      %%x      %x\n", u);
+    printf("octal    %%o      %o\n", u);
+    printf("char     %%c      %c\n", ch);
+    printf("string   %%s      %s\n", s);
+    printf("double   %%f      %f\n", d);
+    printf("double   %%.3f    %.3f\n", d);
+    printf("double   %%e      %e\n", d);
+    printf("double   %%g      %g\n", d);
+    printf("size_t   %%zu     %zu\n", sizeof d);
+    printf("ptrdiff  %%td     %td\n", &arr[4] - &arr[0]);
+    printf("pointer  %%p      (an address)\n");
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+=== type sizes (bytes) ===
+type             sizeof
+char             1 (guaranteed by the standard)
+short            2
+int              4
+long             8
+long long        8
+float            4
+double           8
+void *           8
+size_t           8
+
+=== fixed-width types are guaranteed ===
+int8_t 1, int16_t 2, int32_t 4, int64_t 8
+
+=== integer limits ===
+INT_MAX                2147483647
+INT_MIN                -2147483648
+UINT_MAX               4294967295
+LONG_MAX               9223372036854775807
+LLONG_MAX              9223372036854775807
+SIZE_MAX               18446744073709551615
+
+=== floating point ===
+FLT_DIG (decimal)      6
+DBL_DIG (decimal)      15
+FLT_MAX_EXP            128
+DBL_MAX_EXP            1024
+
+=== the overflow trap ===
+INT_MAX            = 2147483647
+INT_MAX + 1 wraps  = -2147483648   (signed overflow is undefined)
+UINT_MAX           = 4294967295
+UINT_MAX + 1 wraps = 0   (unsigned wraps, defined)
+
+=== struct padding ===
+struct { char; int; }        8 bytes
+struct { int; char; }        8 bytes
+struct { char; short; int; } 8 bytes
+char + int would be 5 if packed; padding makes it 8
+
+=== pointer arithmetic ===
+&arr[1] - &arr[0] = 1 elements, 4 bytes
+an int* advances by sizeof(int) = 4 bytes per step
+*(arr + 2)   = 30
+2[arr]       = 30  (same as *(arr + 2))
+&arr[4]-&arr[0] = 4 elements
+(void *)ptr + 1 advances 1 byte; an int* + 1 advances 4
+
+=== printf specifiers ===
+int      %d      -42
+unsigned %u      42
+hex      %x      2a
+octal    %o      52
+char     %c      A
+string   %s      text
+double   %f      3.141593
+double   %.3f    3.142
+double   %e      3.141593e+00
+double   %g      3.14159
+size_t   %zu     8
+ptrdiff  %td     4
+pointer  %p      (an address)
+```
+
+This is an LP64 machine — Linux and macOS both are. On Windows (LLP64) `long`
+is 4 bytes and `LONG_MAX` is 2147483647. That is not a different compiler
+being wrong; it is the standard permitting both. If a program must produce the
+same output on both, it cannot use `long` for anything where the range matters.
+
+## Loop and control idioms
+
+| Idiom | Meaning |
+| --- | --- |
+| `for (size_t i = 0; i < n; i++)` | counting up, unsigned |
+| `for (i = n; i-- > 0; )` | counting down without underflow |
+| `while ((c = getchar()) != EOF)` | assignment in condition, parenthesised |
+| `do { } while (0)` | a macro that behaves as one statement |
+| `if (p)` / `if (!p)` | null test, never `if (p == NULL)` in a hot path |
+| `switch` with no `default` | misses new enum members in silence |
+
+## Common pitfalls
+
+### `sizeof` on a function parameter
+
+An array parameter decays to a pointer, so `sizeof arr` inside the function is
+the pointer size. Pass the element count as a second argument, always.
+
+### `%d` with `size_t`
+
+On LP64, `size_t` is 8 bytes and `%d` reads 4, so the remaining 4 are taken
+from the next argument. The output is garbage or the program crashes. `%zu` is
+the fix and `-Wformat` will tell you.
+
+### `scanf("%d", x)` instead of `&x`
+
+Compiles with a warning under `-Wall`, and the warning is the only thing
+standing between the program and a segfault. Read the warning, do not cast it
+away.
+
+### Assuming `char` is signed
+
+It is signed on x86 and unsigned on ARM by default. Code that stores a byte
+value above 127 in a `char` and compares it to a negative number behaves
+differently on the two. Use `unsigned char` for bytes, `char` for text.
+
+<ExerciseCard
+	id="m22-own-limits"
+	concept="signed range from unsigned arithmetic"
+	prompt="Find int's limits without trusting limits.h to tell you: double an unsigned value from 1 until the next doubling would wrap to zero, subtract one, and that is INT_MAX; shift a 1 left until it falls off, and count the shifts, which is the width in bits. Print both, then compare them with INT_MAX and with sizeof(int) times CHAR_BIT, which are allowed only as a check. Explain in a comment why the loops stop at a defined point even though signed overflow is undefined. Print exactly:&#10;bits by shifting: 32&#10;max int by doubling: 2147483647&#10;INT_MAX: 2147483647&#10;max matches: yes&#10;int bits from sizeof: 32&#10;bits match: yes&#10;doublings performed: 31&#10;Nothing else. The doublings line counts how many times the value was multiplied, which is one less than the bit count."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;int main(void) &#123;&#10;    /* TODO: shift-based bit count, then compare with sizeof */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="bits by shifting: 32&#10;max int by doubling: 2147483647&#10;INT_MAX: 2147483647&#10;max matches: yes&#10;int bits from sizeof: 32&#10;bits match: yes&#10;doublings performed: 31&#10;"
+	hints={[
+		'Unsigned arithmetic wraps modulo the word size, so doubling is defined even when the value overflows; the loop condition value times two greater than value is false exactly on the doubling that would wrap.',
+		'Starting from a one and shifting left 32 times returns to zero, so the shift count that reaches zero is the width, and sizeof(int) times CHAR_BIT spells the same number differently.'
+	]}
+	solution="#include &lt;limits.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;/* Both loops work on unsigned int, where wraparound is defined by the&#10; * standard. Doubling stops when the next double would wrap to zero, and&#10; * shifting left stops when the shifted-out bit is the last one left, so&#10; * neither loop relies on signed overflow, which would be undefined. */&#10;&#10;int main(void) &#123;&#10;    unsigned int value = 1;&#10;    unsigned int doublings = 0;&#10;&#10;    while (value * 2u &gt; value) &#123;&#10;        value *= 2u;&#10;        doublings++;&#10;    &#125;&#10;    const unsigned int max_by_doubling = value - 1u;&#10;&#10;    unsigned int shifting = 1;&#10;    unsigned int bits = 0;&#10;&#10;    while (shifting != 0u) &#123;&#10;        shifting &lt;&lt;= 1;&#10;        bits++;&#10;    &#125;&#10;&#10;    printf(&quot;bits by shifting: %u\n&quot;, bits);&#10;    printf(&quot;max int by doubling: %u\n&quot;, max_by_doubling);&#10;    printf(&quot;INT_MAX: %d\n&quot;, INT_MAX);&#10;    printf(&quot;max matches: %s\n&quot;,&#10;           max_by_doubling == (unsigned int)INT_MAX ? &quot;yes&quot; : &quot;no&quot;);&#10;    printf(&quot;int bits from sizeof: %zu\n&quot;, sizeof(int) * (size_t)CHAR_BIT);&#10;    printf(&quot;bits match: %s\n&quot;,&#10;           bits == sizeof(int) * (unsigned int)CHAR_BIT ? &quot;yes&quot; : &quot;no&quot;);&#10;    printf(&quot;doublings performed: %u\n&quot;, doublings);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m22-quiz-precedence"
+	question="`if (flags & 0x0F == 0x03)` compiles and does something surprising. What does it actually evaluate, what was intended, and which compiler flag would have warned about it?"
+	options={[
+		'It evaluates flags &amp; 0, because == binds tighter than &amp;, so the condition is always false. The intent was (flags &amp; 0x0F) == 0x03, and -Wall enables -Wparentheses, which suggests the parentheses.',
+		'It evaluates (flags &amp; 0x0F) == 0x03 as written; the only surprise is the missing space around the operator.',
+		'It evaluates 0x0F == 0x03 first, which is 1, and then flags &amp; 1, so it tests the low bit; -Wconversion warns about it.',
+		'It is a syntax error under C11 and only compiles because the compiler treats 0x0F as a bitmask; -Werror fixes it.'
+	]}
+	answer={0}
+	explanation="Comparison binds tighter than bitwise and, so the comparison runs on the literal 0x0F and 0x03 and yields 0, leaving flags &amp; 0. The compiler knows this shape is almost always a mistake and -Wparentheses, part of -Wall, says so."
+/>
+
+<LectureReference lecture="Lecture 22 — Revision" slides="16–30" />

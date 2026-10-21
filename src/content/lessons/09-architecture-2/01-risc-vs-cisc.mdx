@@ -1,0 +1,225 @@
+---
+id: 09-01-risc-vs-cisc
+title: RISC vs CISC
+module: 9
+lecture: 'Lecture 09 — Architecture 2'
+slides: '3–19'
+estimatedMinutes: 16
+prerequisites: ['08-03-pipelining']
+tags: ['risc', 'cisc', 'isa']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Two answers to the same question
+
+Both architectures do the same arithmetic. They differ in *what a single
+instruction is allowed to say*.
+
+**CISC** — complex instruction set computer — allows rich instructions.
+One instruction can load from memory, add, and store, encoding its
+operands in many forms. x86 is the survivor here; a `mull` can take a
+memory operand directly.
+
+**RISC** — reduced instruction set computer — allows only simple
+instructions, all the same width, all taking their operands from
+registers. Loading from memory is a separate instruction, and so is
+storing. ARM, RISC-V, and MIPS are all RISC.
+
+The distinction is not about power. It is about where complexity lives:
+in the instruction encoding, or in the compiler.
+
+## What you'll be able to do
+
+- State the defining difference between RISC and CISC in one sentence.
+- Count instructions and micro-operations for the same statement in both.
+- Explain why a smaller instruction count is not automatically faster.
+- Say why the two designs have been converging for twenty years.
+
+## One statement, two encodings
+
+Take `x = (a + b) * c`.
+
+A CISC machine can express the memory operands inline. A RISC machine
+must first bring `a`, `b`, and `c` into registers, one load each, then do
+the arithmetic, then store the result.
+
+| Style | Instructions | Micro-operations |
+| ----- | ------------ | ---------------- |
+| RISC  | 6            | 6                |
+| CISC  | 2            | 5                |
+
+Look at the two columns before reading on. CISC wins on instruction
+count — one third as many — and loses on micro-operations. That inversion
+is the whole history of the debate.
+
+<TheoryBlock label="Why it matters for C" title="Your compiler already abstracted this away">
+
+	C has no notion of instructions. It has expressions, and the compiler
+	chooses how to encode them. On a RISC target it emits the six-instruction
+	version; on x86 it emits something closer to the two-instruction one, or
+	several, depending on optimisation level. This is why "count the
+	instructions" is a poor way to compare C programs, and why the same C
+	can run at wildly different speeds on two machines.
+</TheoryBlock>
+
+<Eli5Block
+	topic="risc-cisc"
+	football="RISC is a squad of specialists: one player only tackles, one only passes, one only shoots. CISC is a player who can do all three in one movement. The specialist squad needs more moves to score; the all-rounder needs fewer, and is much harder to coach."
+	money="RISC is paying with exact change: many small transactions, each trivially verified. CISC is a single cheque covering several items. Fewer pieces of paper, more work to process each one — and the cheque can bounce in ways a coin cannot."
+/>
+
+## Counting both, honestly
+
+The program below models the same statement twice. The numbers are
+micro-operations, not nanoseconds: a modern core overlaps several per
+cycle, so a smaller count is not automatically a smaller time.
+
+```c
+#include <stddef.h>
+#include <stdio.h>
+
+/* The same statement, x = (a + b) * c, modelled twice. The counts are
+ * micro-operations (uops), not timings: a modern core overlaps several of
+ * them per cycle, so a smaller count is not automatically faster. */
+
+typedef struct {
+    const char *label;
+    int uops;
+} Step;
+
+static int report(const char *style, const Step *program, size_t count) {
+    int total = 0;
+    printf("%s\n", style);
+    for (size_t i = 0; i < count; i++) {
+        printf("  %-18s %d uops\n", program[i].label, program[i].uops);
+        total += program[i].uops;
+    }
+    printf("  %-18s %d uops\n\n", "total", total);
+    return total;
+}
+
+int main(void) {
+    static const Step risc[] = {
+        {"load a", 1}, {"load b", 1}, {"add", 1},
+        {"load c", 1}, {"mul", 1}, {"store x", 1},
+    };
+    static const Step cisc[] = {
+        {"mull (mem, reg)", 4}, {"store x", 1},
+    };
+
+    int risc_uops = report("RISC: many small instructions", risc,
+                           sizeof risc / sizeof risc[0]);
+    int cisc_uops = report("CISC: few large instructions", cisc,
+                           sizeof cisc / sizeof cisc[0]);
+
+    printf("instructions: RISC %zu, CISC %zu\n",
+           sizeof risc / sizeof risc[0], sizeof cisc / sizeof cisc[0]);
+    printf("uops:         RISC %d, CISC %d\n", risc_uops, cisc_uops);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+RISC: many small instructions
+  load a             1 uops
+  load b             1 uops
+  add                1 uops
+  load c             1 uops
+  mul                1 uops
+  store x            1 uops
+  total              6 uops
+
+CISC: few large instructions
+  mull (mem, reg)    4 uops
+  store x            1 uops
+  total              5 uops
+
+instructions: RISC 6, CISC 2
+uops:         RISC 6, CISC 5
+```
+
+RISC executes six instructions for six micro-operations — one each, which
+is the defining property of the design. CISC executes two instructions
+for five micro-operations: the `mull` expands into four internal steps
+inside the core.
+
+So CISC issues one third as many instructions and does almost the same
+amount of internal work. The instruction count bought nothing at the
+level that matters, and it cost the decoder the ability to know, at
+fetch time, where the next instruction starts.
+
+That last point is the one that decided the argument. Fixed-width RISC
+instructions can be decoded in parallel; variable-width CISC instructions
+must be scanned byte by byte to find their boundaries.
+
+<ExerciseCard
+	id="m09-uop-budget"
+	concept="micro-operation accounting"
+	prompt="Model y = (a * b) + (c * d) on both machines. The CISC version uses two memory-to-memory instructions, each decoding into four micro-operations; the RISC version uses six instructions of one micro-operation each. Print exactly:&#10;&#10;cisc: 2 instructions, 8 uops&#10;risc: 6 instructions, 6 uops&#10;fewer instructions: cisc&#10;fewer uops: risc&#10;at 1 uop per cycle: cisc 8 cycles, risc 6 cycles&#10;&#10;Count the micro-operations by summing a small table rather than typing the totals, and decide both winners with comparisons, not literal strings. The lesson is that instruction count is a census of paperwork, not of work."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;struct instr &#123;&#10;    const char *mnemonic;&#10;    unsigned uops;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: a CISC table of two instructions at 4 uops each, a RISC&#10;       table of six at 1 uop each, and sums over each table */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="cisc: 2 instructions, 8 uops&#10;risc: 6 instructions, 6 uops&#10;fewer instructions: cisc&#10;fewer uops: risc&#10;at 1 uop per cycle: cisc 8 cycles, risc 6 cycles&#10;"
+	hints={[
+		'Each row is one instruction and its micro-operation count. Two nested loops or two sums give the totals; sizeof table / sizeof table[0] gives the instruction counts so the printed numbers cannot drift from the tables.',
+		'CISC totals 2 instructions and 8 uops, RISC 6 and 6. Pick each winner with a ternary on the two totals, and at one uop per cycle the cycle counts are just the uop totals.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* Instruction count is not work. A CISC instruction that names memory&#10; * operands decodes into several micro-operations; each micro-operation is&#10; * what the machine actually does. */&#10;&#10;struct instr &#123;&#10;    const char *mnemonic;&#10;    unsigned uops;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    static const struct instr CISC[] = &#123;&#123;&quot;MUL&quot;, 4u&#125;, &#123;&quot;MAC&quot;, 4u&#125;&#125;;&#10;    static const struct instr RISC[] = &#123;&#123;&quot;LD&quot;, 1u&#125;, &#123;&quot;LD&quot;, 1u&#125;, &#123;&quot;MUL&quot;, 1u&#125;,&#10;                                        &#123;&quot;LD&quot;, 1u&#125;, &#123;&quot;MUL&quot;, 1u&#125;, &#123;&quot;ADD&quot;, 1u&#125;&#125;;&#10;    unsigned cisc_uops = 0;&#10;    unsigned risc_uops = 0;&#10;&#10;    for (size_t i = 0; i &lt; sizeof CISC / sizeof CISC[0]; i++) &#123;&#10;        cisc_uops += CISC[i].uops;&#10;    &#125;&#10;    for (size_t i = 0; i &lt; sizeof RISC / sizeof RISC[0]; i++) &#123;&#10;        risc_uops += RISC[i].uops;&#10;    &#125;&#10;&#10;    printf(&quot;cisc: %zu instructions, %u uops\n&quot;,&#10;           sizeof CISC / sizeof CISC[0], cisc_uops);&#10;    printf(&quot;risc: %zu instructions, %u uops\n&quot;,&#10;           sizeof RISC / sizeof RISC[0], risc_uops);&#10;    printf(&quot;fewer instructions: %s\n&quot;, cisc_uops &gt; risc_uops ? &quot;cisc&quot; : &quot;risc&quot;);&#10;    printf(&quot;fewer uops: %s\n&quot;,&#10;           cisc_uops &lt; risc_uops ? &quot;cisc&quot; : &quot;risc&quot;);&#10;    printf(&quot;at 1 uop per cycle: cisc %u cycles, risc %u cycles\n&quot;,&#10;           cisc_uops, risc_uops);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Believing RISC won
+
+It did not, cleanly. ARM is RISC and it powers most phones; x86 is CISC
+and it powers most servers. Both are fast. What happened is convergence:
+x86 cores decode CISC instructions into RISC-like micro-operations before
+executing them, and ARM cores have added complex instructions for
+cryptography and vector work. The labels describe the instruction
+*encoding*, not the engine underneath.
+
+### Using instruction count as a performance metric
+
+The output above shows exactly why not: CISC issues 2 instructions and 5
+micro-operations, RISC issues 6 and 6. Neither number predicts runtime on
+its own. Measure time, or count cycles, but do not count instructions and
+call it speed.
+
+### Assuming RISC means fewer instructions available
+
+"Reduced" refers to the complexity of each instruction, not to the size of
+the instruction set. A modern ARM core has hundreds of instructions,
+including vector and cryptographic ones. The reduction is in what any
+single instruction may *do* — no memory-to-memory arithmetic, no
+addressing modes that compute an address and dereference it twice.
+
+### Forgetting that CISC instructions are not atomic
+
+A `mull` with a memory operand reads memory, multiplies, and writes a
+register. It can be interrupted between those steps, and its four
+micro-operations occupy the pipeline for four cycles. It is one
+*instruction* and four *operations*, and both facts are true at once.
+
+<QuizCard
+	id="m09-quiz-count"
+	question="For the same statement, a RISC machine issues 6 instructions and 6 micro-operations while a CISC machine issues 2 instructions and 5 micro-operations. Which is faster, and what information would you need to answer?"
+	options={[
+		'You cannot say from these counts: the CISC version needs 5 micro-operations against 6, but you need cycles per micro-operation and how many instructions the machine can fetch and decode per cycle before either number becomes time',
+		'CISC, because it issues 2 instructions instead of 6, and instruction count is what the front end has to process',
+		'RISC, because every operation costs exactly one micro-operation and one cycle, so 6 operations are 6 cycles',
+		'They are identical, because both do the same arithmetic and micro-operations are just instructions in disguise'
+	]}
+	answer={0}
+	explanation="Micro-operation counts only become time when multiplied by cycles per uop and divided by the machine width, so 5 versus 6 uops says almost nothing until you know the pipeline and decode width of each processor."
+/>
+
+<LectureReference lecture="Lecture 09 — Architecture 2" slides="3–19" />

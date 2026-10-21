@@ -1,0 +1,292 @@
+---
+id: 08-01-hardwired-vs-micro
+title: Hardwired vs Microprogrammed
+module: 8
+lecture: 'Lecture 08 — Control & Microprogramming'
+slides: '3–18'
+estimatedMinutes: 16
+prerequisites: ['07-03-interrupts-dma']
+tags: ['control-unit', 'microcode', 'signals']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Who tells the ALU what to do
+
+The arithmetic unit is a lump of gates that adds or subtracts depending
+on a control signal. The registers write or hold depending on a control
+signal. Something has to raise the right signals, in the right order,
+for each instruction — and that something is the **control unit**.
+
+It is the part of the CPU that turns an opcode into a set of wires going
+high. There are two ways to build it, and the choice between them shaped
+processor design for thirty years.
+
+A **hardwired** control unit is a circuit — gates arranged so that the
+opcode bits directly produce the control signals. It is fast because
+there is nothing to look up; the decision is the wiring.
+
+A **microprogrammed** control unit stores the signals in a small memory
+called the **control store**. Each instruction is a short sequence of
+**microinstructions**, and running an instruction means reading its rows
+and applying them one at a time.
+
+## What you'll be able to do
+
+- Explain what a control signal is and where it comes from.
+- Compare hardwired and microprogrammed control on speed and flexibility.
+- Read a control store as a table of signals.
+- Say why microcode is a design choice about *change*, not about speed.
+
+## The same answers, in two shapes
+
+| Property        | Hardwired                | Microprogrammed          |
+| --------------- | ------------------------ | ------------------------ |
+| Decision is     | gates                    | data in a ROM            |
+| Speed           | one gate delay           | one ROM read per step    |
+| Adding an instruction | redesign the circuit | add a row                |
+| Fixing a bug    | new silicon              | new microcode            |
+| Typical use     | RISC cores, simple CPUs  | CISC, complex instructions |
+
+The flexibility row is the one that decided history. A microprogrammed
+CPU can ship with a bug in its control store, and the bug can be patched
+by a firmware update. A hardwired CPU cannot. Intel shipped exactly this
+kind of patch for the Pentium FDIV bug in 1994 — not because microcode is
+faster, but because it is *editable*.
+
+<TheoryBlock label="Why it matters for C" title="You have already used both, without knowing">
+
+	On x86, a single `MUL` instruction is decoded into several internal
+	operations by the front end of the core. That decoding layer is the
+	modern descendant of a control store. When a compiler emits one wide
+	instruction instead of four narrow ones, it is betting that the decode
+	layer will handle the wide one efficiently — a bet that is sometimes
+	wrong, which is why compilers tune instruction selection per CPU model.
+</TheoryBlock>
+
+<Eli5Block
+	topic="control-store"
+	football="Hardwired control is a manager who knows the set plays by heart: no notes, instant recall, but a new formation takes a week of training. Microprogrammed control is the same manager with a laminated playbook — every play needs a glance at the page, and a new play is a new page."
+	money="Hardwired control is mental arithmetic at the till. Microprogrammed control is a price list on the wall. The list is slower to consult and trivial to update; mental arithmetic is instant and cannot be corrected without retraining the cashier."
+/>
+
+## The same signals, two implementations
+
+The program below computes the control signals for five opcodes twice —
+once with a `switch`, once from a table — and checks that the two agree.
+The agreement check is the interesting part: it is exactly the kind of
+consistency test a real design verifies before taping out silicon.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* Two ways to turn an opcode into control signals.
+ *
+ * Hardwired: the decision is a fixed circuit — here, a switch. Fast, and
+ * impossible to change without new silicon.
+ *
+ * Microprogrammed: the decision is data — a table in a small ROM. Slower
+ * per instruction, but adding an instruction means adding a row. */
+
+enum {
+    SIGNAL_ALU_ADD = 1u << 0,
+    SIGNAL_ALU_SUB = 1u << 1,
+    SIGNAL_MEM_RD  = 1u << 2,
+    SIGNAL_MEM_WR  = 1u << 3,
+    SIGNAL_REG_WR  = 1u << 4,
+    SIGNAL_HALT    = 1u << 5
+};
+
+enum opcode { OP_ADD = 0x1, OP_SUB = 0x2, OP_LOAD = 0x3, OP_STORE = 0x4,
+              OP_HALT = 0xF, OP_COUNT = 0x10 };
+
+/* --- hardwired: one function, one switch, no table ------------------- */
+static uint8_t hardwired(unsigned op) {
+    switch (op) {
+    case OP_ADD:   return SIGNAL_ALU_ADD | SIGNAL_REG_WR;
+    case OP_SUB:   return SIGNAL_ALU_SUB | SIGNAL_REG_WR;
+    case OP_LOAD:  return SIGNAL_MEM_RD  | SIGNAL_REG_WR;
+    case OP_STORE: return SIGNAL_MEM_WR;
+    case OP_HALT:  return SIGNAL_HALT;
+    default:       return 0u;
+    }
+}
+
+/* --- microprogrammed: the same answers, stored as data --------------- */
+struct micro_instr {
+    uint8_t signals;
+    uint8_t microsteps; /* how many control-store reads it costs */
+    uint8_t defined;    /* 0 in a zero-filled table means "invalid opcode" */
+};
+
+static const struct micro_instr CONTROL_STORE[OP_COUNT] = {
+    [OP_ADD]   = {SIGNAL_ALU_ADD | SIGNAL_REG_WR, 4, 1},
+    [OP_SUB]   = {SIGNAL_ALU_SUB | SIGNAL_REG_WR, 4, 1},
+    [OP_LOAD]  = {SIGNAL_MEM_RD  | SIGNAL_REG_WR, 5, 1},
+    [OP_STORE] = {SIGNAL_MEM_WR,                  4, 1},
+    [OP_HALT]  = {SIGNAL_HALT,                    2, 1},
+};
+
+static struct micro_instr lookup(unsigned op) {
+    if (op < OP_COUNT && CONTROL_STORE[op].defined) {
+        return CONTROL_STORE[op];
+    }
+    return (struct micro_instr){0u, 0u, 0u};
+}
+
+/* Render the signal set into a fixed-size buffer so the column lines up
+ * regardless of how many signals are set. */
+static void format_signals(uint8_t s, char *out, size_t cap) {
+    static const struct { uint8_t bit; const char *name; } NAMES[] = {
+        {SIGNAL_ALU_ADD, "alu.add"}, {SIGNAL_ALU_SUB, "alu.sub"},
+        {SIGNAL_MEM_RD, "mem.rd"},   {SIGNAL_MEM_WR, "mem.wr"},
+        {SIGNAL_REG_WR, "reg.wr"},   {SIGNAL_HALT, "halt"},
+    };
+    size_t used = 0;
+    out[0] = '\0';
+    for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) {
+        if ((s & NAMES[i].bit) == 0u) {
+            continue;
+        }
+        int n = snprintf(out + used, cap - used, "%s%s",
+                         used == 0 ? "" : "|", NAMES[i].name);
+        if (n < 0 || (size_t)n >= cap - used) {
+            return;
+        }
+        used += (size_t)n;
+    }
+    if (used == 0) {
+        snprintf(out, cap, "(none)");
+    }
+}
+
+int main(void) {
+    static const struct { unsigned op; const char *name; } OPS[] = {
+        {OP_ADD, "ADD"}, {OP_SUB, "SUB"}, {OP_LOAD, "LOAD"},
+        {OP_STORE, "STORE"}, {OP_HALT, "HALT"}, {0x7, "invalid"},
+    };
+
+    printf("%-6s %-8s %-22s %s\n", "opcode", "name", "signals", "microsteps");
+    unsigned total_steps = 0;
+    int mismatches = 0;
+
+    for (size_t i = 0; i < sizeof OPS / sizeof OPS[0]; i++) {
+        unsigned op = OPS[i].op;
+        uint8_t hw = hardwired(op);
+        struct micro_instr mi = lookup(op);
+        char signals[48];
+
+        format_signals(hw, signals, sizeof signals);
+        total_steps += mi.microsteps;
+        printf("0x%02X   %-8s %-22s %u\n", op, OPS[i].name, signals,
+               mi.microsteps);
+
+        if (hw != mi.signals) {
+            printf("  MISMATCH: hardwired 0x%02X vs microcode 0x%02X\n",
+                   hw, mi.signals);
+            mismatches++;
+        }
+    }
+
+    printf("\ncontrol store: %zu entries, %zu bytes\n",
+           sizeof CONTROL_STORE / sizeof CONTROL_STORE[0],
+           sizeof CONTROL_STORE);
+    printf("total microsteps for this program: %u\n", total_steps);
+    printf("hardwired/microcode disagreements: %d\n", mismatches);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+opcode name     signals                microsteps
+0x01   ADD      alu.add|reg.wr         4
+0x02   SUB      alu.sub|reg.wr         4
+0x03   LOAD     mem.rd|reg.wr          5
+0x04   STORE    mem.wr                 4
+0x0F   HALT     halt                   2
+0x07   invalid  (none)                 0
+
+control store: 16 entries, 48 bytes
+total microsteps for this program: 19
+hardwired/microcode disagreements: 0
+```
+
+Two numbers deserve attention.
+
+**`control store: 16 entries, 48 bytes`.** Sixteen entries because the
+opcode field is four bits, and a table indexed by a four-bit field must
+have sixteen rows whether or not all of them are meaningful. The five
+undefined rows hold zeroes and are distinguished by the `defined` flag.
+Real control stores have the same property: most of the address space is
+unused.
+
+**`microsteps: 5` for LOAD versus `4` for the others.** A load touches
+memory and a register, so it needs one more cycle than an operation that
+only writes a register. This is the microprogrammed view of instruction
+cost: every instruction is a short program, and its length is the number
+of steps.
+
+<ExerciseCard
+	id="m08-add-opcode"
+	concept="microprogrammed control"
+	prompt="Add an opcode INC (0x6) that increments the accumulator. It needs a signal bit SIGNAL_ALU_INC = 1u &lt;&lt; 6 in the hardwired switch and a row in the control store with 3 microsteps. Keep the checker loop that compares the two designs for every opcode and print exactly:&#10;&#10;INC: alu.inc|reg.wr, 3 microsteps&#10;disagreements: 0&#10;after breaking SUB: 1&#10;&#10;The first line names the INC signals in the same dash-separated order as the lesson (alu.add|reg.wr); the second is the disagreement count over ADD, SUB, LOAD, STORE, HALT, INC and the invalid opcode 0x7; the third is the same count after you clear REG_WR from the SUB row of a copy of the table."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum &#123;&#10;    SIGNAL_ALU_ADD = 1u &lt;&lt; 0,&#10;    SIGNAL_ALU_SUB = 1u &lt;&lt; 1,&#10;    SIGNAL_MEM_RD  = 1u &lt;&lt; 2,&#10;    SIGNAL_MEM_WR  = 1u &lt;&lt; 3,&#10;    SIGNAL_REG_WR  = 1u &lt;&lt; 4,&#10;    SIGNAL_HALT    = 1u &lt;&lt; 5,&#10;    SIGNAL_ALU_INC = 1u &lt;&lt; 6&#10;&#125;;&#10;&#10;enum opcode &#123; OP_ADD = 0x1, OP_SUB = 0x2, OP_LOAD = 0x3,&#10;              OP_STORE = 0x4, OP_INC = 0x6, OP_HALT = 0xF,&#10;              OP_COUNT = 0x10 &#125;;&#10;&#10;struct micro_instr &#123;&#10;    uint8_t signals;&#10;    uint8_t microsteps;&#10;    uint8_t defined;&#10;&#125;;&#10;&#10;static uint8_t hardwired(unsigned op) &#123;&#10;    switch (op) &#123;&#10;    case OP_ADD: return SIGNAL_ALU_ADD | SIGNAL_REG_WR;&#10;    case OP_SUB: return SIGNAL_ALU_SUB | SIGNAL_REG_WR;&#10;    case OP_LOAD: return SIGNAL_MEM_RD | SIGNAL_REG_WR;&#10;    case OP_STORE: return SIGNAL_MEM_WR;&#10;    case OP_HALT: return SIGNAL_HALT;&#10;    default: return 0u;&#10;    &#125;&#10;&#125;&#10;&#10;static const struct micro_instr CONTROL_STORE[OP_COUNT] = &#123;&#10;    [OP_ADD] = &#123;SIGNAL_ALU_ADD | SIGNAL_REG_WR, 4, 1&#125;,&#10;    /* TODO: add the remaining rows, including INC with 3 microsteps */&#10;&#125;;&#10;&#10;/* TODO: count instructions where hardwired() and the table disagree */&#10;&#10;int main(void) &#123;&#10;    /* TODO: print the INC signals, the disagreement count, then the&#10;       count for a copy of the table with the SUB row broken */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="INC: reg.wr|alu.inc, 3 microsteps&#10;disagreements: 0&#10;after breaking SUB: 1&#10;"
+	hints={[
+		'A signal set is a bit mask: OR the new ALU bit with SIGNAL_REG_WR, and give the table row the same mask so the comparison passes.',
+		'Count disagreements in one helper that walks the opcode list ADD, SUB, LOAD, STORE, HALT, INC and 0x7, reads the table row when the defined flag is set and all-zeroes otherwise, and compares it with hardwired(op). Copy the table with a loop, then clear the REG_WR bit from broken[OP_SUB].signals to drop the register write.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum &#123;&#10;    SIGNAL_ALU_ADD = 1u &lt;&lt; 0,&#10;    SIGNAL_ALU_SUB = 1u &lt;&lt; 1,&#10;    SIGNAL_MEM_RD  = 1u &lt;&lt; 2,&#10;    SIGNAL_MEM_WR  = 1u &lt;&lt; 3,&#10;    SIGNAL_REG_WR  = 1u &lt;&lt; 4,&#10;    SIGNAL_HALT    = 1u &lt;&lt; 5,&#10;    SIGNAL_ALU_INC = 1u &lt;&lt; 6&#10;&#125;;&#10;&#10;enum opcode &#123; OP_ADD = 0x1, OP_SUB = 0x2, OP_LOAD = 0x3, OP_STORE = 0x4,&#10;              OP_INC = 0x6, OP_HALT = 0xF, OP_COUNT = 0x10 &#125;;&#10;&#10;struct micro_instr &#123;&#10;    uint8_t signals;&#10;    uint8_t microsteps;&#10;    uint8_t defined;&#10;&#125;;&#10;&#10;static uint8_t hardwired(unsigned op) &#123;&#10;    switch (op) &#123;&#10;    case OP_ADD:   return SIGNAL_ALU_ADD | SIGNAL_REG_WR;&#10;    case OP_SUB:   return SIGNAL_ALU_SUB | SIGNAL_REG_WR;&#10;    case OP_LOAD:  return SIGNAL_MEM_RD | SIGNAL_REG_WR;&#10;    case OP_STORE: return SIGNAL_MEM_WR;&#10;    case OP_INC:   return SIGNAL_ALU_INC | SIGNAL_REG_WR;&#10;    case OP_HALT:  return SIGNAL_HALT;&#10;    default:       return 0u;&#10;    &#125;&#10;&#125;&#10;&#10;static const struct micro_instr CONTROL_STORE[OP_COUNT] = &#123;&#10;    [OP_ADD]   = &#123;SIGNAL_ALU_ADD | SIGNAL_REG_WR, 4, 1&#125;,&#10;    [OP_SUB]   = &#123;SIGNAL_ALU_SUB | SIGNAL_REG_WR, 4, 1&#125;,&#10;    [OP_LOAD]  = &#123;SIGNAL_MEM_RD | SIGNAL_REG_WR,  5, 1&#125;,&#10;    [OP_STORE] = &#123;SIGNAL_MEM_WR,                  4, 1&#125;,&#10;    [OP_INC]   = &#123;SIGNAL_ALU_INC | SIGNAL_REG_WR, 3, 1&#125;,&#10;    [OP_HALT]  = &#123;SIGNAL_HALT,                    2, 1&#125;,&#10;&#125;;&#10;&#10;static void format_signals(uint8_t signals, char *out, size_t cap) &#123;&#10;    static const struct &#123; uint8_t bit; const char *name; &#125; NAMES[] = &#123;&#10;        &#123;SIGNAL_ALU_ADD, &quot;alu.add&quot;&#125;, &#123;SIGNAL_ALU_SUB, &quot;alu.sub&quot;&#125;,&#10;        &#123;SIGNAL_MEM_RD, &quot;mem.rd&quot;&#125;,   &#123;SIGNAL_MEM_WR, &quot;mem.wr&quot;&#125;,&#10;        &#123;SIGNAL_REG_WR, &quot;reg.wr&quot;&#125;,   &#123;SIGNAL_HALT, &quot;halt&quot;&#125;,&#10;        &#123;SIGNAL_ALU_INC, &quot;alu.inc&quot;&#125;,&#10;    &#125;;&#10;    size_t used = 0;&#10;    out[0] = '\0';&#10;    for (size_t i = 0; i &lt; sizeof NAMES / sizeof NAMES[0]; i++) &#123;&#10;        if ((signals &amp; NAMES[i].bit) == 0u) &#123;&#10;            continue;&#10;        &#125;&#10;        int n = snprintf(out + used, cap - used, &quot;%s%s&quot;, used == 0 ? &quot;&quot; : &quot;|&quot;,&#10;                         NAMES[i].name);&#10;        if (n &lt; 0 || (size_t)n &gt;= cap - used) &#123;&#10;            return;&#10;        &#125;&#10;        used += (size_t)n;&#10;    &#125;&#10;&#125;&#10;&#10;static int disagree(const struct micro_instr store[OP_COUNT]) &#123;&#10;    static const unsigned OPS[] = &#123;OP_ADD, OP_SUB, OP_LOAD, OP_STORE,&#10;                                   OP_HALT, OP_INC, 0x7u&#125;;&#10;    int mismatches = 0;&#10;    for (size_t i = 0; i &lt; sizeof OPS / sizeof OPS[0]; i++) &#123;&#10;        unsigned op = OPS[i];&#10;        uint8_t from_table = 0u;&#10;        if (op &lt; (unsigned)OP_COUNT &amp;&amp; store[op].defined) &#123;&#10;            from_table = store[op].signals;&#10;        &#125;&#10;        if (hardwired(op) != from_table) &#123;&#10;            mismatches++;&#10;        &#125;&#10;    &#125;&#10;    return mismatches;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    char signals[48];&#10;    format_signals(CONTROL_STORE[OP_INC].signals, signals, sizeof signals);&#10;    printf(&quot;INC: %s, %u microsteps\n&quot;, signals,&#10;           (unsigned)CONTROL_STORE[OP_INC].microsteps);&#10;    printf(&quot;disagreements: %d\n&quot;, disagree(CONTROL_STORE));&#10;&#10;    struct micro_instr broken[OP_COUNT];&#10;    for (unsigned i = 0; i &lt; (unsigned)OP_COUNT; i++) &#123;&#10;        broken[i] = CONTROL_STORE[i];&#10;    &#125;&#10;    broken[OP_SUB].signals = SIGNAL_ALU_SUB; /* the missing reg.wr is the bug */&#10;    printf(&quot;after breaking SUB: %d\n&quot;, disagree(broken));&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Assuming microcode is slower in every case
+
+A control store read is one cache-friendly access, and modern cores
+translate x86 instructions into micro-operations at several per cycle.
+The "microcode is slow" intuition comes from 1970s machines where a
+microinstruction took a full clock. State the trade-off as *flexibility
+versus gate delay*, not as a blanket speed claim.
+
+### Forgetting the undefined rows
+
+A table indexed by an opcode must be sized for the whole field. If you
+size it for the number of *defined* opcodes, an invalid instruction reads
+past the end. The `defined` flag above is one way to keep the table full
+and still detect nonsense; a `switch` with a `default` is the hardwired
+equivalent.
+
+### Believing a control signal is a value
+
+A signal is a wire going high for one cycle. It is not an argument and it
+is not stored; it exists only while the control unit asserts it. Writing
+`signals |= SIGNAL_REG_WR` computes a set for reporting, but in hardware
+that set is a bundle of parallel wires, each either high or low at this
+instant.
+
+<QuizCard
+	id="m08-quiz-microcode"
+	question="A processor ships with a bug in one instruction's control signals. Under which control-unit design can the bug be fixed without new silicon, and why?"
+	options={[
+		'A microprogrammed control unit: the microprogram lives in a control store, so a corrected microprogram can be loaded like firmware instead of etching new gates',
+		'A hardwired control unit: its gates are simpler, so there are fewer signals that can be wrong in the first place',
+		'Either design: control signals are generated by the same instruction decoder, so the fix is identical in both',
+		'Neither: a wrong control signal is a physical defect and always requires a new chip'
+	]}
+	answer={0}
+	explanation="In a microprogrammed design the signals for each instruction are data in the control store, so fixing them means replacing the microprogram; hardwired signals are gates, and changing a gate means new silicon."
+/>
+
+<LectureReference lecture="Lecture 08 — Control & Microprogramming" slides="3–18" />

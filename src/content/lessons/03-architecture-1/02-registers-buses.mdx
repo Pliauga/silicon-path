@@ -1,0 +1,238 @@
+---
+id: 03-02-registers-buses
+title: Registers & Buses
+module: 3
+lecture: 'Lecture 03 — Architecture 1'
+slides: '19–33'
+estimatedMinutes: 15
+prerequisites: ['03-01-cpu-memory']
+tags: ['registers', 'buses', 'word-size']
+hasExercise: false
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import BitToggle from '$lib/components/viz/BitToggle.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The only place arithmetic happens
+
+A register is a fixed-width box inside the CPU, wired directly to the
+arithmetic unit. Nothing can be added, compared, or shifted unless it is
+in one. Memory values are copied into a register, operated on, and copied
+back — which is why the same C statement compiles to a handful of loads,
+one operation, and a store.
+
+That fixed width is the important part. A 32-bit register holds exactly
+32 bits, and every result written back into it is exactly 32 bits. There
+is no room to record that a carry escaped, and nothing in the register
+remembers it. The width is not a detail of the box; it *is* the box.
+
+## What you'll be able to do
+
+- Say why a register's width is also the width of its arithmetic.
+- Distinguish a register, a word, and a bus, and say which is a C concept.
+- Explain why `65536u * 65536u` is zero on a 32-bit type.
+- Predict when a shift is undefined rather than merely surprising.
+
+## Registers, words, buses
+
+The three terms are related and easy to conflate.
+
+| Term     | Where it lives | What it is |
+| -------- | -------------- | ---------- |
+| Register | inside the CPU | a fixed-width storage cell, wired to the ALU |
+| Word     | a definition  | the natural width the machine moves and computes in |
+| Bus      | between chips  | the wires that carry address, data, and control |
+
+A **word** is a phrase the architecture defines. On x86-64 it is 64 bits;
+on older ARM designs it was 32. C's `int` is usually the machine word, but
+nothing requires that — the standard only insists it be at least 16 bits.
+
+A **bus** is physical. Its width determines how many bits arrive per
+transfer, so a 64-bit data bus fills a 64-bit register in one go and a
+32-bit bus needs two transfers.
+
+
+
+<TheoryBlock label="Why it matters for C" title="Every type is a width, and every width truncates">
+
+	`uint8_t` is not "a small integer". It is an eight-bit register view, and
+	arithmetic on it is performed at `int` width then narrowed back. That is
+	why `uint8_t x = 255; x + 1;` evaluates to 256, but the moment you
+	assign it back into a `uint8_t` you get 0. Nothing warned you: the
+	conversion was legal, and the bits that did not fit were discarded.
+</TheoryBlock>
+
+<Eli5Block
+	topic="registers"
+	football="A scoreboard has exactly three digits. There is no fourth column, so once the score passes 999 it rolls back to 000 and the spectators keep cheering for a number that is now wrong. The board was never asked to hold more than three digits."
+	money="A cash register has eight digits and no room for a ninth. Ring up ten million pounds and the leading digit drops off; the receipt shows a smaller number than the till holds. Widening the register is a hardware change, not a software setting."
+/>
+
+## Counting past the end
+
+Nothing demonstrates a fixed width better than watching a counter reach
+its ceiling. The program below counts an eight-bit value past 255 and
+shows how the same multiply behaves at two different widths. Every number
+here is determined by the type, not by the machine's clock speed or
+endianness.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* A register is a fixed-width box. Every operation writes its result back
+ * into a box of that width, so anything that does not fit is lost. */
+
+static uint8_t add8(uint8_t a, uint8_t b) { return (uint8_t)(a + b); }
+
+int main(void) {
+    printf("width of each register-sized type:\n");
+    printf("  uint8_t   %2zu bits\n", sizeof(uint8_t) * 8u);
+    printf("  uint16_t  %2zu bits\n", sizeof(uint16_t) * 8u);
+    printf("  uint32_t  %2zu bits\n", sizeof(uint32_t) * 8u);
+    printf("  uint64_t  %2zu bits\n\n", sizeof(uint64_t) * 8u);
+
+    printf("an 8-bit register, counting past its maximum:\n");
+    uint8_t r = 250u;
+    for (int i = 0; i < 8; i++) {
+        printf("  r = %3u", (unsigned)r);
+        if (r == 0u) {
+            printf("   <- wrapped, the top bit was lost");
+        }
+        printf("\n");
+        r = add8(r, 1u);
+    }
+    printf("\n");
+
+    /* 65536 * 65536 is 2^32, which needs 33 bits; the low 32 bits are 0. */
+    uint32_t big = 65536u;
+    uint32_t product32 = big * big;
+    uint64_t product64 = (uint64_t)big * big;
+    printf("65536 * 65536 in 32 bits = %u\n", product32);
+    printf("65536 * 65536 in 64 bits = %llu\n\n",
+           (unsigned long long)product64);
+
+    /* A shift wider than the type is undefined; a shift within it is not. */
+    uint32_t one = 1u;
+    printf("1u << 31 = 0x%08X\n", one << 31);
+    printf("1ull << 63 = 0x%016llX\n", 1ull << 63);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+width of each register-sized type:
+  uint8_t    8 bits
+  uint16_t  16 bits
+  uint32_t  32 bits
+  uint64_t  64 bits
+
+an 8-bit register, counting past its maximum:
+  r = 250
+  r = 251
+  r = 252
+  r = 253
+  r = 254
+  r = 255
+  r =   0   <- wrapped, the top bit was lost
+  r =   1
+
+65536 * 65536 in 32 bits = 0
+65536 * 65536 in 64 bits = 4294967296
+
+1u << 31 = 0x80000000
+1ull << 63 = 0x8000000000000000
+```
+
+The width table is a property of the C types, not of the hardware: an
+8-bit type is 8 bits everywhere. What varies between machines is how many
+registers exist, how wide they are, and how many cycles a memory access
+costs — none of which C exposes.
+
+The counter crosses from 255 to 0 with no error. That is unsigned
+arithmetic behaving exactly as the standard specifies. Had `r` been a
+signed `int8_t`, the same increment would have been signed overflow, and
+signed overflow is undefined — the compiler is allowed to assume it never
+happens and optimise accordingly.
+
+`65536 * 65536` in 32 bits prints `0` because `2^32` needs 33 bits and the
+thirty-third is the one that falls off. The 64-bit version prints the
+correct answer because the type had room. The multiply itself is the
+same operation; only the width of the destination differs.
+
+<BitToggle initial={255} label="A register with every bit set" />
+
+Flip the top bit of that byte and watch the unsigned reading drop by
+128. The register did not lose information — you told it to. That
+distinction between *losing bits because the width forced it* and
+*deliberately clearing a bit* is the whole mental model.
+
+## Reading a bus
+
+You cannot observe a bus from C. What you can observe is its
+consequence, and the most common consequence is that a value crosses the
+boundary in pieces.
+
+| Data bus | Moving a 32-bit word | Transfers |
+| -------- | -------------------- | --------- |
+| 32 bits  | one transfer         | 1 |
+| 16 bits  | two halves           | 2 |
+| 8 bits   | four bytes           | 4 |
+
+Each extra transfer is a cycle the CPU spends waiting, which is why a
+narrow bus is slower for the same clock speed. This is the mechanical
+reason wider machines are faster, and the reason cache lines are
+transferred in bursts rather than one word at a time.
+
+## Common pitfalls
+
+### Writing arithmetic that silently narrows
+
+`uint8_t total = a + b;` computes at `int` width and then narrows. If the
+sum exceeds 255 the high bits vanish, and the compiler will not warn
+because the conversion is legal in an assignment. Widen the variable, or
+check the bound before assigning.
+
+### Shifting by the width of the type
+
+`x << 32` on a 32-bit `x` is undefined, not zero. The standard requires
+the shift count to be less than the width. Compilers exploit this: on x86
+the hardware masks the shift count to 5 bits, so `x << 32` happens to
+behave like `x << 0`, which is how a bug survives testing on one machine
+and fails on another.
+
+### Assuming `int` is the machine word
+
+On a 64-bit x86-64 machine the word is 64 bits but `int` is 32. C's model
+is older than the hardware, and the two diverged. Use `int_fast32_t` or
+`intptr_t` when you want "the machine's natural width".
+
+### Confusing size with range
+
+A 32-bit unsigned register holds 0 to 4294967295 — about 4.3 billion
+values. A 32-bit signed register holds the same *number* of values but
+split across zero. Widening doubles the number of patterns; it does not
+automatically double the positive range.
+
+<QuizCard
+	id="m03-quiz-register-width"
+	question="A 16-bit unsigned register holds 65535. You add one. What does it hold, and what would be different if the register were 32 bits wide?"
+	options={[
+		'0 — and with 32 bits the same addition gives 65536',
+		'65536 — the register widens before the addition happens',
+		'0 — and with 32 bits it would still be 0, because overflow sticks',
+		'-1 — the register is signed, and with 32 bits it would be 65536'
+	]}
+	answer={0}
+	explanation="An unsigned 16-bit register counts modulo 2^16, so 65535 + 1 wraps straight back to 0. A 32-bit register has room for the true sum, so the same addition produces 65536 with nothing lost."
+/>
+
+<LectureReference lecture="Lecture 03 — Architecture 1" slides="19–33" />

@@ -1,0 +1,279 @@
+---
+id: 21-01-service-models
+title: Service Models
+module: 21
+lecture: 'Lecture 21 — Cloud'
+slides: '1–16'
+estimatedMinutes: 17
+prerequisites: ['20-03-sockets']
+tags: ['cloud', 'iaas', 'paas', 'saas']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Renting a layer instead of owning a rack
+
+"Cloud" is not a technology. It is a change in who owns each layer of the stack
+you learned in module 20, and a change in how you pay for it. When you run a
+server yourself you own all seven layers — the cable, the switch, the
+virtualisation, the operating system, the runtime, the application. When you
+rent a virtual machine you own from the operating system upward and someone
+else owns everything below. When you rent a managed database you own the schema
+and the queries and nothing else.
+
+The question that decides the model is never "which is modern." It is: **which
+layers do we have a reason to control?** Control costs money and, more
+importantly, it costs attention. Every layer you own is a layer you patch, a
+layer whose release notes you read, and a layer that can page you at 3am.
+
+## What you'll be able to do
+
+- Place IaaS, PaaS, and SaaS on the layer stack and say what each one hands you.
+- Compute the total cost of a deployment including staff time, not just the invoice.
+- Explain why a managed service can be cheaper and more expensive at the same time.
+- Recognise when a service model is the wrong fit for a workload.
+
+## The three models on the stack
+
+| Layer | On-premises | IaaS | PaaS | SaaS |
+| --- | --- | --- | --- | --- |
+| application | you | you | you | provider |
+| runtime / libraries | you | you | provider | provider |
+| operating system | you | you | provider | provider |
+| virtualisation | you | provider | provider | provider |
+| servers, storage, network | you | provider | provider | provider |
+| physical facility | you | provider | provider | provider |
+
+The boundary is the contract. In IaaS you get a machine and root on it, which
+means you also get every patch Tuesday. In PaaS you get a runtime that accepts
+your code and the provider handles the OS, which means you also get the
+provider's supported language versions and no ability to install a kernel
+module. In SaaS you get a URL and a login, which means you get the provider's
+feature roadmap and nothing else.
+
+That trade is not free in either direction. A team that genuinely needs a
+custom kernel cannot use PaaS at any price. A team whose product is a CRUD
+application and who hand-patches an OS every month is spending its scarcest
+resource on its least differentiating work.
+
+<TheoryBlock label="Why it matters for C" title="The layer boundary is a syscall boundary">
+
+	When your C program calls `write()`, it enters the kernel. In every service
+	model that kernel is still there and still has the same interface — which is
+	why a program compiled for Linux runs unchanged on a rented Linux VM, in a
+	container, and inside a PaaS runtime built on that same kernel. What changes
+	is who is responsible for patching it. Portability of C across cloud providers
+	is real precisely because the syscall interface is not part of anyone's
+	product.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="service-models"
+	football="You can build a pitch, hire a groundskeeper, and run the club (own it). You can rent a maintained pitch by the hour and bring your own team (IaaS). You can join a league that supplies the pitch, the referee, and the fixtures and just turn up to play (PaaS). Or you can watch someone else's match on television (SaaS). Each costs less of your Saturday and gives you less say in the rules."
+	money="You can buy a kitchen, hire a chef, and run a restaurant. You can rent a fully equipped kitchen and bring your own recipes. You can rent a kitchen that also supplies the ingredients and the washing up. Or you can order dinner. The further right you go, the less capital and the less control — and the more you are paying someone for their opinion about how dinner should be made."
+/>
+
+## The cost is mostly people
+
+The invoice from a cloud provider is the visible number and usually the smaller
+one. The model below makes the invisible number explicit: staff hours to keep
+each layer running. The figures are assumptions, written into the source so you
+can disagree with them and rerun.
+
+```c
+#include <stdio.h>
+
+/* A cost model, not a quote. Every number below is an assumption written
+ * down so the arithmetic can be checked; the point is the shape of the
+ * comparison, not the dollar figures.
+ *
+ * The five columns are the five things you pay for at each service model.
+ * The only column that moves is "operations": the hours a person spends
+ * patching an OS, tuning a database, or reading release notes. */
+
+struct model {
+    const char *name;
+    double hardware;      /* amortised server + network, per month */
+    double licence;       /* OS, database, middleware */
+    double operations;    /* staff hours at a loaded rate */
+    double engineer_days; /* your team's time on undifferentiated work */
+};
+
+static double monthly_total(const struct model *m) {
+    return m->hardware + m->licence + m->operations;
+}
+
+int main(void) {
+    const struct model models[] = {
+        /* name          hardware  licence  ops    eng-days */
+        {"on-premises",    820.0,   640.0,  2400.0,   9.0},
+        {"IaaS",           900.0,   610.0,  1500.0,   6.5},
+        {"containers",     980.0,   380.0,   900.0,   4.0},
+        {"PaaS",          1050.0,     0.0,   420.0,   2.0},
+        {"SaaS",             0.0,  1400.0,    60.0,   0.5},
+    };
+    const size_t count = sizeof models / sizeof models[0];
+
+    printf("%-13s %10s %9s %10s %12s %10s\n",
+           "model", "hardware", "licence", "operations", "total/month", "eng-days");
+    printf("%-13s %10s %9s %10s %12s %10s\n",
+           "-------------", "----------", "---------", "----------",
+           "------------", "----------");
+
+    double base = monthly_total(&models[0]);
+
+    for (size_t i = 0; i < count; i++) {
+        printf("%-13s %10.0f %9.0f %10.0f %12.0f %10.1f\n",
+               models[i].name,
+               models[i].hardware,
+               models[i].licence,
+               models[i].operations,
+               monthly_total(&models[i]),
+               models[i].engineer_days);
+    }
+
+    printf("\nchange against on-premises (%.0f/month):\n", base);
+    for (size_t i = 0; i < count; i++) {
+        double delta = monthly_total(&models[i]) - base;
+        double pct = base > 0 ? (delta / base) * 100.0 : 0.0;
+        printf("  %-13s %+8.0f  (%+.1f%%)\n", models[i].name, delta, pct);
+    }
+
+    /* The interesting column is not the total; it is the fraction of the
+     * bill that is a person rather than a machine. */
+    printf("\nshare of the bill that is staff time:\n");
+    for (size_t i = 0; i < count; i++) {
+        double total = monthly_total(&models[i]);
+        double staff = total > 0 ? (models[i].operations / total) * 100.0 : 0.0;
+        printf("  %-13s %5.1f%%\n", models[i].name, staff);
+    }
+
+    /* Break-even: how many months before the difference in engineer-days
+     * is worth more than the difference in cash? 8 hours a day, 120/hour. */
+    printf("\ncash vs time, against on-premises (a day = 960 in loaded cost):\n");
+    for (size_t i = 1; i < count; i++) {
+        double cash = monthly_total(&models[i]) - base;
+        double days_saved = models[0].engineer_days - models[i].engineer_days;
+        double time_saved = days_saved * 960.0;
+        printf("  %-13s %+7.0f cash, %+5.1f days saved (%+7.0f value)\n",
+               models[i].name, cash, days_saved, time_saved);
+    }
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+model           hardware   licence operations  total/month   eng-days
+------------- ---------- --------- ---------- ------------ ----------
+on-premises          820       640       2400         3860        9.0
+IaaS                 900       610       1500         3010        6.5
+containers           980       380        900         2260        4.0
+PaaS                1050         0        420         1470        2.0
+SaaS                   0      1400         60         1460        0.5
+
+change against on-premises (3860/month):
+  on-premises         +0  (+0.0%)
+  IaaS              -850  (-22.0%)
+  containers       -1600  (-41.5%)
+  PaaS             -2390  (-61.9%)
+  SaaS             -2400  (-62.2%)
+
+share of the bill that is staff time:
+  on-premises    62.2%
+  IaaS           49.8%
+  containers     39.8%
+  PaaS           28.6%
+  SaaS            4.1%
+
+cash vs time, against on-premises (a day = 960 in loaded cost):
+  IaaS             -850 cash,  +2.5 days saved (  +2400 value)
+  containers      -1600 cash,  +5.0 days saved (  +4800 value)
+  PaaS            -2390 cash,  +7.0 days saved (  +6720 value)
+  SaaS            -2400 cash,  +8.5 days saved (  +8160 value)
+```
+
+Two things are worth extracting. First, the hardware column barely moves —
+between 820 and 1,050 a month. The migration from owning a rack to renting a
+managed platform saves almost nothing on hardware and almost everything on
+labour. Second, the fraction of the bill that is a person falls from 62% to 4%
+across the table. That shift, not the invoice, is what cloud computing changed.
+
+**These numbers are illustrative.** They are a spreadsheet with a compile
+step, and the assumptions are ordinary small-business ones. Run them with your
+own loaded hourly rate before quoting them at anyone.
+
+## The costs that do not appear in the table
+
+| Hidden cost | Where it lands |
+| --- | --- |
+| egress bandwidth | usually the largest surprise on a cloud bill |
+| vendor lock-in | migrating a managed database can cost more than it saved |
+| cold starts | managed runtimes idle out; the first request pays |
+| per-request pricing | fine at 10 req/s, alarming at 10,000 |
+| compliance scope | a provider's audit does not cover your configuration |
+
+The last row matters more than it looks. A provider being compliant with a
+standard says nothing about whether your deployment of it is. The shared
+responsibility model draws the line at the service boundary, and everything
+above that line is yours whatever the marketing page says.
+
+## Common pitfalls
+
+### Assuming managed means cheaper
+
+At low volume, a managed service is almost always more expensive than a small
+VM. The break-even is in staff time, and a team with spare capacity and no
+compliance burden may never reach it. Managed services are bought with money to
+save attention; if attention is not the constraint, the trade is bad.
+
+### Forgetting to measure egress
+
+Cloud providers charge very little to accept data and noticeably more to send
+it out. A backup strategy that copies a terabyte out nightly every month can
+cost more than the compute it protects.
+
+### Treating serverless as a smaller server
+
+Function-as-a-service changes the failure modes: cold starts, per-invocation
+limits, no persistent local state, and a hard timeout. Code written for a
+long-lived process does not become serverless by being wrapped in a handler.
+
+<ExerciseCard
+	id="m21-cost-model"
+	concept="fixed cost vs per-request cost under growth"
+	prompt="Give the cost model a growth assumption: volume starts at 2,000,000 requests a month and doubles every six months. On-premises is a flat 3860 a month, PaaS a flat 200, and serverless 0.00002 per request with no fixed cost. Print the monthly cost of all three at months 0, 6, 12 and 18, then the cheapest model at month 0 and the first month in which serverless costs more than the fixed-cost PaaS row. Print exactly:&#10;volume at month 0: 2000000 requests&#10;&#10;model           month 0    month 6   month 12   month 18&#10;on-premises     3860.00    3860.00    3860.00    3860.00&#10;paas             200.00     200.00     200.00     200.00&#10;serverless        40.00      80.00     160.00     320.00&#10;&#10;cheapest at month 0: serverless&#10;serverless costs more than paas from month 18&#10;Nothing else. The model names sit in twelve columns and each money column is ten wide with two decimals."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;struct model &#123;&#10;    const char *name;&#10;    double fixed;&#10;    double per_request;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: fixed + per_request * volume, volume doubling every 6 months */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="volume at month 0: 2000000 requests&#10;&#10;model           month 0    month 6   month 12   month 18&#10;on-premises     3860.00    3860.00    3860.00    3860.00&#10;paas             200.00     200.00     200.00     200.00&#10;serverless        40.00      80.00     160.00     320.00&#10;&#10;cheapest at month 0: serverless&#10;serverless costs more than paas from month 18&#10;"
+	hints={[
+		'Compute the volume for each column once, doubling for every six months that have passed, then reuse it for all three models.',
+		'The crossing is the first column where the per-request cost exceeds the flat 200, which is month 18; a linear scan over the four columns finds it without algebra.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* A cost model with a growth assumption. Volume doubles every six months,&#10; * so a per-request price grows without bound while a fixed price does not.&#10; * The crossing point is the whole argument for the fixed-cost row. */&#10;&#10;#define STEPS 4&#10;&#10;static const int STEP_MONTH[STEPS] = &#123;0, 6, 12, 18&#125;;&#10;&#10;struct model &#123;&#10;    const char *name;&#10;    double fixed;&#10;    double per_request;&#10;&#125;;&#10;&#10;static double monthly(const struct model *m, double volume) &#123;&#10;    return m-&gt;fixed + m-&gt;per_request * volume;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const struct model models[] = &#123;&#10;        &#123;&quot;on-premises&quot;, 3860.0, 0.0&#125;,&#10;        &#123;&quot;paas&quot;, 200.0, 0.0&#125;,&#10;        &#123;&quot;serverless&quot;, 0.0, 0.00002&#125;,&#10;    &#125;;&#10;    const size_t count = sizeof models / sizeof models[0];&#10;    const double base = 2000000.0;&#10;    double volume[STEPS];&#10;&#10;    for (int j = 0; j &lt; STEPS; j++) &#123;&#10;        volume[j] = base;&#10;        for (int k = 0; k &lt; STEP_MONTH[j] / 6; k++) &#123;&#10;            volume[j] *= 2.0;&#10;        &#125;&#10;    &#125;&#10;&#10;    printf(&quot;volume at month 0: %.0f requests\n\n&quot;, base);&#10;    printf(&quot;%-12s %10s %10s %10s %10s\n&quot;, &quot;model&quot;, &quot;month 0&quot;, &quot;month 6&quot;,&#10;           &quot;month 12&quot;, &quot;month 18&quot;);&#10;    for (size_t i = 0; i &lt; count; i++) &#123;&#10;        printf(&quot;%-12s&quot;, models[i].name);&#10;        for (int j = 0; j &lt; STEPS; j++) &#123;&#10;            printf(&quot; %10.2f&quot;, monthly(&amp;models[i], volume[j]));&#10;        &#125;&#10;        printf(&quot;\n&quot;);&#10;    &#125;&#10;&#10;    size_t cheapest = 0;&#10;    for (size_t i = 1; i &lt; count; i++) &#123;&#10;        if (monthly(&amp;models[i], volume[0]) &lt; monthly(&amp;models[cheapest], volume[0])) &#123;&#10;            cheapest = i;&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;\ncheapest at month 0: %s\n&quot;, models[cheapest].name);&#10;&#10;    const struct model *paas = &amp;models[1];&#10;    const struct model *serverless = &amp;models[2];&#10;    int crossing = -1;&#10;&#10;    for (int j = 0; j &lt; STEPS; j++) &#123;&#10;        if (monthly(serverless, volume[j]) &gt; monthly(paas, volume[j])) &#123;&#10;            crossing = STEP_MONTH[j];&#10;            break;&#10;        &#125;&#10;    &#125;&#10;    if (crossing &lt; 0) &#123;&#10;        printf(&quot;serverless never overtakes paas within 18 months\n&quot;);&#10;    &#125; else &#123;&#10;        printf(&quot;serverless costs more than paas from month %d\n&quot;, crossing);&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m21-quiz-shared-responsibility"
+	question="A provider's marketing page says its platform is compliant with a payments standard. A developer stores card numbers in an unencrypted column on that platform. Whose compliance has failed, and what does the shared responsibility model say about the provider's role?"
+	options={[
+		'Yours. The provider certifies the platform — the buildings, the hypervisor, the encryption primitives it offers — but the data, the access rules and the configuration are yours. A certified platform does not make an unencrypted column compliant.',
+		'The provider\'s. A platform that carries a payments certification must encrypt every column by default, so a plaintext card number means the certificate was issued wrongly.',
+		'Both, equally. Responsibility splits 50/50, so neither party can claim compliance until the other has proven its half in writing.',
+		'Neither. Compliance is a property of the standard rather than of anyone\'s behaviour, so a certified platform makes the workload compliant by definition.'
+	]}
+	answer={0}
+	explanation="Shared responsibility divides the stack: the provider secures the layer it runs and certifies that layer, while you secure what you build on top of it. Storing card numbers unencrypted is a failure of your half, and the provider's certificate says nothing about your database schema."
+/>
+
+<LectureReference lecture="Lecture 21 — Cloud" slides="1–16" />

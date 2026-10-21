@@ -1,0 +1,286 @@
+---
+id: 19-02-crypto-basics
+title: Cryptography Basics
+module: 19
+lecture: 'Lecture 19 — Security'
+slides: '16–30'
+estimatedMinutes: 18
+prerequisites: ['19-01-threats']
+tags: ['crypto', 'xor', 'hash']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Two tools, two different jobs
+
+A cipher hides the content of a message. A hash proves the content has not
+changed. They look similar — both turn readable data into unreadable data — and
+confusing them is the source of a long list of real vulnerabilities.
+
+A **cipher** is reversible, but only with the key. A **hash** is deliberately
+not reversible at all: it takes any amount of input and produces a fixed-size
+output, and there is no key. If you encrypt a message and lose the key, the
+message is gone. If you hash a message and lose nothing, you still cannot
+recover it — that is the point.
+
+Nothing in this lesson is safe to deploy. The constructions are small enough to
+read on one screen, which means they are small enough to break. Learning what a
+cipher *is* requires seeing one with the walls down; using one requires a
+library written by people who do this for a living, and this lesson tells you
+which ones.
+
+## What you'll be able to do
+
+- Explain why XOR is the basis of every stream cipher.
+- Show that reusing a one-time pad leaks the plaintext.
+- Compute a hash and say what property makes it useful.
+- Name the two mistakes that break otherwise-correct cryptography.
+
+## The one reversible operation you can do by hand
+
+XOR has a property nothing else has: it is its own inverse. If `c = p ⊕ k` then
+`p = c ⊕ k`. Encrypting and decrypting are the same operation, which makes a
+cipher trivial to write and — this is the important part — trivial to get wrong.
+
+The **one-time pad** is the only cipher that is provably unbreakable, and the
+proof requires three things that are easy to state and expensive to satisfy:
+
+1. the key is at least as long as the message;
+2. the key is truly random;
+3. the key is used exactly once, then destroyed.
+
+Drop any one of them and the proof collapses. Real systems drop all three,
+because generating and distributing a megabyte of true randomness per megabyte
+of traffic is not practical. What they use instead is a **stream cipher**: a
+short key expanded into a long keystream by an algorithm. AES in counter mode
+and ChaCha20 are the two you will meet. They keep property 1 and 2 as
+computational assumptions and absolutely require property 3.
+
+| Property | One-time pad | Stream cipher | What breaks without it |
+| --- | --- | --- | --- |
+| key ≥ message | required | keystream, generated | reuse reveals overlap |
+| truly random | required | pseudo-random | predictable keystream |
+| used once | required | **required** | the two plaintexts XOR together |
+
+<TheoryBlock label="Why it matters for C" title="Reuse is a bug your compiler cannot see">
+
+	Two ciphertexts encrypted under the same stream key XOR to the XOR of the two
+	plaintexts — the key has cancelled out completely. There is no code path that
+	looks wrong, no warning, no crash. An attacker with two ciphertexts recovers the
+	difference of the messages and, with a little English text in one of them, both
+	messages. This is why nonces exist: a per-message value mixed into the keystream
+	so that two encryptions under one key are never the same operation. If you ever
+	write encryption code, the nonce is the part to check twice.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="key-reuse"
+	football="Two teams share one marked deck for the coin toss. Anyone who watches both tosses and compares them can work out the deck's order without ever seeing the deck. One deck, one toss — a second toss with the same deck gives the trick away."
+	money="Two letters are sealed with the same wax stamp and the same pattern. Lay the two seals side by side and the repeated pattern cancels out, leaving only the difference between the two messages. One stamp, one letter; reusing it on a second letter hands over the pair."
+/>
+
+## Seeing the leak
+
+The program below encrypts two twelve-character messages under the same sixteen
+bytes of key, then XORs the two ciphertexts together. The key vanishes and what
+remains is the XOR of the two plaintexts — computed twice, once from the
+ciphertexts and once directly from the messages, to show they are identical.
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+
+/* A one-time pad, done twice. The first attempt uses a fresh key byte for
+   every plaintext byte. The second reuses one key for two messages, which
+   is the mistake that has broken every hand-rolled cipher ever shipped. */
+
+#define MAXLEN 24
+
+static void xor_into(const char *plain, const char *key, char *out, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        out[i] = (char)(plain[i] ^ key[i]);
+    }
+    out[n] = '\0';
+}
+
+static void print_hex(const char *label, const char *data, size_t n) {
+    printf("%-18s", label);
+    for (size_t i = 0; i < n; i++) {
+        printf("%02x ", (unsigned char)data[i]);
+    }
+    printf("\n");
+}
+
+int main(void) {
+    /* Two messages of equal length, plus one key. */
+    const char *msg_a = "ATTACKATDAWN";
+    const char *msg_b = "DEFENDATNOON";
+    const size_t n = strlen(msg_a);
+
+    if (strlen(msg_b) != n) {
+        fprintf(stderr, "messages must be the same length for this demo\n");
+        return 1;
+    }
+
+    /* A real one-time pad needs n truly random bytes, used once, then
+       destroyed. These are fixed so the output is reproducible. */
+    const unsigned char pad[MAXLEN] = {
+        0x5a, 0x1c, 0x93, 0x47, 0x0e, 0xb6, 0x22, 0xd1,
+        0x38, 0x6f, 0xa5, 0x04, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    };
+
+    char ct_a[MAXLEN];
+    char ct_b[MAXLEN];
+
+    /* Case 1: separate keys, which is correct. */
+    xor_into(msg_a, (const char *)pad, ct_a, n);
+    print_hex("plaintext  A:", msg_a, n);
+    print_hex("ciphertext A:", ct_a, n);
+
+    /* Case 2: the SAME pad reused for a second message. */
+    xor_into(msg_b, (const char *)pad, ct_b, n);
+
+    printf("\nreusing the pad for a second message:\n");
+    print_hex("ciphertext B:", ct_b, n);
+
+    /* XOR of the two ciphertexts cancels the key entirely. */
+    char leak[MAXLEN];
+    for (size_t i = 0; i < n; i++) {
+        leak[i] = (char)(ct_a[i] ^ ct_b[i]);
+    }
+    leak[n] = '\0';
+    print_hex("A xor B:", leak, n);
+
+    printf("\nsame as the plaintexts xored, key gone: ");
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)(msg_a[i] ^ msg_b[i]);
+        printf("%02x ", c);
+    }
+    printf("\n");
+
+    /* Where both messages share a letter the difference is zero. */
+    size_t matches = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (msg_a[i] == msg_b[i]) {
+            matches++;
+        }
+    }
+    printf("%zu of %zu positions are identical in the two plaintexts\n", matches, n);
+    printf("every one of them shows up as 00 in the xor above\n");
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+plaintext  A:     41 54 54 41 43 4b 41 54 44 41 57 4e 
+ciphertext A:     1b 48 c7 06 4d fd 63 85 7c 2e f2 4a 
+
+reusing the pad for a second message:
+ciphertext B:     1e 59 d5 02 40 f2 63 85 76 20 ea 4a 
+A xor B:          05 11 12 04 0d 0f 00 00 0a 0e 18 00 
+
+same as the plaintexts xored, key gone: 05 11 12 04 0d 0f 00 00 0a 0e 18 00 
+3 of 12 positions are identical in the two plaintexts
+every one of them shows up as 00 in the xor above
+```
+
+Look at the zeros. Positions 7, 8, and 12 (counting from 1) are `00` because
+both messages have a `T` at 7 and 8 and an `N` at 12 — `ATTACKATDAWN` and
+`DEFENDATNOON` agree in three places, and every agreement shows through as a
+zero byte. That is already a structural leak: the attacker now knows where the
+messages match without knowing what they say.
+
+Recovering the rest is a short exercise in guessing. `05` is the XOR of `A` and
+`D`. Try crib-dragging: assume one message contains a common word, XOR it
+against the difference, and see whether the result looks like English.
+
+## Hashes: one way, fixed size
+
+A hash maps any input to a fixed-size output, and it must be hard to find two
+inputs with the same output. That second property — **collision resistance** —
+is what makes a hash useful for integrity, and it is the property that older
+functions like MD5 and SHA-1 have lost.
+
+| Function | Output | Status today |
+| --- | --- | --- |
+| MD5 | 128 bits | broken; collisions are cheap to produce |
+| SHA-1 | 160 bits | broken; collisions demonstrated in 2017 |
+| SHA-256 | 256 bits | fine for integrity |
+| BLAKE3 | 256 bits | fine, and faster than SHA-256 |
+
+A hash is not encryption and a hash is not a password store on its own. For
+passwords you want a deliberately slow hash — Argon2, scrypt, bcrypt — because
+the threat model is offline guessing at scale, and speed is the attacker's
+advantage. For file integrity or message authentication you want a fast one.
+
+<QuizCard
+	id="m19-quiz-hash-collision"
+	question="A download page publishes a SHA-256 checksum next to a file. What attack does that checksum prevent, and what attack does it not prevent at all?"
+	options={[
+		'It prevents corruption — a truncated or bit-rotted download fails the check — and it prevents a mirror from substituting a file only if the checksum came from somewhere that mirror cannot write. It does not stop an attacker who can replace both the file and the checksum on the same page; only a signature with a key the attacker lacks does that.',
+		'It prevents tampering by a malicious server, because SHA-256 is collision resistant, so no different file can share the checksum.',
+		'It prevents a man-in-the-middle from modifying the bytes, because the checksum authenticates the file to the downloader.',
+		'It prevents corruption and tampering equally well as long as the file is large, because the hash covers every byte of it.'
+	]}
+	answer={0}
+	explanation="A checksum is an integrity check: it detects accidental damage and any substitution by someone who cannot also change the published hash. It is not authentication, because whoever controls the file usually controls the page the hash sits on as well."
+/>
+
+## Common pitfalls
+
+### Writing your own cipher
+
+Every property of a real cipher — diffusion, resistance to differential
+cryptanalysis, constant-time comparison — is invisible in the source and
+measurable only with years of analysis. The correct move in C is to link a
+library: libsodium's `crypto_secretbox` or OpenSSL's EVP interface. A
+hand-rolled XOR loop is a teaching aid and a vulnerability, in that order.
+
+### Comparing secrets with `==` or `strcmp`
+
+Both stop at the first differing byte, so the time they take reveals how much
+of the guess was correct. At 10⁹ guesses per second, the microseconds saved per
+guess are enough to recover a value byte by byte. Use a constant-time
+comparison such as `CRYPTO_memcmp` or `sodium_memcmp`.
+
+### Seeding a "random" key from `rand()`
+
+`rand()` is deterministic from its seed, and the seed is usually the time. Two
+processes started in the same second produce the same key. Keys come from the
+operating system's CSPRNG — `/dev/urandom`, `getrandom()` on Linux,
+`SecRandomCopyBytes` on macOS — and never from `rand()` or `srand(time(NULL))`.
+
+### Believing a hash proves authorship
+
+A checksum in the same place as the file protects against corruption, not
+against tampering: whoever can replace the file can replace its checksum. Only
+a signature with a key the attacker does not hold proves authorship.
+
+<ExerciseCard
+	id="m19-xor-roundtrip"
+	concept="repeating XOR pad, crib check"
+	prompt="XOR the message attack at dawn against the repeating pad SECRETSECRETSEC and print the ciphertext as hex, then decrypt it again with the same pad. Confirm the guess with a crib instead of eyeballing it: search the recovered bytes for the original message. Then decrypt the same ciphertext with a different pad of the same length, print those bytes as hex, and show the crib fails. Finally XOR the ciphertext of meet at noon!! with the first ciphertext, print that difference, and use it plus the known first message to recover the second. Print exactly:&#10;plaintext: attack at dawn&#10;cipher: 32 31 37 33 26 3f 73 24 37 72 21 35 24 2b&#10;roundtrip: attack at dawn&#10;right pad, crib found: yes&#10;wrong pad gives: 65 63 78 7d 61 6f 32 60 60 20 6e 7b 63 7b&#10;wrong pad, crib found: no&#10;xor of ciphertexts: 0c 11 11 15 43 0a 54 41 1a 4f 0b 0f 56 4f&#10;recovered second message: meet at noon!!&#10;Nothing else. Search for the crib byte by byte rather than with strstr, so the check does not depend on the recovered bytes being text."
+	starter="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;static void xor_into(const char *plain, const char *pad, char *out, size_t n) &#123;&#10;    /* TODO */&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: round trip, crib check, then the reused-pad difference */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="plaintext: attack at dawn&#10;cipher: 32 31 37 33 26 3f 73 24 37 72 21 35 24 2b&#10;roundtrip: attack at dawn&#10;right pad, crib found: yes&#10;wrong pad gives: 65 63 78 7d 61 6f 32 60 60 20 6e 7b 63 7b&#10;wrong pad, crib found: no&#10;xor of ciphertexts: 0c 11 11 15 43 0a 54 41 1a 4f 0b 0f 56 4f&#10;recovered second message: meet at noon!!&#10;"
+	hints={[
+		'Print every byte with percent 02x and an unsigned char cast, otherwise a high byte sign-extends to ffffff... on some systems.',
+		'The difference of two ciphertexts is the difference of the two plaintexts because the pad cancels: p2 equals c1 xor c2 xor p1.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* A repeating XOR pad is reversible, which is exactly the problem: once a&#10; * second message reuses the pad, the key cancels out of the difference.&#10; * A crib check is how a guess at the key is confirmed or refuted. */&#10;&#10;static void xor_into(const char *plain, const char *pad, char *out, size_t n) &#123;&#10;    for (size_t i = 0; i &lt; n; i++) &#123;&#10;        out[i] = (char)(plain[i] ^ pad[i]);&#10;    &#125;&#10;    out[n] = '\0';&#10;&#125;&#10;&#10;static int contains(const char *haystack, size_t n, const char *needle) &#123;&#10;    size_t len = strlen(needle);&#10;&#10;    if (len == 0u || len &gt; n) &#123;&#10;        return 0;&#10;    &#125;&#10;    for (size_t i = 0; i + len &lt;= n; i++) &#123;&#10;        if (memcmp(haystack + i, needle, len) == 0) &#123;&#10;            return 1;&#10;        &#125;&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;&#10;static void print_hex(const char *label, const char *data, size_t n) &#123;&#10;    printf(&quot;%s&quot;, label);&#10;    for (size_t i = 0; i &lt; n; i++) &#123;&#10;        printf(&quot; %02x&quot;, (unsigned char)data[i]);&#10;    &#125;&#10;    printf(&quot;\n&quot;);&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const char message[] = &quot;attack at dawn&quot;;&#10;    const char second[] = &quot;meet at noon!!&quot;;&#10;    const char pad[] = &quot;SECRETSECRETSEC&quot;;&#10;    const char wrong[] = &quot;WRONGPADWRONGP&quot;;&#10;    const size_t n = strlen(message);&#10;    char cipher[32];&#10;    char back[32];&#10;    char cipher2[32];&#10;    char junk[32];&#10;    char difference[32];&#10;    char recovered[32];&#10;&#10;    xor_into(message, pad, cipher, n);&#10;    printf(&quot;plaintext: %s\n&quot;, message);&#10;    print_hex(&quot;cipher:&quot;, cipher, n);&#10;&#10;    xor_into(cipher, pad, back, n);&#10;    printf(&quot;roundtrip: %s\n&quot;, back);&#10;    printf(&quot;right pad, crib found: %s\n&quot;,&#10;           contains(back, n, message) ? &quot;yes&quot; : &quot;no&quot;);&#10;&#10;    xor_into(cipher, wrong, junk, n);&#10;    print_hex(&quot;wrong pad gives:&quot;, junk, n);&#10;    printf(&quot;wrong pad, crib found: %s\n&quot;,&#10;           contains(junk, n, message) ? &quot;yes&quot; : &quot;no&quot;);&#10;&#10;    xor_into(second, pad, cipher2, n);&#10;    for (size_t i = 0; i &lt; n; i++) &#123;&#10;        difference[i] = (char)(cipher[i] ^ cipher2[i]);&#10;    &#125;&#10;    print_hex(&quot;xor of ciphertexts:&quot;, difference, n);&#10;&#10;    /* knowing the first plaintext recovers the second: p2 = c1 ^ c2 ^ p1 */&#10;    for (size_t i = 0; i &lt; n; i++) &#123;&#10;        recovered[i] = (char)(difference[i] ^ message[i]);&#10;    &#125;&#10;    recovered[n] = '\0';&#10;    printf(&quot;recovered second message: %s\n&quot;, recovered);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<LectureReference lecture="Lecture 19 — Security" slides="16–30" />

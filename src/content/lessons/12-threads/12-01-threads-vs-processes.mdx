@@ -1,0 +1,201 @@
+---
+id: 12-01-threads-vs-processes
+title: Threads vs Processes
+module: 12
+lecture: 'Lecture 12 — Threads'
+slides: '2–14'
+estimatedMinutes: 14
+prerequisites: ['11-03-ipc']
+tags: ['threads', 'memory', 'processes']
+hasExercise: false
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The same program, twice
+
+You now know that a process has its own address space, which keeps it safe and
+makes communication expensive. A **thread** is the other trade: a second
+instruction stream inside the *same* address space.
+
+Everything a process owns is split in two:
+
+| Per process | Per thread |
+| --- | --- |
+| address space (code, data, heap) | registers |
+| open file descriptors | stack |
+| PID, permissions, signal handlers | program counter, stack pointer |
+| | thread ID |
+
+The heap and globals are shared. The stack is not. That single sentence explains
+almost every thread bug you will ever write: two threads can trample each other's
+globals, but never each other's locals.
+
+## What you'll be able to do
+
+- Split everything a process owns into per-process and per-thread parts.
+- Say why creating a thread is cheaper than creating a process.
+- Predict which variables two threads can corrupt and which they cannot.
+- Explain why passing a pointer to a local into a thread is a lifetime bug.
+
+<TheoryBlock label="Why it matters for C" title="Your stack is per thread; everything else is not">
+
+	A local `int` inside a function is safe to use from any thread, because each thread has its own
+	stack. A `static int` at file scope is not: both threads address the same bytes. This is why the
+	race conditions in module 14 all live in globals, and why passing a pointer to a local into a
+	thread is a lifetime bug — the local's stack frame may be gone before the thread reads it.
+</TheoryBlock>
+
+## Why threads are cheaper
+
+Creating a thread does not copy an address space. It allocates a stack and a
+small kernel structure. On a modern machine that is tens of microseconds against
+milliseconds for a process, and a thread switch saves fewer registers than a
+process switch.
+
+The cost you pay for that is coordination. Processes cannot corrupt each other
+by accident; threads can, in a single instruction, with no compiler warning.
+
+<Eli5Block
+	topic="threads"
+	football="A process is a whole stadium. A thread is another steward inside the same stadium — same pitch, same stands, same scoreboard, and each steward has their own radio and their own beat to walk. Two stewards can be in the same stand at once, and if they both write on the scoreboard, one overwrites the other."
+	money="A process is a company with its own books. A thread is a second clerk in the same office: one ledger, one filing cabinet, two desks. They can work at the same time, which is the point, and if both write in the same ledger line without agreeing, the entry is lost."
+/>
+
+## A thread that touches shared memory
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <pthread.h>
+#include <stdio.h>
+#include <unistd.h>
+
+static int shared_value = 0;
+static long thread_pid = -1;
+
+static void *worker(void *arg) {
+    (void)arg;
+    shared_value += 7;          /* a thread shares the heap and globals */
+    thread_pid = (long)getpid();
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t;
+    long main_pid = (long)getpid();
+
+    printf("before: shared_value = %d\n", shared_value);
+
+    if (pthread_create(&t, NULL, worker, NULL) != 0) {
+        fprintf(stderr, "could not create thread\n");
+        return 1;
+    }
+    if (pthread_join(t, NULL) != 0) {
+        fprintf(stderr, "could not join thread\n");
+        return 1;
+    }
+
+    printf("after:  shared_value = %d\n", shared_value);
+
+    /* If this were a separate process, the pid would differ. */
+    printf("worker ran in the same process: %s\n",
+           thread_pid == main_pid ? "yes" : "no");
+    return 0;
+}
+```
+
+`pthread_*`, `unistd.h`, and `getpid` are POSIX. On Windows the equivalent is the
+Win32 thread API or C11 `<threads.h>`, whose `thrd_create` has a compatible
+shape but is not the same library.
+
+Compile with `-pthread`, not just `-lpthread`:
+
+```text
+gcc -std=c11 -Wall -Wextra -pthread threads.c -o threads
+```
+
+`-pthread` sets preprocessor flags as well as linking the library; `-lpthread`
+alone can compile but misbehave.
+
+## Expected output
+
+```text
+before: shared_value = 0
+after:  shared_value = 7
+worker ran in the same process: yes
+```
+
+The global went from 0 to 7 because the thread wrote to the same memory the main
+thread reads. In module 11-01 the equivalent write inside a forked child left the
+parent's value untouched. That contrast is the whole lesson.
+
+The PID is never printed. A PID is assigned by the kernel and differs on every
+run; what is deterministic is that the two values are equal.
+
+## Common pitfalls
+
+### Passing a pointer to a local variable
+
+```c
+void start(void) {
+    int value = 42;
+    pthread_create(&t, NULL, worker, &value);   /* value dies at return */
+}
+```
+
+The thread may read `value` after `start` has returned, when the stack frame has
+been reused. Either pass the value through the pointer-sized argument, or
+allocate storage that outlives the thread. This bug is intermittent, which is
+what makes it expensive.
+
+### Assuming the thread has run when `pthread_create` returns
+
+`pthread_create` returns as soon as the thread is created, not when it has done
+anything. Without `pthread_join`, `main` can return and tear down the process
+while the worker is mid-write. Every thread this course starts is joined.
+
+### Returning a pointer to a local from the thread function
+
+```c
+static void *worker(void *arg) {
+    int result = 42;
+    return &result;
+}
+```
+
+The stack frame is gone by the time the joiner reads the pointer. Return a value
+cast to `void *` for small integers, or return heap memory the joiner frees.
+
+This one the compiler catches for you: `-Wall` reports
+`warning: address of stack memory associated with local variable 'result' returned`,
+naming the exact variable. Treat that warning as an error here, because the
+window in which the bug appears is narrow and will not show up in a test run.
+
+### Thinking threads give you parallelism for free
+
+On a single core, threads only interleave. On multiple cores they genuinely run
+at once, which is faster and also means a race is more likely to be observed —
+the timing window widens. Code that "worked" on one core is not evidence of
+correctness.
+
+<QuizCard
+	id="threads-vs-proc-quiz-1"
+	question="Two threads in one process each declare `int total = 0;` as a local inside their function and increment it in a loop. Is a data race possible? Now suppose both increment a file-scope `static int total`. Does the answer change?"
+	options={[
+		'The locals are safe: each thread has its own stack, so each total is a private variable. The static total is a race, because that is one object shared by both threads and the read-modify-write is not atomic',
+		'Both are races, because threads share all memory including the stack',
+		'Neither is a race: a loop that increments a variable is always sequenced by the CPU',
+		'The locals race and the static is safe, because static storage is protected by the kernel'
+	]}
+	answer={0}
+	explanation="Threads share the heap and file-scope data but not their stacks, so locals live in separate memory while a static lives in one place that both threads can interleave inside."
+/>
+
+<LectureReference lecture="Lecture 12 — Threads" slides="2–14" />

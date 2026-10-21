@@ -1,0 +1,359 @@
+---
+id: 16-03-swapping
+title: Swapping
+module: 16
+lecture: 'Lecture 16 — Memory Management'
+slides: '31–45'
+estimatedMinutes: 17
+prerequisites: ['16-02-paging']
+tags: ['swapping', 'eviction', 'context-switch', 'working-set']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## When there are more programs than there is memory
+
+Paging solved the layout problem. It did not solve the capacity problem.
+Every program on the machine wants an address space, and the sum of
+those address spaces is routinely larger than the physical memory
+installed. Something has to leave.
+
+**Swapping** is the oldest answer: move an entire process out to disk,
+and move one back in when it is needed. The unit of movement is the
+process. That makes the arithmetic brutal in a way the previous two
+lessons were not, because the cost of a decision is proportional to a
+size nobody chose — the program's footprint — and the disk is four to
+five orders of magnitude slower than memory.
+
+The historical fix was not a better eviction policy. It was a smaller
+unit: **paging to disk** in 4 KB pieces, on demand, which is the subject
+of the next module. Swapping survives in a narrower role — the kernel
+moving whole processes aside under pressure — and if you have ever seen
+a laptop freeze for twenty seconds after waking from sleep, you have met
+it.
+
+## What you'll be able to do
+
+- Compute the I/O cost of admitting a process to a full memory.
+- Explain why evicting a process that is about to run is the expensive case.
+- Distinguish swapping from paging by the unit of transfer.
+- Say what a small unit buys and what it costs instead.
+
+## The admission decision
+
+When a process must become resident and memory is full, the kernel has
+three choices and none of them is free:
+
+| Option          | Cost                                    | Consequence                    |
+| --------------- | --------------------------------------- | ------------------------------ |
+| Evict something | one write per evicted process           | that process must be read back |
+| Refuse          | none now                                | the requester starves or waits |
+| Compact         | copying within memory, no disk I/O      | only helps with free holes     |
+
+Compaction is worth keeping in the list because it is the cheap one
+when it applies: it shuffles resident regions so a free hole becomes big
+enough, paying only memory bandwidth, no disk. It is also the reason the
+previous lesson's fragmentation was tolerable. But compaction cannot
+create memory that is not there, and once physical memory is genuinely
+over-committed, one of the other two options applies.
+
+The decision is made worse by a fact about schedulers: the process being
+evicted is very often the process with the most recent evidence of being
+runnable. A scheduler that round-robins between two processes, each
+larger than half of memory, produces exactly the pathological pattern —
+each admission evicts the other, and both live on disk.
+
+<TheoryBlock label="Why it matters for C" title="Your process's size is not what you wrote">
+
+	The resident set of a C program is not its text size. It includes the
+	heap from `malloc`, the stack for every thread (8 MB of address space
+	each by default, though only touched pages are resident), memory-mapped
+	files, and the shared libraries the dynamic loader pulled in. A program
+	whose source is 200 lines can easily be 8 MB resident. This matters
+	when you measure: `time -l` on macOS or `/usr/bin/time -v` on Linux
+	reports maximum resident set size, and that number — not the size of
+	the binary — is what a swapping kernel has to move.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="swapping"
+	football="Only eleven players fit on the pitch but the squad has thirty. The manager sends a whole player to the bench whenever the pitch is full, and fetches a whole player back when the formation changes. Doing that twice a minute for the same two players means nobody is ever warmed up."
+	money="A shop with four display windows and six products rotates whole displays: when a new product must appear, an entire window goes back to the storeroom. Each swap takes minutes because it is the whole window. The obvious fix is to fetch single items from the back as customers ask."
+/>
+
+## The arithmetic of whole-process swapping
+
+The program below models five processes in 64 KB of memory, admits two of
+them in sequence, and reports what the kernel paid in I/O. The transfer
+rate is 10 MB/s — a round 1990s figure, chosen so the division can be
+checked by hand.
+
+```c
+#include <stdio.h>
+
+/* Whole-process swapping, with the arithmetic that made it obsolete.
+ *
+ * Before paging, memory held each process as one contiguous run and a
+ * process either had a slot or did not. Admitting a fifth process when
+ * four were resident meant copying an entire process to disk and
+ * copying another back -- seconds of I/O to make room for something that
+ * would itself block on the same disk a moment later.
+ *
+ * The point of the numbers below is the ratio: the cost of a swap is set
+ * by the size of a process, and process sizes grew faster than disk
+ * bandwidth did. */
+
+#define MEMORY_KB 64
+#define PROCESSES 5
+
+struct process {
+    const char *name;
+    int size_kb;
+    int resident;
+};
+
+/* A 10 MB/s transfer rate is a 1990s figure, kept round on purpose so
+ * the arithmetic can be checked by hand. */
+static double swap_ms(int size_kb)
+{
+    const double kb_per_ms = 10.0;
+    return (double)size_kb / kb_per_ms;
+}
+
+static int memory_used(const struct process *p, int n)
+{
+    int total = 0;
+    for (int i = 0; i < n; i++) {
+        if (p[i].resident) {
+            total += p[i].size_kb;
+        }
+    }
+    return total;
+}
+
+static void show(const struct process *p, int n, const char *heading)
+{
+    int used = memory_used(p, n);
+
+    printf("%s\n", heading);
+    for (int i = 0; i < n; i++) {
+        printf("  %-6s %3d KB  %s\n", p[i].name, p[i].size_kb,
+               p[i].resident ? "resident" : "swapped out");
+    }
+    printf("  memory: %d of %d KB used, %d KB free\n\n", used, MEMORY_KB,
+           MEMORY_KB - used);
+}
+
+/* Admit process `who` by evicting residents until it fits. Returns the
+ * eviction cost in milliseconds. */
+static double admit(struct process *p, int n, int who)
+{
+    double cost = 0.0;
+    int used = memory_used(p, n);
+    int need = p[who].size_kb;
+
+    for (int i = 0; i < n && used + need > MEMORY_KB; i++) {
+        if (i == who || !p[i].resident) {
+            continue;
+        }
+        /* Swapping a process out costs one write, and it costs another
+         * read to bring it back later -- but the return trip is charged
+         * to whoever needs it, not to this admission. */
+        cost += swap_ms(p[i].size_kb);
+        p[i].resident = 0;
+        used -= p[i].size_kb;
+        printf("  evict %s (%d KB, %.1f ms)\n", p[i].name, p[i].size_kb,
+               swap_ms(p[i].size_kb));
+    }
+
+    p[who].resident = 1;
+    cost += swap_ms(need);
+    printf("  swap in %s (%d KB, %.1f ms)\n", p[who].name, need,
+           swap_ms(need));
+    return cost;
+}
+
+int main(void)
+{
+    struct process procs[PROCESSES] = {
+        {"editor", 20, 1},
+        {"shell",  8, 1},
+        {"build",  24, 1},
+        {"log",    6, 1},
+        {"test",   18, 0},
+    };
+    const int n = PROCESSES;
+
+    show(procs, n, "initial state: 58 of 64 KB resident");
+
+    printf("admitting test (18 KB) needs 12 KB more than is free\n");
+    double first = admit(procs, n, 4);
+    show(procs, n, "after admitting test");
+    printf("  admission cost %.1f ms\n\n", first);
+
+    /* The trap: the scheduler now runs editor again, and editor is the
+     * process that was just swapped out. Admitting it evicts test -- the
+     * process admitted a moment ago -- and the two take turns using the
+     * disk. */
+    printf("now the scheduler picks editor, which was just evicted\n");
+    double second = admit(procs, n, 0);
+    show(procs, n, "after admitting editor again");
+    printf("  admission cost %.1f ms\n\n", second);
+
+    double total = first + second;
+    printf("%.1f ms of pure I/O for two admissions, and neither process\n",
+           total);
+    printf("has executed an instruction in between. That is the ping-pong\n");
+    printf("the deck calls thrashing, in its pre-paging form.\n\n");
+
+    printf("the fix was not a better eviction rule. It was a smaller unit:\n");
+    printf("page a process in 4 KB pieces on demand and the same 18 KB\n");
+    printf("process costs only the pages it actually touches.\n");
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+initial state: 58 of 64 KB resident
+  editor  20 KB  resident
+  shell    8 KB  resident
+  build   24 KB  resident
+  log      6 KB  resident
+  test    18 KB  swapped out
+  memory: 58 of 64 KB used, 6 KB free
+
+admitting test (18 KB) needs 12 KB more than is free
+  evict editor (20 KB, 2.0 ms)
+  swap in test (18 KB, 1.8 ms)
+after admitting test
+  editor  20 KB  swapped out
+  shell    8 KB  resident
+  build   24 KB  resident
+  log      6 KB  resident
+  test    18 KB  resident
+  memory: 56 of 64 KB used, 8 KB free
+
+  admission cost 3.8 ms
+
+now the scheduler picks editor, which was just evicted
+  evict shell (8 KB, 0.8 ms)
+  evict build (24 KB, 2.4 ms)
+  swap in editor (20 KB, 2.0 ms)
+after admitting editor again
+  editor  20 KB  resident
+  shell    8 KB  swapped out
+  build   24 KB  swapped out
+  log      6 KB  resident
+  test    18 KB  resident
+  memory: 44 of 64 KB used, 20 KB free
+
+  admission cost 5.2 ms
+
+9.0 ms of pure I/O for two admissions, and neither process
+has executed an instruction in between. That is the ping-pong
+the deck calls thrashing, in its pre-paging form.
+
+the fix was not a better eviction rule. It was a smaller unit:
+page a process in 4 KB pieces on demand and the same 18 KB
+process costs only the pages it actually touches.
+```
+
+The first admission is the cheap-looking one. Memory holds 58 KB with
+6 KB free, `test` needs 18 KB, so 12 KB must be found. Evicting `editor`
+frees 20 KB — enough, with 8 KB left over. The cost is a 2.0 ms write
+plus a 1.8 ms read, 3.8 ms, and afterward **memory is more full, not
+less**: 56 KB used instead of 58. Nothing was freed; a process was moved.
+
+The second admission is where it goes wrong. `editor` is needed again,
+so `shell` (0.8 ms) and `build` (2.4 ms) go out to make 32 KB room, then
+`editor` comes back (2.0 ms) for 5.2 ms. Afterward three of the five
+processes are on disk, and the machine has done 9.0 ms of I/O for two
+context switches and zero instructions of useful work. Repeat this at a
+scheduler quantum of 10 ms and the machine spends most of its life
+copying.
+
+Notice what the program does *not* do: it does not claim a smarter victim
+selection would help. Evicting `build` instead of `shell` and `build`
+changes the individual numbers and not the pattern, because the pattern
+comes from the unit being a whole process. If the working set genuinely
+does not fit, no choice of victim makes it fit.
+
+<ExerciseCard
+	id="m16-swap-cost"
+	concept="LRU eviction, pre-paging thrash"
+	prompt="Pre-paging with LRU eviction. Five processes live on the same plate as the lesson: editor 20 KB, shell 8 KB, build 24 KB, log 6 KB, test 18 KB, with last-used stamps 5, 3, 4, 2 and 0, and test swapped out, so 58 of 64 KB are resident. Admitting a process evicts the resident with the smallest stamp until it fits, stamps the newcomer with the next tick, and charges one write per evicted KB plus one read per admitted KB at 0.1 ms per KB. Admit test, then log (the process LRU just evicted). Then rerun the whole thing with 128 KB, where every process is resident from the start. Print exactly:&#10;memory 64 KB, 58 of 64 KB resident at the start&#10;  evict log (6 KB, 0.6 ms)&#10;  evict shell (8 KB, 0.8 ms)&#10;  swap in test (18 KB, 1.8 ms)&#10;  evict build (24 KB, 2.4 ms)&#10;  swap in log (6 KB, 0.6 ms)&#10;total I/O: 6.2 ms for two admissions&#10;memory 128 KB, 76 of 128 KB resident at the start&#10;total I/O: 0.0 ms for two admissions&#10;Nothing else. One line of explanation belongs in the answer, not in the output."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define MEMORY_KB 64&#10;#define PROCESSES 5&#10;&#10;struct process &#123;&#10;    const char *name;&#10;    int size_kb;&#10;    int resident;&#10;    int last_used; /* TODO: update this in admit() */&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="memory 64 KB, 58 of 64 KB resident at the start&#10;  evict log (6 KB, 0.6 ms)&#10;  evict shell (8 KB, 0.8 ms)&#10;  swap in test (18 KB, 1.8 ms)&#10;  evict build (24 KB, 2.4 ms)&#10;  swap in log (6 KB, 0.6 ms)&#10;total I/O: 6.2 ms for two admissions&#10;memory 128 KB, 76 of 128 KB resident at the start&#10;total I/O: 0.0 ms for two admissions&#10;"
+	hints={[
+		'LRU picks different victims than a fixed block order: log and shell go out for test, and then build goes out for log, which is cheaper than the lesson\'s 9.0 ms.',
+		'With 128 KB every process fits at once, so both admissions are free: the fix is memory, not a better victim rule.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* Pre-paging with LRU eviction: admitting a process evicts the least&#10; * recently used resident until it fits. Same five processes and the same&#10; * two admissions as the lesson, so the totals are comparable. */&#10;&#10;#define PROCESSES 5&#10;#define ADMISSIONS 2&#10;&#10;struct process &#123;&#10;    const char *name;&#10;    int size_kb;&#10;    int resident;&#10;    int last_used;&#10;&#125;;&#10;&#10;static double swap_ms(int kb) &#123;&#10;    return (double)kb / 10.0;&#10;&#125;&#10;&#10;static int memory_used(const struct process *p, int n) &#123;&#10;    int used = 0;&#10;&#10;    for (int i = 0; i &lt; n; i++) &#123;&#10;        if (p[i].resident) &#123;&#10;            used += p[i].size_kb;&#10;        &#125;&#10;    &#125;&#10;    return used;&#10;&#125;&#10;&#10;static double admit(struct process *p, int n, int who, int memory_kb,&#10;                    int *tick) &#123;&#10;    double cost = 0.0;&#10;    int used = memory_used(p, n);&#10;    int need = p[who].size_kb;&#10;&#10;    if (p[who].resident) &#123;&#10;        p[who].last_used = ++(*tick);&#10;        return 0.0;&#10;    &#125;&#10;    while (used + need &gt; memory_kb) &#123;&#10;        int victim = -1;&#10;&#10;        for (int i = 0; i &lt; n; i++) &#123;&#10;            if (i == who || !p[i].resident) &#123;&#10;                continue;&#10;            &#125;&#10;            if (victim &lt; 0 || p[i].last_used &lt; p[victim].last_used) &#123;&#10;                victim = i;&#10;            &#125;&#10;        &#125;&#10;        if (victim &lt; 0) &#123;&#10;            printf(&quot;  no victim: %s does not fit at all\n&quot;, p[who].name);&#10;            return cost;&#10;        &#125;&#10;        cost += swap_ms(p[victim].size_kb);&#10;        p[victim].resident = 0;&#10;        used -= p[victim].size_kb;&#10;        printf(&quot;  evict %s (%d KB, %.1f ms)\n&quot;, p[victim].name,&#10;               p[victim].size_kb, swap_ms(p[victim].size_kb));&#10;    &#125;&#10;&#10;    p[who].resident = 1;&#10;    p[who].last_used = ++(*tick);&#10;    cost += swap_ms(need);&#10;    printf(&quot;  swap in %s (%d KB, %.1f ms)\n&quot;, p[who].name, need,&#10;           swap_ms(need));&#10;    return cost;&#10;&#125;&#10;&#10;static void run(int memory_kb) &#123;&#10;    struct process procs[PROCESSES] = &#123;&#10;        &#123;&quot;editor&quot;, 20, 1, 5&#125;,&#10;        &#123;&quot;shell&quot;, 8, 1, 3&#125;,&#10;        &#123;&quot;build&quot;, 24, 1, 4&#125;,&#10;        &#123;&quot;log&quot;, 6, 1, 2&#125;,&#10;        &#123;&quot;test&quot;, 18, 0, 0&#125;,&#10;    &#125;;&#10;    int tick = 5;&#10;    double total = 0.0;&#10;    int sum = 0;&#10;&#10;    for (int i = 0; i &lt; PROCESSES; i++) &#123;&#10;        sum += procs[i].size_kb;&#10;    &#125;&#10;    if (sum &lt;= memory_kb) &#123;&#10;        for (int i = 0; i &lt; PROCESSES; i++) &#123;&#10;            procs[i].resident = 1;&#10;            procs[i].last_used = i + 1;&#10;        &#125;&#10;        tick = PROCESSES;&#10;    &#125;&#10;&#10;    printf(&quot;memory %d KB, %d of %d KB resident at the start\n&quot;, memory_kb,&#10;           memory_used(procs, PROCESSES), memory_kb);&#10;&#10;    total += admit(procs, PROCESSES, 4, memory_kb, &amp;tick);&#10;    total += admit(procs, PROCESSES, 3, memory_kb, &amp;tick);&#10;    printf(&quot;total I/O: %.1f ms for two admissions\n&quot;, total);&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    run(64);&#10;    run(128);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Thinking an eviction frees memory
+
+It frees *resident* memory. The process still exists, still holds its
+page table and its file descriptors, and still has to be read back. The
+only thing that changed is where its bytes are, and the second admission
+in the output above shows the bill arriving later, at a time chosen by
+the scheduler rather than by the kernel.
+
+### Measuring swap cost by the size of the binary
+
+A 200-line C program that links against a GUI toolkit can have a resident
+set of tens of megabytes. Cost follows the resident set, and the resident
+set includes the heap, every thread's touched stack, and memory-mapped
+files. Measure it — `time -l` or `/usr/bin/time -v` — rather than
+estimating from `ls -l`.
+
+### Ignoring the read-back leg
+
+An eviction is one write. The process coming back is one read. Code that
+budgets only the eviction halves the real cost, and the half it misses is
+the half that runs synchronously when the scheduler picks that process
+again.
+
+### Assuming the kernel can always make room
+
+If the largest process is bigger than total memory, no eviction helps and
+the admission must fail. The program above silently assumes that case
+away by letting the loop skip processes that cannot fit; a real kernel
+returns an error or kills something, and the choice of which is a policy
+decision, not an arithmetic one.
+
+### Confusing swapping with paging
+
+Swapping moves a process; paging moves a page. The names are used loosely
+in conversation, and the loose usage hides the reason paging won: a 4 KB
+transfer costs roughly the same as a 20 MB one on a rotating disk —
+dominated by the seek — so moving the smaller unit wastes less of a fixed
+price.
+
+<QuizCard
+	id="m16-quiz-swap"
+	question="Two processes of 40 KB each must both run on a machine with 64 KB of memory and a scheduler quantum of 10 ms. Trace what happens for the first three quanta, and state the single change that would make the situation workable."
+	options={[
+		'Neither process fits alongside the other: P1 runs, then P2 forces P1 out (40 KB out plus 40 KB in), and every quantum repeats that 80 KB, so no work accumulates. Shrink each process to 32 KB or less, or give the machine 80 KB, so both stay resident.',
+		'Both run normally: the scheduler alternates them and the swap cost is paid only once, on the first quantum.',
+		'The machine deadlocks, because a process that is running cannot be swapped out.',
+		'Nothing is swapped: 40 plus 40 equals 80, and 80 KB of virtual memory fits in 64 KB of physical memory.'
+	]}
+	answer={0}
+	explanation="Two 40 KB processes cannot both be resident in 64 KB, so the scheduler's every switch costs a full write and a full read — 80 KB of I/O for 10 ms of work, which is thrashing. The fix is to make the working set fit, either by shrinking the processes or by adding memory; no eviction policy changes the arithmetic."
+/>
+
+<LectureReference lecture="Lecture 16 — Memory Management" slides="31–45" />

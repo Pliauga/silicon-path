@@ -1,0 +1,307 @@
+---
+id: 19-03-buffer-overflows
+title: Buffer Overflows
+module: 19
+lecture: 'Lecture 19 — Security'
+slides: '31–45'
+estimatedMinutes: 20
+prerequisites: ['19-02-crypto-basics']
+tags: ['overflow', 'stack', 'snprintf']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The bug that never went away
+
+A buffer overflow is a write past the end of an array. Every C program has them
+available by default: array indexing is unchecked, and the language has no
+mechanism to change that without ceasing to be C. The first Morris worm used
+one in 1988; the vulnerability class is still in the top quarter of reported
+CVEs, because the code that contains them is still running.
+
+What makes it a *security* problem rather than a crash is the stack layout. A
+function's local variables and its return address live in the same contiguous
+region of memory, a few dozen bytes apart. If a write is not bounded, it walks
+from the buffer toward the return address. An attacker who controls the bytes
+controls where the function returns to, and that is arbitrary code execution.
+
+This lesson teaches the mechanism and never runs it. Every unsafe snippet is
+in a fenced block marked as such; the program you compile is the safe version,
+and its output is real.
+
+## What you'll be able to do
+
+- Explain what a stack frame holds and why a buffer sits next to a return address.
+- Read an unsafe copying pattern and say what an attacker can do with it.
+- Replace `strcpy`/`sprintf`/`gets` with bounded equivalents that still compile.
+- Say why "it did not crash" is not evidence that a write was in bounds.
+
+## The frame, and why one byte matters
+
+Call a function with a local `char name[8]`. The compiler reserves at least
+eight bytes for it, then places the saved registers and the return address
+after it. The address of the return is a fixed offset from the start of the
+buffer, and it is knowable at runtime — an attacker who can read a stack
+address, or who guesses well, knows exactly how many bytes to send.
+
+| Region | What is there | Grows toward |
+| --- | --- | --- |
+| high addresses | caller's frame | — |
+| ... | saved return address | ← written by overflow |
+| ... | saved frame pointer | ← written by overflow |
+| ... | `char name[8]` | ← the buffer you write into |
+| low addresses | red zone, scratch | — |
+
+The diagram explains the whole class. There is no gap between the buffer and
+the things that steer the program, and C will not stop you writing into them.
+
+<TheoryBlock label="Why it matters for C" title="The compiler stopped warning, not the bug">
+
+	Modern compilers insert a **stack canary** — a random value between the buffer
+	and the return address, checked before the function returns. That converts many
+	overflows from code execution into a controlled abort, which is a real
+	improvement and not a fix: the write still happened, the data around it is still
+	corrupted, and a write far enough past the canary still does damage. `-fstack-protector`
+	is a seatbelt. Bounded copies are the brakes.
+
+</TheoryBlock>
+
+## The unsafe pattern, not run
+
+This is the code this lesson exists to warn about. It is written out so you can
+recognise it, and it is deliberately not compiled.
+
+```c
+/* DO NOT RUN THIS. Kept as an example of the pattern to recognise. */
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    char name[8];
+    /* Reads an unbounded number of bytes. There is no size argument,
+       because the function has no idea how big the destination is. */
+    strcpy(name, "administrator");
+    printf("%s\n", name);
+    return 0;
+}
+```
+
+Five things are wrong in seven lines, and only the first is obvious:
+
+1. `strcpy` has no length parameter, so it cannot stop.
+2. The source is 13 characters plus a terminator; the destination is 8 bytes.
+3. `strcpy`'s signature returns `char *`, so the write is not "checked" anywhere.
+4. The compiler emits no diagnostic unless the source is a literal and the
+   optimiser happens to see it.
+5. The program may print `administrator` and exit zero. The corruption is
+   silent, which is why this bug survives review.
+
+The rest of this lesson is the same operation done correctly, compiled, with
+its output pasted.
+
+<Eli5Block
+	topic="buffer-bounds"
+	football="A team sheet has eight slots for names. The manager writes a ninth name anyway and it lands on the referee's phone number at the bottom of the page. Nobody notices until someone dials it. The sheet was the right size; nobody checked before writing."
+	money="A cheque book has eight lines. A clerk writes a ninth payee on the line below, which happens to be the amount. The bank processes a payment to a name nobody intended, and every form looks filled in correctly. The book was not too small; it was written past the end."
+/>
+
+## The same job, bounded
+
+`snprintf` and an explicit capacity solve it. The important detail is that
+`snprintf` returns the length it *would* have written, so the return value is
+the truncation signal — the buffer contents are not.
+
+```c
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+/* The lesson's point in one program: a bounded copy, the truncation signal,
+ * and a struct layout you can inspect without ever writing out of bounds.
+ *
+ * Nothing here overflows. The "what would have been overwritten" half is
+ * demonstrated by viewing the struct's own bytes through unsigned char *,
+ * which the standard allows for any object. */
+
+enum { NAME_CAP = 8 };
+
+struct account {
+    char name[NAME_CAP];
+    unsigned balance;
+};
+
+/* Bounded copy. `cap` is the size of dst in bytes, including the
+ * terminator. Returns 1 when everything fitted, 0 when it was truncated. */
+static int copy_name(char *dst, size_t cap, const char *src) {
+    size_t need = strlen(src);
+    size_t keep = (need < cap - 1) ? need : cap - 1;
+
+    memcpy(dst, src, keep);
+    dst[keep] = '\0';
+    return need < cap;
+}
+
+int main(void) {
+    const char *attempts[] = {"ada", "grace", "administrator", ""};
+    const size_t count = sizeof attempts / sizeof attempts[0];
+
+    printf("%-16s %-10s %-5s %s\n", "attempt", "stored", "fits", "strlen");
+    printf("%-16s %-10s %-5s %s\n", "----------------", "----------",
+           "-----", "------");
+
+    struct account acc;
+    memset(&acc, 0, sizeof acc);
+    acc.balance = 500;
+
+    for (size_t i = 0; i < count; i++) {
+        int fits = copy_name(acc.name, sizeof acc.name, attempts[i]);
+        printf("%-16s %-10s %-5s %zu\n",
+               attempts[i][0] ? attempts[i] : "(empty)",
+               acc.name[0] ? acc.name : "(empty)",
+               fits ? "yes" : "no",
+               strlen(acc.name));
+    }
+
+    /* snprintf reports the length it would have written. That return value,
+     * not the buffer contents, is the truncation signal. */
+    char line[NAME_CAP];
+    int would = snprintf(line, sizeof line, "%s", "administrator");
+    printf("\nsnprintf wanted %d bytes, the buffer holds %zu\n",
+           would, sizeof line);
+
+    /* The layout is why a one-byte overflow is silent: the field sits at
+     * offset 0 and the member next to it is padded rather than guarded. */
+    printf("\nlayout of struct account:\n");
+    printf("  name    offset %zu, %zu bytes\n",
+           offsetof(struct account, name), sizeof acc.name);
+    printf("  balance offset %zu, %zu bytes\n",
+           offsetof(struct account, balance), sizeof acc.balance);
+    printf("  struct  %zu bytes total\n", sizeof acc);
+
+    /* Simulate the 9th byte landing on the first byte of balance, legally:
+     * view the struct as bytes, which the standard permits for any object. */
+    size_t gap = offsetof(struct account, balance) - sizeof acc.name;
+    printf("\nspace between name and balance: %zu byte(s)\n", gap);
+    printf("so a 9-byte copy into name reaches balance at once\n");
+
+    acc.balance = 500;
+    printf("  balance before: %u (0x%08x)\n", acc.balance, acc.balance);
+
+    unsigned char *bytes = (unsigned char *)&acc;
+    size_t target = offsetof(struct account, balance);
+    printf("  writing 'x' (0x%02x) to byte %zu of the struct\n",
+           (unsigned)'x', target);
+    bytes[target] = (unsigned char)'x';
+
+    printf("  balance after:  %u (0x%08x)\n", acc.balance, acc.balance);
+    printf("  lost 500 - %u = %u from the last byte of the value\n",
+           acc.balance, 500u - acc.balance);
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+attempt          stored     fits  strlen
+---------------- ---------- ----- ------
+ada              ada        yes   3
+grace            grace      yes   5
+administrator    adminis    no    7
+(empty)          (empty)    yes   0
+
+snprintf wanted 13 bytes, the buffer holds 8
+
+layout of struct account:
+  name    offset 0, 8 bytes
+  balance offset 8, 4 bytes
+  struct  12 bytes total
+
+space between name and balance: 0 byte(s)
+so a 9-byte copy into name reaches balance at once
+  balance before: 500 (0x000001f4)
+  writing 'x' (0x78) to byte 8 of the struct
+  balance after:  376 (0x00000178)
+  lost 500 - 376 = 124 from the last byte of the value
+```
+
+The table's third row is the whole lesson. `copy_name` was handed 13 bytes and
+an 8-byte destination, and it did the only safe thing: it kept seven bytes plus
+a terminator and reported `no`. A `strcpy` would have written all 14 and
+carried on into `balance`.
+
+The last five lines show why that matters, using a write the standard actually
+permits. `balance` begins at offset 8, immediately after the eight-byte name
+field, so the ninth byte of a copy lands on `balance`'s least significant byte.
+`500` is `0x000001f4`; overwriting the low byte with `0x78` leaves `0x00000178`,
+which is 376. Nothing crashed. Nothing printed a warning. A value silently
+became a different value — and with a return address instead of a `balance`,
+that is code execution.
+
+<ExerciseCard
+	id="m19-fix-strcpy"
+	concept="bounded copy, truncation reporting"
+	prompt="Rebuild the vulnerable account program without gets and without strcpy, because input reading is not available in this sandbox: feed the three fgets lines bob, alexander and alexand as string literals that still end in a newline, strip that newline, and copy the result into an 8-byte name field with a bounded copy that always terminates and reports whether everything fitted. Place a canary after the struct and print whether it survived. Initialise balance to 500. Print exactly:&#10;name field 8 bytes&#10;input &quot;bob&quot;: name=bob truncated=no balance=500 canary=intact&#10;input &quot;alexander&quot;: name=alexand truncated=yes balance=500 canary=intact&#10;input &quot;alexand&quot;: name=alexand truncated=no balance=500 canary=intact&#10;Nothing else. The output quotes the input, so escape or print the quote characters from the format string."
+	starter="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;int main(void) &#123;&#10;    char name[8];&#10;    /* TODO: bounded copy, plus a canary that proves nothing was overwritten */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="name field 8 bytes&#10;input &quot;bob&quot;: name=bob truncated=no balance=500 canary=intact&#10;input &quot;alexander&quot;: name=alexand truncated=yes balance=500 canary=intact&#10;input &quot;alexand&quot;: name=alexand truncated=no balance=500 canary=intact&#10;"
+	hints={[
+		'A bounding copy keeps at most capacity minus one bytes so the terminator always fits, and returns whether the source length was within that room.',
+		'alexander is nine characters, so only alexand fits and the truncation flag is yes; alexand is exactly seven and fits without truncation.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* The safe copy from the lesson: bounded, always terminated, and honest&#10; * about whether everything fitted. A canary after the struct proves the&#10; * copy never wrote past the field. */&#10;&#10;#define NAME_LEN 8&#10;#define CANARY 0xdeadbeefu&#10;&#10;struct account &#123;&#10;    char name[NAME_LEN];&#10;    unsigned balance;&#10;    unsigned canary;&#10;&#125;;&#10;&#10;static int copy_name(char *dst, size_t cap, const char *src) &#123;&#10;    size_t len = strlen(src);&#10;    size_t room = cap - 1u;&#10;    size_t n = len &lt; room ? len : room;&#10;&#10;    memcpy(dst, src, n);&#10;    dst[n] = '\0';&#10;    return len &lt;= room;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const char *lines[] = &#123;&quot;bob\n&quot;, &quot;alexander\n&quot;, &quot;alexand\n&quot;&#125;;&#10;    const int count = (int)(sizeof lines / sizeof lines[0]);&#10;&#10;    printf(&quot;name field %d bytes\n&quot;, NAME_LEN);&#10;    for (int i = 0; i &lt; count; i++) &#123;&#10;        struct account acct = &#123;&quot;&quot;, 500u, CANARY&#125;;&#10;        char input[32];&#10;&#10;        snprintf(input, sizeof input, &quot;%s&quot;, lines[i]);&#10;        size_t len = strlen(input);&#10;&#10;        /* fgets keeps the newline; strip it before copying */&#10;        if (len &gt; 0u &amp;&amp; input[len - 1u] == '\n') &#123;&#10;            input[len - 1u] = '\0';&#10;        &#125;&#10;&#10;        int fitted = copy_name(acct.name, sizeof acct.name, input);&#10;        printf(&quot;input \&quot;%s\&quot;: name=%s truncated=%s balance=%u canary=%s\n&quot;, input,&#10;               acct.name, fitted ? &quot;no&quot; : &quot;yes&quot;, acct.balance,&#10;               acct.canary == CANARY ? &quot;intact&quot; : &quot;clobbered&quot;);&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Assuming `strncpy` is the safe `strcpy`
+
+It is not. `strncpy(dst, src, n)` stops after `n` bytes and does **not**
+terminate when the source is longer than `n`. The result is a buffer holding
+non-terminated text, and every later `printf("%s")` reads past its end. It was
+designed for fixed-width fields in old Unix structs, not for C strings. Use
+`snprintf` or the explicit copy above.
+
+### Trusting `sizeof` on a pointer
+
+`void copy(char *dst) { strncpy(dst, src, sizeof dst); }` copies 8 bytes on a
+64-bit machine — the size of the pointer, not the array. `sizeof` on an array
+parameter is always the pointer size. Pass the capacity as a second parameter,
+as `copy_name` does.
+
+### Measuring safety by whether the program crashed
+
+Most overflows of a few bytes do not crash. They corrupt a neighbouring
+variable, or padding, or a saved value that is only read on an error path.
+Testing with one short input proves nothing; the bug appears with an input
+longer than the buffer, which is the input an attacker will send. Test with the
+longest input the field allows, not a typical one.
+
+### Compiling with `-fno-stack-protector` to "make it work"
+
+Disabling a mitigation because a program now aborts is fixing the smoke alarm.
+The abort is the canary doing its job and reporting a real write past the end.
+Turn the flag back on and fix the copy.
+
+<QuizCard
+	id="m19-quiz-snprintf-ret"
+	question="`snprintf(buf, 8, &quot;%s&quot;, &quot;administrator&quot;)` returns 13. What is in `buf`, what does the return value tell you, and what would a program that ignores the return value get wrong?"
+	options={[
+		'buf holds administ followed by a terminator; the 13 is what the full string would have needed, so a program that ignores the return value keeps the shortened name and never learns that the input was cut. Compare the return value with the buffer size and report truncation.',
+		'buf holds administrator, because snprintf truncates only when the format needs more than the buffer, and 13 counts the characters it managed to copy.',
+		'buf holds administra, because the return value 13 means thirteen characters were written, so ignoring it is safe.',
+		'buf holds administ and the 13 is an error code for strerror; ignoring it loses the error message.'
+	]}
+	answer={0}
+	explanation="snprintf writes at most size minus one characters and always terminates, but it returns the length the complete output would have had — 13 here. That makes the return value the truncation flag: if it is greater than or equal to the buffer size, the string was cut."
+/>
+
+<LectureReference lecture="Lecture 19 — Security" slides="31–45" />

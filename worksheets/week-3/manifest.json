@@ -1,0 +1,67 @@
+{
+  "chunks": [
+    {
+      "chunk_id": "chunk-001",
+      "heading_path": "cst1500-week-3",
+      "page_start": 1,
+      "page_end": 1,
+      "token_estimate": 516,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-002",
+      "heading_path": "cst1500-week-3 > C code Using Standard I/O (Input/Output)",
+      "page_start": 2,
+      "page_end": 3,
+      "token_estimate": 657,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-003",
+      "heading_path": "cst1500-week-3 > EX 1: Basic Input/ output examples",
+      "page_start": 4,
+      "page_end": 5,
+      "token_estimate": 669,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-004",
+      "heading_path": "cst1500-week-3 > C - Type Casting",
+      "page_start": 6,
+      "page_end": 7,
+      "token_estimate": 731,
+      "has_tables": true,
+      "has_figures": true
+    },
+    {
+      "chunk_id": "chunk-005",
+      "heading_path": "cst1500-week-3 > EX 2: C programs to print user name and integer",
+      "page_start": 8,
+      "page_end": 9,
+      "token_estimate": 582,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-006",
+      "heading_path": "cst1500-week-3 > EX 9: basic code for understanding the for loop in C code",
+      "page_start": 10,
+      "page_end": 11,
+      "token_estimate": 656,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-007",
+      "heading_path": "cst1500-week-3 > EX 14: Perform more basic tasks in a C program for logic gates",
+      "page_start": 1,
+      "page_end": 1,
+      "token_estimate": 173,
+      "has_tables": true,
+      "has_figures": false
+    }
+  ]
+}

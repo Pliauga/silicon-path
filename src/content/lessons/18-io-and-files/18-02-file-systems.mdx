@@ -1,0 +1,364 @@
+---
+id: 18-02-file-systems
+title: File Systems
+module: 18
+lecture: 'Lecture 18 — I/O & File Systems'
+slides: '16–30'
+estimatedMinutes: 19
+prerequisites: ['18-01-io-subsystem']
+tags: ['files', 'inodes', 'stdio']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## A name, a number, and a list of blocks
+
+A file system answers one question recursively: given a path like
+`/home/ada/notes.txt`, which bytes do I read? Four layers answer it.
+
+A **directory** is a table mapping names to numbers. Those numbers are
+**inode** numbers — the inode is the on-disk record for one file, and it holds
+everything except the name: the size, the owner, the permission bits, three
+timestamps, and the list of blocks that contain the data. The name lives in the
+directory, not the inode, which is why two different names can point at the same
+file and why renaming a file does not touch its data at all.
+
+The **block bitmap** then says which blocks are free, and the **inode bitmap**
+does the same for inodes. That is the whole structure. Every file system you
+will meet — ext4, APFS, NTFS — is a more elaborate version of exactly this.
+
+## What you'll be able to do
+
+- Read a `stat` struct and say what each field holds.
+- Explain why a 37-byte file occupies a whole 4 KiB block.
+- Predict the difference between sequential and random reads on the same file.
+- Use `fopen`, `fwrite`, `fread`, and `fseek` correctly, including error paths.
+
+## What `stat` actually returns
+
+`stat` is the system call that exposes the inode. Its layout is worth learning
+field by field, because every one of those fields is something a program can
+depend on.
+
+| Field | Type | What it holds |
+| --- | --- | --- |
+| `st_mode` | `mode_t` | file type and permission bits |
+| `st_ino` | `ino_t` | inode number, unique within one file system |
+| `st_nlink` | `nlink_t` | how many directory entries point here |
+| `st_uid`, `st_gid` | `uid_t`, `gid_t` | owner and group |
+| `st_size` | `off_t` | size in bytes |
+| `st_blksize` | `blksize_t` | preferred I/O size, usually 4096 |
+| `st_blocks` | `blkcnt_t` | 512-byte blocks actually allocated |
+| `st_atime`, `st_mtime`, `st_ctime` | `time_t` | access, modify, change times |
+
+Two of those fields carry the interesting information. `st_size` is the length
+you asked for; `st_blocks × 512` is the space the file system actually spent.
+For a 37-byte file the first is 37 and the second is 4096. That difference is
+**internal fragmentation**, and it is invisible until you have a directory of a
+million tiny files.
+
+`st_nlink` is the field that explains `rm`. Unlinking a name decrements the
+link count and removes the directory entry; the data blocks are freed only when
+that count reaches zero and no process still has the file open. A program
+holding an open descriptor keeps a deleted file alive, which is a common way to
+create a large anonymous temporary file.
+
+<TheoryBlock label="Why it matters for C" title="Every byte you write costs a block">
+
+	The gap between `st_size` and allocated blocks is the reason tar, git, and zip
+	all bundle many small files into one archive. A thousand 100-byte files consume
+	1000 × 4096 = 4 MB of disk and 1000 inodes; the same thousand records inside one
+	file consume 100 KB and one inode. If a program creates a file per item, the file
+	system — not the data — is what will run out first.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="inode"
+	football="The inode is a player's registration record at the league: shirt number, contract, medical notes. The name on the back of the shirt is just a label in the programme, and two programmes can list the same player. Rip the name off the shirt and the registration still exists."
+	money="The inode is a bank account. It holds the balance, the owner, and the statements. The account number written on a cheque is the name — it is how you find the account, not the account itself. Two cheques can carry the same number, and closing the account does not change the number."
+/>
+
+## Writing records and reading them back
+
+The program below writes four text records through the stdio buffer, flushes
+them, rewinds, and then reads them back one line at a time. It then does the
+block arithmetic every file system does internally: how many 4 KiB blocks a
+file of a given size occupies, and how many bytes are wasted in the last one.
+
+```c
+#include <stdio.h>
+
+/* A miniature file system view: records are written through the stdio
+   buffer, flushed, then read back one line at a time and placed in
+   4 KiB blocks the way a real file system would lay them out. */
+
+#define LINE_MAX_LEN 64
+#define BLOCK_BYTES 4096
+
+int main(void) {
+    /* tmpfile() opens a real file that is removed when it is closed. */
+    FILE *store = tmpfile();
+    if (store == NULL) {
+        fprintf(stderr, "could not create a temporary file\n");
+        return 1;
+    }
+
+    const char *names[] = {"boot.img", "kernel.bin", "notes.txt", "photo.raw"};
+    const unsigned long sizes[] = {512, 8192, 37, 40000};
+    const size_t count = sizeof sizes / sizeof sizes[0];
+
+    /* Write phase: one text record per line, exactly as a log would. */
+    for (size_t i = 0; i < count; i++) {
+        int written = fprintf(store, "%s %lu\n", names[i], sizes[i]);
+        if (written < 0) {
+            fprintf(stderr, "write failed\n");
+            fclose(store);
+            return 1;
+        }
+    }
+
+    /* Never read a buffer before it has been flushed and rewound. */
+    if (fflush(store) != 0 || fseek(store, 0L, SEEK_SET) != 0) {
+        fprintf(stderr, "could not rewind the temporary file\n");
+        fclose(store);
+        return 1;
+    }
+
+    /* Read phase: fgets never writes more than LINE_MAX_LEN - 1 bytes. */
+    char line[LINE_MAX_LEN];
+    unsigned long total_bytes = 0;
+    unsigned long total_blocks = 0;
+    size_t records = 0;
+
+    printf("%-12s %8s %7s\n", "name", "bytes", "blocks");
+    printf("%-12s %8s %7s\n", "------------", "--------", "-------");
+
+    while (fgets(line, sizeof line, store) != NULL) {
+        char name[LINE_MAX_LEN];
+        unsigned long size = 0;
+
+        if (sscanf(line, "%63s %lu", name, &size) != 2) {
+            continue;
+        }
+
+        unsigned long blocks = size / BLOCK_BYTES;
+        if (size % BLOCK_BYTES != 0) {
+            blocks++;
+        }
+
+        printf("%-12s %8lu %7lu\n", name, size, blocks);
+        total_bytes += size;
+        total_blocks += blocks;
+        records++;
+    }
+
+    printf("%-12s %8lu %7lu\n", "total", total_bytes, total_blocks);
+    printf("\n%zu records, %lu bytes stored, %lu bytes of block space\n",
+           records, total_bytes, total_blocks * BLOCK_BYTES);
+    printf("wasted inside the last block of each file: %lu bytes\n",
+           total_blocks * BLOCK_BYTES - total_bytes);
+
+    if (fclose(store) != 0) {
+        fprintf(stderr, "close failed\n");
+        return 1;
+    }
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+name            bytes  blocks
+------------ -------- -------
+boot.img          512       1
+kernel.bin       8192       2
+notes.txt          37       1
+photo.raw       40000      10
+total           48741      14
+
+4 records, 48741 bytes stored, 57344 bytes of block space
+wasted inside the last block of each file: 8603 bytes
+```
+
+Four files, 48,741 bytes of data, 57,344 bytes of disk. The 8,603-byte gap is
+not a bug and no file system can remove it — a block is the smallest thing the
+device can address. Note that `kernel.bin` at exactly 8192 bytes wastes nothing,
+while `notes.txt` at 37 bytes wastes 4,059: the smaller the file, the worse the
+ratio.
+
+## Jumping to a record
+
+Text records are the readable case. Fixed-size binary records are the fast one,
+because the offset of record *N* is `N × sizeof(record)` and `fseek` can go
+straight there without reading anything in between.
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+/* Records of a fixed size, written with fwrite and read back with fread
+ * plus fseek. Fixed-size records are why databases and file systems can
+ * jump straight to record N without reading the ones before it. */
+
+#define NAME_LEN 12
+
+struct record {
+    char name[NAME_LEN];
+    unsigned value;
+};
+
+int main(void) {
+    FILE *f = tmpfile();
+    if (f == NULL) {
+        fprintf(stderr, "could not create a temporary file\n");
+        return 1;
+    }
+
+    printf("sizeof(struct record) = %zu\n", sizeof(struct record));
+
+    /* Write four records. fwrite takes the element size and count, so it
+     * knows exactly how many bytes to move. */
+    const char *names[] = {"alpha", "beta", "gamma", "delta"};
+    for (size_t i = 0; i < 4; i++) {
+        struct record r;
+        memset(&r, 0, sizeof r);
+        snprintf(r.name, sizeof r.name, "%s", names[i]);
+        r.value = (unsigned)(i + 1) * 100u;
+
+        size_t written = fwrite(&r, sizeof r, 1, f);
+        if (written != 1) {
+            fprintf(stderr, "short write at record %zu\n", i);
+            fclose(f);
+            return 1;
+        }
+    }
+
+    long end = ftell(f);
+    printf("after 4 writes the position is %ld\n", end);
+    printf("4 * %zu = %zu\n", sizeof(struct record), 4 * sizeof(struct record));
+
+    /* Seek to record 2 without touching records 0 and 1. This is the whole
+     * reason fixed-size records exist. */
+    long offset = 2L * (long)sizeof(struct record);
+    if (fseek(f, offset, SEEK_SET) != 0) {
+        fprintf(stderr, "seek failed\n");
+        fclose(f);
+        return 1;
+    }
+    printf("\nseek to byte %ld, record index 2\n", offset);
+
+    struct record r;
+    size_t got = fread(&r, sizeof r, 1, f);
+    if (got != 1) {
+        fprintf(stderr, "short read\n");
+        fclose(f);
+        return 1;
+    }
+    printf("read back name=\"%s\" value=%u\n", r.name, r.value);
+
+    /* Rewind and count what is actually in the file, not what we think. */
+    if (fseek(f, 0L, SEEK_END) != 0) {
+        fprintf(stderr, "seek failed\n");
+        fclose(f);
+        return 1;
+    }
+    long size = ftell(f);
+    printf("\nfile size %ld bytes = %ld whole records\n",
+           size, size / (long)sizeof(struct record));
+
+    if (fclose(f) != 0) {
+        fprintf(stderr, "close failed\n");
+        return 1;
+    }
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+sizeof(struct record) = 16
+after 4 writes the position is 64
+4 * 16 = 64
+
+seek to byte 32, record index 2
+read back name="gamma" value=300
+
+file size 64 bytes = 4 whole records
+```
+
+`sizeof(struct record)` is 16, not 12: `NAME_LEN` is 12 and `unsigned` is 4, so
+the fields already align, but the struct is padded to a multiple of its largest
+alignment and happens to land on 16 regardless. That number is what makes the
+offset arithmetic work, which is why a fixed-record file format is a promise
+about the compiler as much as about the data. Save one of these files on a
+machine where `unsigned` is 2 bytes and the reader breaks.
+
+<ExerciseCard
+	id="m18-record-scan"
+	concept="fixed records, reverse seek"
+	prompt="Model the fixed-record file in memory, because the sandbox has no disk: four records of 16 bytes each — alpha=100, beta=200, gamma=300, delta=400 — with the record size as a constant, not sizeof. Emulate a seek by turning a byte offset into an index with offset divided by 16, walk backwards from the last record to the first printing the offset and the record, then delete the record at offset 16 by shifting the tail down one slot and report the new order and size. Print exactly:&#10;size: 4 records, 64 bytes&#10;offset 48: name=delta value=400&#10;offset 32: name=gamma value=300&#10;offset 16: name=beta value=200&#10;offset 0: name=alpha value=100&#10;deleted offset 16, shifted 2 records&#10;order: alpha gamma delta&#10;size: 3 records, 48 bytes&#10;Nothing else."
+	starter="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;struct record &#123;&#10;    char name[12];&#10;    unsigned value;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: walk the records backwards with a modelled fseek */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="size: 4 records, 64 bytes&#10;offset 48: name=delta value=400&#10;offset 32: name=gamma value=300&#10;offset 16: name=beta value=200&#10;offset 0: name=alpha value=100&#10;deleted offset 16, shifted 2 records&#10;order: alpha gamma delta&#10;size: 3 records, 48 bytes&#10;"
+	hints={[
+		'The last record starts at byte offset count minus one times 16, and every step back subtracts 16, so the index is offset divided by 16.',
+		'Deleting index 1 means copying records 2 and 3 down one slot and decrementing the count; the two records after the hole are the ones shifted.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* A fixed-record file without a file: the position is a byte offset and&#10; * the arithmetic is offset / RECORD_SIZE. The sandbox has no disk, so the&#10; * records live in an array and the seek is modelled. */&#10;&#10;#define RECORD_SIZE 16&#10;#define CAP 8&#10;&#10;struct record &#123;&#10;    char name[12];&#10;    unsigned value;&#10;&#125;;&#10;&#10;static struct record records[CAP];&#10;static int count;&#10;&#10;static void put(int index, const char *name, unsigned value) &#123;&#10;    memset(&amp;records[index], 0, sizeof records[index]);&#10;    snprintf(records[index].name, sizeof records[index].name, &quot;%s&quot;, name);&#10;    records[index].value = value;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    put(0, &quot;alpha&quot;, 100u);&#10;    put(1, &quot;beta&quot;, 200u);&#10;    put(2, &quot;gamma&quot;, 300u);&#10;    put(3, &quot;delta&quot;, 400u);&#10;    count = 4;&#10;&#10;    printf(&quot;size: %d records, %d bytes\n&quot;, count, count * RECORD_SIZE);&#10;&#10;    /* seek to the last record, then step back one record at a time */&#10;    for (int offset = (count - 1) * RECORD_SIZE; offset &gt;= 0;&#10;         offset -= RECORD_SIZE) &#123;&#10;        int index = offset / RECORD_SIZE;&#10;&#10;        printf(&quot;offset %d: name=%s value=%u\n&quot;, offset, records[index].name,&#10;               records[index].value);&#10;    &#125;&#10;&#10;    /* delete the record at byte offset 16 by shifting the tail down */&#10;    int victim = 16 / RECORD_SIZE;&#10;&#10;    for (int i = victim; i &lt; count - 1; i++) &#123;&#10;        records[i] = records[i + 1];&#10;    &#125;&#10;    count--;&#10;    printf(&quot;deleted offset 16, shifted %d records\n&quot;, count - victim);&#10;    printf(&quot;order:&quot;);&#10;    for (int i = 0; i &lt; count; i++) &#123;&#10;        printf(&quot; %s&quot;, records[i].name);&#10;    &#125;&#10;    printf(&quot;\nsize: %d records, %d bytes\n&quot;, count, count * RECORD_SIZE);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Reading before rewinding
+
+After the write loop the file position sits at the end. `fgets` there returns
+`NULL` immediately, and a program that does not check gets a table with no
+rows. `fseek(f, 0L, SEEK_SET)` after `fflush` is the fix, in that order —
+flushing first, because on a file opened for update the standard requires a
+seek or flush between writing and reading.
+
+### Assuming `fseek` takes an `int`
+
+`fseek` takes a `long` offset, and on 32-bit builds `long` is 32 bits, which
+caps you at 2 GB. `fseeko` takes an `off_t` and is the POSIX answer. The
+portable ISO C answer is `fgetpos`/`fsetpos` with an opaque `fpos_t`, which
+works at any size and cannot be used for arithmetic.
+
+### Forgetting that text mode rewrites bytes
+
+On Windows, `fopen(..., "r")` translates `\r\n` to `\n` on the way in and back
+on the way out. So `ftell` on a text stream is not a byte offset, and seeking
+to a position returned by `ftell` is the only legal use of it. Open with `"rb"`
+when the file is not text.
+
+### Writing a struct to disk and reading it on another machine
+
+`fwrite(&r, sizeof r, 1, f)` writes padding bytes, which are uninitialised and
+may leak whatever was on the stack. It also writes in host byte order and with
+host alignment. A file format shared between machines must spell out each field
+byte by byte; `memset` before writing only fixes the leak, not the portability.
+
+<QuizCard
+	id="m18-quiz-blocks"
+	question="A directory holds 10,000 files of 200 bytes each on a file system with 4 KiB blocks. How much disk space do the data blocks consume, and how many inodes? What does that ratio tell you about storing many small items as separate files?"
+	options={[
+		'40 MB of data blocks — one full 4 KiB block per file — and 10,000 inodes. Only 200 of 4096 bytes per block are used, about 5%, so many small items belong in one container file (archive, database, append-only log) where they share block space rather than in 10,000 separate files.',
+		'2 MB of data blocks and 10,000 inodes, because blocks are shared between small files; the ratio shows that small files are efficient.',
+		'40 MB of data blocks and one inode per directory, since inodes are allocated per directory rather than per file.',
+		'2 MB of data blocks and 10,000 inodes, since each file takes 200 bytes plus a small inode; the ratio shows that directories are the expensive part.'
+	]}
+	answer={0}
+	explanation="A file occupies whole blocks, so 200 bytes still costs 4096 bytes: 10,000 files is about 40 MB and 10,000 inodes, and only about 5% of the allocated bytes hold data. The ratio is why archiving or packing small items into one file is a space decision, not just a convenience."
+/>
+
+<LectureReference lecture="Lecture 18 — I/O & File Systems" slides="16–30" />

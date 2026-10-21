@@ -1,0 +1,112 @@
+{
+  "chunks": [
+    {
+      "chunk_id": "chunk-001",
+      "heading_path": "cst1500-week-5",
+      "page_start": 1,
+      "page_end": 2,
+      "token_estimate": 589,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-002",
+      "heading_path": "cst1500-week-5 > EX 1: Writing Shell Scripts",
+      "page_start": 1,
+      "page_end": 1,
+      "token_estimate": 399,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-003",
+      "heading_path": "cst1500-week-5 > EX 2: Executing Shell Scripts",
+      "page_start": 3,
+      "page_end": 4,
+      "token_estimate": 712,
+      "has_tables": false,
+      "has_figures": true
+    },
+    {
+      "chunk_id": "chunk-004",
+      "heading_path": "cst1500-week-5 > EX 3: Saving Shell Scripts",
+      "page_start": 5,
+      "page_end": 8,
+      "token_estimate": 719,
+      "has_tables": false,
+      "has_figures": true
+    },
+    {
+      "chunk_id": "chunk-005",
+      "heading_path": "cst1500-week-5 > EX 6: More examples of Shell Scripts I",
+      "page_start": 9,
+      "page_end": 10,
+      "token_estimate": 619,
+      "has_tables": false,
+      "has_figures": true
+    },
+    {
+      "chunk_id": "chunk-006",
+      "heading_path": "cst1500-week-5 > EX 7: More examples of Shell Scripts II",
+      "page_start": 11,
+      "page_end": 11,
+      "token_estimate": 469,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-007",
+      "heading_path": "cst1500-week-5 > EX 9: mysystem.sh example using \u2018echo\u2019",
+      "page_start": 12,
+      "page_end": 12,
+      "token_estimate": 604,
+      "has_tables": true,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-008",
+      "heading_path": "cst1500-week-5 > EX 11: Understanding more of creating and exporting variables in Linux",
+      "page_start": 13,
+      "page_end": 14,
+      "token_estimate": 652,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-009",
+      "heading_path": "cst1500-week-5 > EX 12: Understanding more Linux commands",
+      "page_start": 15,
+      "page_end": 15,
+      "token_estimate": 717,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-010",
+      "heading_path": "cst1500-week-5 > Double quotes",
+      "page_start": 16,
+      "page_end": 17,
+      "token_estimate": 624,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-011",
+      "heading_path": "cst1500-week-5 > EX 13: More examples of using if statement in bash script",
+      "page_start": 18,
+      "page_end": 19,
+      "token_estimate": 743,
+      "has_tables": true,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-012",
+      "heading_path": "cst1500-week-5 > Task 1: Write a shell script that will print the message \"Hello World\" in Bold and Blink",
+      "page_start": 1,
+      "page_end": 1,
+      "token_estimate": 171,
+      "has_tables": false,
+      "has_figures": false
+    }
+  ]
+}

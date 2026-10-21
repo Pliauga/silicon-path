@@ -1,0 +1,219 @@
+---
+id: 05-01-latches-flipflops
+title: Latches & Flip-Flops
+module: 5
+lecture: 'Lecture 05 — Sequential Logic'
+slides: '4–19'
+estimatedMinutes: 16
+prerequisites: ['04-03-combinatorial']
+tags: ['state', 'clock', 'storage']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## A circuit that remembers
+
+Everything in the last module was combinatorial: feed in inputs, get an
+answer, forget. A gate has no past. That is fine for an adder, which
+computes the same sum from the same inputs every time, and useless for
+anything that needs to count.
+
+To remember one bit you need a circuit whose output feeds back into its
+own input. Two gates cross-coupled — each one's output is the other's
+input — settle into one of two stable states and stay there until
+disturbed. That is the whole idea of a **latch**: a loop with two resting
+positions.
+
+A **flip-flop** is a latch with a gatekeeper. A latch is *level-sensitive*:
+while its enable input is high it is transparent, and its output follows
+its input. A flip-flop is *edge-triggered*: it samples its input only at
+the instant the clock line rises, and ignores it the rest of the cycle.
+
+That distinction is the reason the CPU has a clock at all. The edge is a
+contract: state changes here, and nowhere else.
+
+## What you'll be able to do
+
+- Explain the difference between a level-sensitive latch and an
+  edge-triggered flip-flop.
+- Model a D flip-flop as a struct with a state and a transition function.
+- Trace one bit through four clock edges by hand.
+- Say why a clock signal makes a processor's behaviour reproducible.
+
+## Two inputs, one stored bit
+
+The simplest usable storage element is the **D flip-flop**. It has one
+data input `D`, one clock input, and one stored output `Q`. On a rising
+edge, `Q` becomes whatever `D` was. Between edges, nothing happens.
+
+| Time     | D | Clock edge? | Q after |
+| -------- | - | ----------- | ------- |
+| t0       | 1 | no          | 0       |
+| t1       | 1 | rising      | 1       |
+| t2       | 0 | no          | 1       |
+| t3       | 0 | rising      | 0       |
+
+Two things in that table are worth naming. The value on the left of an
+edge is *ignored*, and the value between edges is *irrelevant*. A
+flip-flop only ever reads `D` at the moment marked "rising". Everything a
+digital machine does is built on that narrow instant.
+
+<TheoryBlock label="Why it matters for C" title="Every variable is a pile of these">
+
+	When you declare `int counter = 0;` the compiler is reserving 32
+	flip-flops somewhere — in a register if it is hot, in memory if it is
+	not. Assigning to the variable is, at the bottom, driving those
+	flip-flops' inputs and waiting for an edge. This is also why `volatile`
+	exists: the compiler must not assume the value it read a moment ago is
+	still there if something outside the program can change the underlying
+	flip-flops.
+</TheoryBlock>
+
+## The edge is the whole contract
+
+Because a flip-flop only updates on the edge, the timing of the clock
+decides the timing of the entire machine. A 3 GHz core has an edge every
+third of a nanosecond; a 1 Hz blinking LED has one per second. The
+circuit is the same. Only the clock differs.
+
+<details>
+<summary>Accessible version — the same trace as a list</summary>
+
+- Edge 1: `D = 1`, `Q` was 0, `Q` becomes 1.
+- Edge 2: `D = 0`, `Q` was 1, `Q` becomes 0.
+- Edge 3: `D = 1`, `Q` was 0, `Q` becomes 1.
+- Edge 4: `D = 1`, `Q` was 1, `Q` stays 1.
+
+</details>
+
+<Eli5Block
+	topic="state"
+	football="A flip-flop is the scoreboard, not the score. The scoreboard holds a number and keeps holding it after the whistle, until the referee's buzzer tells it to update. Between buzzes you can shout any number you like and the board will not move."
+	money="A flip-flop is a printed receipt in a till. The amount sits there unchanged all day; it only changes when the till is told, at a specific moment, to print a new one. Reading the receipt twice gives the same number, because nothing between the reads can alter it."
+/>
+
+## Modelling a flip-flop in C
+
+A program cannot observe a wire. What it can do is model the *rule*: one
+byte of state, one function that applies the edge.
+
+```c
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
+/* One D flip-flop: a single stored bit, updated only on a clock edge. */
+struct dff {
+    uint8_t q; /* the stored bit — the only state the circuit keeps */
+    uint8_t d; /* the input waiting for the next edge */
+};
+
+/* The edge is the contract: q may change here and nowhere else. */
+static void clock_edge(struct dff *ff) {
+    ff->q = (uint8_t)(ff->d & 0x01u);
+}
+
+int main(void) {
+    struct dff ff = {0, 0};
+    const uint8_t samples[8] = {1, 0, 1, 1, 0, 0, 1, 0};
+
+    printf("edge  d  q before  q after\n");
+    for (size_t i = 0; i < sizeof samples; i++) {
+        uint8_t before = ff.q;
+        ff.d = samples[i];
+        clock_edge(&ff);
+        printf("%4zu  %u      %u        %u\n", i + 1, ff.d, before, ff.q);
+    }
+    return 0;
+}
+```
+
+`q` is the only field that survives between edges; `d` is just the wire
+waiting to be sampled. `clock_edge` is the entire behaviour of the
+device, and it is four lines long. That is not a simplification for the
+lesson — a real D flip-flop's logic is about that small.
+
+## Expected output
+
+```text
+edge  d  q before  q after
+   1  1      0        1
+   2  0      1        0
+   3  1      0        1
+   4  1      1        1
+   5  0      1        0
+   6  0      0        0
+   7  1      0        1
+   8  0      1        0
+```
+
+Read line 4. `D` was 1 and `Q` was already 1, so `Q` did not change. An
+edge with the same value on both sides is a no-op, and that is normal:
+most edges in a real processor write back a value the register already
+holds.
+
+<ExerciseCard
+	id="m05-trace-edges"
+	concept="edge-triggered storage"
+	prompt="Add a second D flip-flop so the two form a two-bit shift register: on each edge the second stage takes the value the first stage held before that edge. Run the eight inputs in the starter's sequence and print exactly one line per edge in the form `in=1 a=1 b=0` — the input, then the two stages after the edge. Finish with `delays ok: 8/8` after checking that b at every step equals the input from one edge earlier."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;struct dff &#123;&#10;    uint8_t q;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    uint8_t inputs[8] = &#123;1, 0, 1, 1, 0, 0, 1, 0&#125;;&#10;    struct dff stage1 = &#123;0&#125;;&#10;    struct dff stage2 = &#123;0&#125;;&#10;&#10;    /* TODO: on each edge, keep stage1's old q before you overwrite it */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="in=1 a=1 b=0&#10;in=0 a=0 b=1&#10;in=1 a=1 b=0&#10;in=1 a=1 b=1&#10;in=0 a=0 b=1&#10;in=0 a=0 b=0&#10;in=1 a=1 b=0&#10;in=0 a=0 b=1&#10;delays ok: 8/8&#10;"
+	hints={[
+		'A flip-flop samples D at the instant of the edge, so stage2 must take the old stage1.q, not the value you have just written into stage1.',
+		'Save it in a temporary first: uint8_t old = stage1.q; stage1.q = inputs[i]; stage2.q = old; then print the input and both stages.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;struct dff &#123;&#10;    uint8_t q;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    uint8_t inputs[8] = &#123;1, 0, 1, 1, 0, 0, 1, 0&#125;;&#10;    struct dff stage1 = &#123;0&#125;;&#10;    struct dff stage2 = &#123;0&#125;;&#10;    uint8_t seen2[8];&#10;&#10;    for (int i = 0; i &lt; 8; i++) &#123;&#10;        uint8_t old1 = stage1.q;&#10;        stage1.q = inputs[i];  /* sample D at the edge */&#10;        stage2.q = old1;       /* the second stage takes the first one's old value */&#10;        seen2[i] = stage2.q;&#10;        printf(&quot;in=%u a=%u b=%u\n&quot;, (unsigned)inputs[i], (unsigned)stage1.q,&#10;               (unsigned)stage2.q);&#10;    &#125;&#10;&#10;    int ok = 0;&#10;    for (int i = 0; i &lt; 8; i++) &#123;&#10;        uint8_t expected = (i == 0) ? 0u : inputs[i - 1];&#10;        if (seen2[i] == expected) &#123;&#10;            ok++;&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;delays ok: %d/8\n&quot;, ok);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Reading the input in the wrong order
+
+```c
+ff.d = samples[i];
+clock_edge(&ff);
+```
+
+The assignment must come *before* the edge, because the flip-flop samples
+`D` at the instant of the edge. Writing `clock_edge` first stores last
+cycle's input, and the trace shifts by one row. If the first output line
+shows the previous iteration's bit, check this ordering first.
+
+### Confusing a latch with a flip-flop
+
+A latch marked "transparent while enabled" is not a flip-flop. If you
+model a latch and then reason about it as though it sampled on an edge,
+you will predict a value that the real circuit never holds. When the
+enable is high, the output *follows* the input continuously; there is no
+stored value to reason about until the enable falls.
+
+### Assuming a real flip-flop is instantaneous
+
+The model updates `q` in zero time. Real gates have a propagation delay —
+tens of picoseconds today, but not zero — and a circuit whose feedback
+path is too slow can oscillate instead of settling. That is a
+**metastability** failure, and it is why real designs specify setup and
+hold times around every clock edge.
+
+<QuizCard
+	id="m05-quiz-edge"
+	question="A D flip-flop holds Q = 1. D is 0 for the whole cycle, and no clock edge occurs. What is Q at the end of the cycle?"
+	options={[
+		'1 — without an edge nothing is sampled, so Q keeps its value',
+		'0 — Q follows D as soon as D settles, so it clears during the cycle',
+		'0 — the flip-flop clears itself each cycle and reloads D on the edge',
+		'It oscillates between 1 and 0 until the next edge arrives'
+	]}
+	answer={0}
+	explanation="A D flip-flop is edge-triggered: it samples D only at the clock edge, so with no edge the stored value is simply held. An output that follows D continuously belongs to a latch, not a flip-flop."
+/>
+
+<LectureReference lecture="Lecture 05 — Sequential Logic" slides="4–19" />

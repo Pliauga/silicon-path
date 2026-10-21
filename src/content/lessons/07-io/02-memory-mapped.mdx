@@ -1,0 +1,245 @@
+---
+id: 07-02-memory-mapped
+title: Memory-Mapped I/O
+module: 7
+lecture: 'Lecture 07 — Input & Output'
+slides: '18–31'
+estimatedMinutes: 16
+prerequisites: ['07-01-peripherals']
+tags: ['mmio', 'volatile', 'addressing']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The device is an address
+
+There are two ways to talk to hardware. **Port-mapped I/O** gives devices
+their own separate address space and their own instructions — x86 does
+this with `in` and `out`. **Memory-mapped I/O** gives devices ordinary
+addresses in the same space as memory, so a device register is read and
+written with the same `load` and `store` instructions as an `int`.
+
+Memory-mapped I/O won. It needs no new instructions, no new addressing
+mode, and no special case in the compiler. A pointer to a device is
+typed exactly like a pointer to an array, and the only difference is that
+the address does not point at RAM.
+
+## What you'll be able to do
+
+- Explain why memory-mapped I/O needs no new CPU instructions.
+- Read and write a device through a `volatile` pointer.
+- Say why the register offsets are part of a hardware contract.
+- Recognise the alignment requirement of a 32-bit register.
+
+## A window, not a region
+
+A device occupies a small range of addresses — usually a few dozen bytes
+— placed somewhere in the physical address map. The CPU writes to
+`base + 0x00` to transmit and reads `base + 0x04` to check status. Those
+offsets are not an implementation detail; they are the interface, fixed
+by the hardware designer and printed in the datasheet.
+
+| Offset | Name      | Access | Meaning               |
+| ------ | --------- | ------ | --------------------- |
+| +0x00  | TX        | write  | byte to transmit      |
+| +0x04  | STATUS    | read   | bit 0 = busy          |
+| +0x08  | ID        | read   | device identifier     |
+
+Notice that `ID` is read-only and returns a constant the device supplies.
+It looks like a variable that never changes, and the compiler would be
+delighted to fold it away. That is why every access goes through a
+pointer.
+
+<TheoryBlock label="Why it matters for C" title="volatile is a promise about reads, not about threads">
+
+	`volatile` tells the compiler that every read and every write in the
+	source must appear in the generated code, in that order, and may not be
+	cached, folded, or reordered with other volatile accesses. It does not
+	make an operation atomic and it does not synchronise threads. C11 gives
+	you `_Atomic` and `<stdatomic.h>` for that, and they are a different
+	tool. Using `volatile` for thread sharing is the single most common
+	misuse of the keyword.
+</TheoryBlock>
+
+<Eli5Block
+	topic="mmio"
+	football="Memory-mapped I/O is giving the fourth official a numbered peg in the dugout. The manager does not need a special procedure for reaching the official — he walks to peg 14 and speaks, using exactly the same legs he uses to reach any other peg."
+	money="It is putting the utility meter in the same online dashboard as your savings account. You do not learn a second banking app; you open the usual one, click a different row, and the number you see comes from a meter rather than from your balance."
+/>
+
+## A device in an array
+
+The program below puts a device window inside a plain byte array. The
+`reg` helper does the one thing that matters: it casts an address to
+`volatile uint32_t *` so the compiler emits a real load or store every
+time.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* Memory-mapped I/O: the device is not a function you call, it is an
+ * address you read and write. Here the "hardware" is a byte array, and
+ * the register offsets are the contract. */
+
+#define MMIO_BASE 0x1000u
+#define SPACE     0x2000u
+
+enum {
+    REG_TX     = 0x00, /* write a byte here to transmit */
+    REG_STATUS = 0x04, /* bit 0: busy */
+    REG_ID     = 0x08  /* read-only identity */
+};
+
+static uint8_t bus[SPACE];
+static unsigned reads;
+static unsigned writes;
+
+static volatile uint32_t *reg(uint16_t offset) {
+    return (volatile uint32_t *)(void *)(bus + MMIO_BASE + offset);
+}
+
+static uint32_t mmio_read(uint16_t offset) {
+    reads++;
+    /* The ID register is driven by the device, not by memory. Supplying
+     * it at read time is what makes this a device rather than an array. */
+    if (offset == REG_ID) {
+        return 0x5A5A0001u;
+    }
+    return *reg(offset);
+}
+
+static void mmio_write(uint16_t offset, uint32_t value) {
+    writes++;
+    *reg(offset) = value;
+}
+
+int main(void) {
+    printf("bus: %u bytes, device window at 0x%04X\n",
+           SPACE, MMIO_BASE);
+    printf("device id: 0x%08X\n", mmio_read(REG_ID));
+
+    /* Transmit three bytes. The status check is what stops us from
+     * overwriting a byte the device has not consumed yet. */
+    const char *msg = "Hi!";
+    for (size_t i = 0; msg[i] != '\0'; i++) {
+        mmio_write(REG_TX, (uint32_t)(unsigned char)msg[i]);
+        printf("  sent 0x%02X, status now 0x%08X\n",
+               (unsigned)(unsigned char)msg[i], mmio_read(REG_STATUS));
+    }
+
+    /* Read the window back through the bus. Alignment matters: these
+     * are 32-bit registers at 4-byte boundaries. */
+    printf("\nwindow as 32-bit words:\n");
+    for (uint16_t off = 0; off < 12; off += 4) {
+        uint32_t v = *(volatile uint32_t *)(void *)(bus + MMIO_BASE + off);
+        printf("  +0x%02X: 0x%08X\n", off, v);
+    }
+
+    printf("\nreads %u, writes %u\n", reads, writes);
+    printf("address of REG_TX as an offset: 0x%04X\n", MMIO_BASE + REG_TX);
+    printf("bytes in one register: %zu\n", sizeof(uint32_t));
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+bus: 8192 bytes, device window at 0x1000
+device id: 0x5A5A0001
+  sent 0x48, status now 0x00000000
+  sent 0x69, status now 0x00000000
+  sent 0x21, status now 0x00000000
+
+window as 32-bit words:
+  +0x00: 0x00000021
+  +0x04: 0x00000000
+  +0x08: 0x00000000
+
+reads 4, writes 3
+address of REG_TX as an offset: 0x1000
+bytes in one register: 4
+```
+
+The window read-back shows `0x00000021` at `+0x00`, which is `!` — the
+last byte written. Each write overwrote the previous one because the
+device never clears a busy bit in this model, so the CPU never waits.
+That is the failure mode a real driver avoids: it writes, then spins
+until `STATUS` says the byte has been consumed.
+
+The `+0x08` word is `0` even though `mmio_read(REG_ID)` returns
+`0x5A5A0001`. Both are correct. `ID` is supplied by the device at read
+time, not stored in the array — reading the raw memory underneath it
+gives the array's contents, which are zero. A device register is not a
+memory location that happens to be special; it is a different thing that
+shares the address space.
+
+<ExerciseCard
+	id="m07-register-window"
+	concept="MMIO register alignment"
+	prompt="Lay out a device window with five registers: a 32-bit control at +0x00, a 16-bit status at +0x04, an 8-bit data at +0x08, a 16-bit byte count at +0x0C, and a 64-bit counter at +0x10. Print one line per register in exactly the form `offset=0x0c size=2 aligned=yes`, with the offset as two lowercase hex digits, then `window size=24` last. Print aligned=yes or aligned=no from the arithmetic offset % size, not by hand."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;#define MMIO_BASE 0x1000u&#10;&#10;int main(void) &#123;&#10;    /* TODO: 4-, 2- and 8-byte registers, aligned */&#10;    return 0;&#10;&#125;"
+	expectedStdout="offset=0x00 size=4 aligned=yes&#10;offset=0x04 size=2 aligned=yes&#10;offset=0x08 size=1 aligned=yes&#10;offset=0x0c size=2 aligned=yes&#10;offset=0x10 size=8 aligned=yes&#10;window size=24&#10;"
+	hints={[
+		'A register at offset o with size s is aligned exactly when o % s == 0, which is the same rule the compiler applies inside a struct.',
+		'Walk a small array of offset and size pairs, print each offset with 0x%02x, and track the largest offset + size to get the window size.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;struct reg &#123;&#10;    unsigned offset;&#10;    unsigned size;&#10;    const char *name;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    struct reg regs[] = &#123;&#10;        &#123;0x00u, 4u, &quot;control&quot;&#125;,&#10;        &#123;0x04u, 2u, &quot;status&quot;&#125;,&#10;        &#123;0x08u, 1u, &quot;data&quot;&#125;,&#10;        &#123;0x0Cu, 2u, &quot;count&quot;&#125;,&#10;        &#123;0x10u, 8u, &quot;counter&quot;&#125;,&#10;    &#125;;&#10;    unsigned end = 0;&#10;&#10;    for (unsigned i = 0; i &lt; sizeof regs / sizeof regs[0]; i++) &#123;&#10;        int aligned = (regs[i].offset % regs[i].size) == 0u;&#10;        printf(&quot;offset=0x%02x size=%u aligned=%s\n&quot;, regs[i].offset,&#10;               regs[i].size, aligned ? &quot;yes&quot; : &quot;no&quot;);&#10;        if (regs[i].offset + regs[i].size &gt; end) &#123;&#10;            end = regs[i].offset + regs[i].size;&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;window size=%u\n&quot;, end);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Dropping `volatile` because "it works"
+
+Remove the qualifier and the program still prints the same output at
+`-O0`. Compile at `-O2` and the ID read may be folded away, or the
+status loop hoisted, and the behaviour changes. The bug is latent in the
+source, not in the optimisation level — you just cannot see it until the
+compiler starts helping.
+
+### Misaligned access
+
+A 32-bit register at an address that is not a multiple of four faults on
+many architectures (ARM, and RISC-V without the misaligned-access
+extension). On x86 it is merely slow. Place registers at offsets that
+respect their size, and let the compiler's `offsetof` checks catch
+mistakes in structs.
+
+### Assuming the device window is ordinary memory
+
+`memcpy` into an MMIO region, or `memset` over it, is almost always
+wrong: those functions are entitled to use wide vector stores in any
+order, and a device may reject a 16-byte write to a 4-byte register, or
+interpret it as four separate transactions. Touch device registers one at
+a time, through the declared type.
+
+### Port-mapped and memory-mapped confused
+
+If you see `inb(0x60)` in code, that is port-mapped I/O on x86 and it has
+nothing to do with addresses in C. The equivalent memory-mapped access
+looks like `*(volatile uint8_t *)0x60`. Both exist; they are not
+interchangeable, and a driver written for one will not work on the other.
+
+<QuizCard
+	id="m07-quiz-volatile"
+	question="A status register at a fixed address must be re-read in a loop until bit 0 clears. The loop is `while (*(uint32_t *)ADDR & 1u) &#123; &#125;`. What is wrong with it, and what is the smallest fix?"
+	options={[
+		'The target is not volatile, so the compiler may hoist the load and spin on a stale value; the fix is *(volatile uint32_t *)ADDR',
+		'The cast is wrong — ADDR should be cast to uint32_t, not to a pointer',
+		'The loop needs a sleep, because reading a device register in a tight loop is illegal',
+		'Nothing is wrong: the constant address forces a fresh load on every iteration'
+	]}
+	answer={0}
+	explanation="Without volatile the compiler assumes the pointed-to object cannot change on its own, and C allows the read to be moved out of the loop, leaving an infinite loop on a value that never updates. Adding volatile to the pointee forces a real load per iteration; it does not make the access atomic."
+/>
+
+<LectureReference lecture="Lecture 07 — Input & Output" slides="18–31" />

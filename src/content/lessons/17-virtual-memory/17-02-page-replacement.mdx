@@ -1,0 +1,421 @@
+---
+id: 17-02-page-replacement
+title: Page Replacement
+module: 17
+lecture: 'Lecture 17 — Virtual Memory'
+slides: '16–30'
+estimatedMinutes: 20
+prerequisites: ['17-01-demand-paging']
+tags: ['page-replacement', 'fifo', 'lru', 'belady']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Choosing a victim
+
+Step 3 of the fault sequence says "if no frame is free, choose a victim".
+That single sentence hides the entire subject of this lesson, because the
+choice is made with incomplete information. The kernel knows what has been
+accessed; it does not know what will be accessed next. Every replacement
+policy is a guess about the future dressed up as a bookkeeping rule about
+the past.
+
+The guessing is not hopeless. Programs exhibit **locality of reference**:
+they touch a small set of pages now and a related small set a moment
+later. That property is what makes any policy work at all, and it is why
+the two classical policies below get within a few percent of each other
+on real workloads while differing wildly on adversarial ones.
+
+Two policies, one difference:
+
+- **FIFO** evicts the page that arrived earliest. A page's timestamp is
+  set when it is loaded and never updated.
+- **LRU** evicts the page that was used least recently. The timestamp is
+  refreshed on every hit.
+
+The intuition for LRU is the locality assumption taken literally: the
+page you used longest ago is the one least likely to be needed next.
+FIFO has no such story — it evicts the oldest arrival even if that page
+is being hammered right now.
+
+## What you'll be able to do
+
+- Trace FIFO and LRU by hand on a reference string.
+- Explain why FIFO can evict a page that is in constant use.
+- State Belady's anomaly and construct a small example.
+- Say which page-table bit makes LRU approximate rather than exact.
+
+## The comparison, in one table
+
+| Property            | FIFO                              | LRU                                |
+| ------------------- | --------------------------------- | ---------------------------------- |
+| Victim rule         | earliest load                     | least recent use                   |
+| Updated on a hit    | no                                | yes                                |
+| Bookkeeping         | a queue, O(1) per access          | needs ordering, O(1) with a list   |
+| Prone to            | evicting a hot page               | evicting a page needed far ahead   |
+| Anomaly             | Belady's — more frames, more faults | none: LRU is a stack algorithm   |
+
+The last row is the one worth unpacking. A policy is a **stack
+algorithm** if the set of pages resident with *n* frames is always a
+subset of the set resident with *n+1* frames. LRU has this property —
+adding a frame can only add a page to the resident set, never remove one
+— and stack algorithms can never suffer Belady's anomaly. FIFO is not a
+stack algorithm, and the counter-example is the famous reference string
+`1 2 3 4 1 2 5 1 2 3 4 5`: with three frames FIFO takes 9 faults and with
+four frames it takes 10.
+
+<TheoryBlock label="Why it matters for C" title="Your access pattern is the policy">
+
+	Since exact LRU needs a timestamp per access — which no hardware
+	maintains — real kernels approximate it with the **accessed** bit in
+	the page table entry. The MMU sets the bit in hardware on every
+	access, and the kernel periodically clears all of them and later reads
+	back which ones were set. Pages never marked were not used since the
+	last sweep, and become candidates. This is why the policy in a real
+	kernel is closer to "clock" than to LRU, and why a C program that
+	walks a large array in a hostile order can beat the policy no matter
+	what the policy is.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="page-replacement"
+	football="The kit bag holds three shirts and a fourth player wants one. The kit man can hand back the shirt issued first, which may belong to the striker playing brilliantly, or the one nobody has asked for since kick-off. The first rule is easy and sometimes absurd; the second needs a record of every request."
+	money="A display shelf holds three products and a fourth must go out. The manager can remove whatever was placed there first, or whatever nobody has picked up for longest. The first needs no record and may remove the item selling fastest; the second needs a note every time a customer touches something."
+/>
+
+## Two policies, one line apart
+
+The program traces both policies over two reference strings with three
+frames each. The policies share every line of code except where the
+recency timestamp is updated: FIFO leaves it at load time, LRU refreshes
+it on a hit.
+
+```c
+#include <stdio.h>
+
+/* FIFO and LRU over the same reference string.
+ *
+ * Both policies maintain a set of resident pages and both have a fault
+ * when the page is not in it. They differ in one line of bookkeeping:
+ * FIFO evicts by    when a page arrived, LRU by when it was last used.
+ * That single difference is enough to make them disagree on the same
+ * input, and the disagreement is not a tie -- one of them is strictly
+ * better here, and neither is always better in general. */
+
+#define FRAMES 3
+
+struct memory {
+    int frame[FRAMES];
+    int since[FRAMES];   /* FIFO: insert tick. LRU: last-use tick. */
+    int tick;
+    int faults;
+};
+
+static void reset(struct memory *m)
+{
+    for (int i = 0; i < FRAMES; i++) {
+        m->frame[i] = -1;
+        m->since[i] = 0;
+    }
+    m->tick = 0;
+    m->faults = 0;
+}
+
+/* Returns the frame index holding `page`, or -1. */
+static int find(const struct memory *m, int page)
+{
+    for (int i = 0; i < FRAMES; i++) {
+        if (m->frame[i] == page) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* The oldest entry in `since`, which is the eviction victim for both
+ * policies. FIFO's `since` is never refreshed on a hit; LRU's is. */
+static int victim(const struct memory *m)
+{
+    int oldest = 0;
+    for (int i = 1; i < FRAMES; i++) {
+        if (m->since[i] < m->since[oldest]) {
+            oldest = i;
+        }
+    }
+    return oldest;
+}
+
+static int access_page(struct memory *m, int page, int use_lru, int verbose)
+{
+    int slot = find(m, page);
+    int fault = 0;
+
+    m->tick++;
+
+    if (slot != -1) {
+        if (use_lru) {
+            m->since[slot] = m->tick;
+        }
+        if (verbose) {
+            printf("  %2d  hit   page %d in frame %d\n", page, page, slot);
+        }
+        return 0;
+    }
+
+    fault = 1;
+    m->faults++;
+
+    /* Prefer an empty frame before evicting anything. */
+    slot = -1;
+    for (int i = 0; i < FRAMES; i++) {
+        if (m->frame[i] == -1) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == -1) {
+        slot = victim(m);
+    }
+
+    if (verbose) {
+        printf("  %2d  FAULT page %d into frame %d (evicted %d)\n",
+               page, page, slot, m->frame[slot] == -1 ? -1 : m->frame[slot]);
+    }
+
+    m->frame[slot] = page;
+    m->since[slot] = m->tick;
+    return fault;
+}
+
+static int run(const int *reference, int n, int use_lru, int verbose)
+{
+    struct memory m;
+    reset(&m);
+
+    if (verbose) {
+        printf("%s\n", use_lru ? "LRU" : "FIFO");
+    }
+    for (int i = 0; i < n; i++) {
+        access_page(&m, reference[i], use_lru, verbose);
+    }
+    if (verbose) {
+        printf("  faults: %d of %d references\n\n", m.faults, n);
+    }
+    return m.faults;
+}
+
+int main(void)
+{
+    /* The classic string that separates the two policies. With three
+     * frames it produces 9 faults under FIFO and 10 under LRU: more
+     * history is not automatically better history. */
+    const int a[] = {1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5};
+    const int na = (int)(sizeof a / sizeof a[0]);
+
+    printf("reference string:");
+    for (int i = 0; i < na; i++) {
+        printf(" %d", a[i]);
+    }
+    printf("\n%d frames\n\n", FRAMES);
+
+    int fifo = run(a, na, 0, 1);
+    int lru = run(a, na, 1, 1);
+
+    printf("summary for the first string: FIFO %d faults, LRU %d faults\n\n",
+           fifo, lru);
+
+    /* A second string with strong locality. Now LRU wins, because the
+     * page it keeps is the page that will be asked for next. */
+    const int b[] = {1, 2, 3, 1, 4, 5, 1, 2, 3, 4};
+    const int nb = (int)(sizeof b / sizeof b[0]);
+
+    printf("reference string:");
+    for (int i = 0; i < nb; i++) {
+        printf(" %d", b[i]);
+    }
+    printf("\n%d frames\n\n", FRAMES);
+
+    fifo = run(b, nb, 0, 1);
+    lru = run(b, nb, 1, 1);
+    printf("summary for the second string: FIFO %d faults, LRU %d faults\n",
+           fifo, lru);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+reference string: 1 2 3 4 1 2 5 1 2 3 4 5
+3 frames
+
+FIFO
+   1  FAULT page 1 into frame 0 (evicted -1)
+   2  FAULT page 2 into frame 1 (evicted -1)
+   3  FAULT page 3 into frame 2 (evicted -1)
+   4  FAULT page 4 into frame 0 (evicted 1)
+   1  FAULT page 1 into frame 1 (evicted 2)
+   2  FAULT page 2 into frame 2 (evicted 3)
+   5  FAULT page 5 into frame 0 (evicted 4)
+   1  hit   page 1 in frame 1
+   2  hit   page 2 in frame 2
+   3  FAULT page 3 into frame 1 (evicted 1)
+   4  FAULT page 4 into frame 2 (evicted 2)
+   5  hit   page 5 in frame 0
+  faults: 9 of 12 references
+
+LRU
+   1  FAULT page 1 into frame 0 (evicted -1)
+   2  FAULT page 2 into frame 1 (evicted -1)
+   3  FAULT page 3 into frame 2 (evicted -1)
+   4  FAULT page 4 into frame 0 (evicted 1)
+   1  FAULT page 1 into frame 1 (evicted 2)
+   2  FAULT page 2 into frame 2 (evicted 3)
+   5  FAULT page 5 into frame 0 (evicted 4)
+   1  hit   page 1 in frame 1
+   2  hit   page 2 in frame 2
+   3  FAULT page 3 into frame 0 (evicted 5)
+   4  FAULT page 4 into frame 1 (evicted 1)
+   5  FAULT page 5 into frame 2 (evicted 2)
+  faults: 10 of 12 references
+
+summary for the first string: FIFO 9 faults, LRU 10 faults
+
+reference string: 1 2 3 1 4 5 1 2 3 4
+3 frames
+
+FIFO
+   1  FAULT page 1 into frame 0 (evicted -1)
+   2  FAULT page 2 into frame 1 (evicted -1)
+   3  FAULT page 3 into frame 2 (evicted -1)
+   1  hit   page 1 in frame 0
+   4  FAULT page 4 into frame 0 (evicted 1)
+   5  FAULT page 5 into frame 1 (evicted 2)
+   1  FAULT page 1 into frame 2 (evicted 3)
+   2  FAULT page 2 into frame 0 (evicted 4)
+   3  FAULT page 3 into frame 1 (evicted 5)
+   4  FAULT page 4 into frame 2 (evicted 1)
+  faults: 9 of 10 references
+
+LRU
+   1  FAULT page 1 into frame 0 (evicted -1)
+   2  FAULT page 2 into frame 1 (evicted -1)
+   3  FAULT page 3 into frame 2 (evicted -1)
+   1  hit   page 1 in frame 0
+   4  FAULT page 4 into frame 1 (evicted 2)
+   5  FAULT page 5 into frame 2 (evicted 3)
+   1  hit   page 1 in frame 0
+   2  FAULT page 2 into frame 1 (evicted 4)
+   3  FAULT page 3 into frame 2 (evicted 5)
+   4  FAULT page 4 into frame 0 (evicted 1)
+  faults: 8 of 10 references
+
+summary for the second string: FIFO 9 faults, LRU 8 faults
+```
+
+The first string is the honest bad news: **LRU does worse than FIFO**,
+10 faults against 9. Follow the two traces at reference 7 — the `5` —
+and the reason is visible. Both policies have `1 2` resident and have to
+choose. FIFO evicts `4`, because `4` arrived at position 4 and is the
+oldest. LRU also evicts `4`, because `4` was last used at position 4 and
+nothing has been used since; the same choice, from opposite reasoning.
+
+They diverge at reference 10, the `3`. FIFO evicts `1` — the oldest
+arrival — and `1` is about to be needed again at reference 11. LRU evicts
+`5`, which is the page used least recently, and then misses on `4` and
+`5` instead. Over twelve references the policies are within one fault of
+each other and FIFO happens to win. The lesson is not that FIFO is good;
+it is that a policy can lose on one string and win on another, and that
+LRU's guarantee is about *frame count*, not about beating FIFO on any
+particular input.
+
+The second string has strong locality — `1`, `2`, `3` then `1` again,
+then a run of `1 2 3 4` — and now LRU wins 8 to 9. Look at reference 7:
+LRU has `1` still resident because it was used at position 4, and hits.
+FIFO had evicted `1` at position 5 to make room for `4`, and misses.
+That is the whole argument for the recency heuristic, in one line of
+trace.
+
+Neither result generalises. What generalises is the shape: FIFO's
+weakness is evicting on arrival order with no regard to use, and it shows
+up whenever the oldest page is also the hottest.
+
+<ExerciseCard
+	id="m17-belady"
+	concept="Belady's anomaly"
+	prompt="Write fifo_faults(ref, n, frames) for any frame count from 1 to 5 and lru_faults for the same, then run both over the reference string 1 2 3 4 1 2 5 1 2 3 4 5 and print the two tables side by side, the frame count where FIFO gains faults when a frame is added, and whether LRU is monotone. Print exactly:&#10;frames  1  2  3  4  5&#10;fifo    12 12  9 10  5&#10;lru     12 12 10  8  5&#10;anomaly: fifo at 4 frames&#10;lru monotone: yes&#10;Nothing else. The numbers come from the simulation, not from a table typed into the output."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define MAX_FRAMES 5&#10;&#10;static int fifo_faults(const int *ref, int n, int frames) &#123;&#10;    return 0; /* TODO */&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const int ref[] = &#123;1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5&#125;;&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="frames  1  2  3  4  5&#10;fifo    12 12  9 10  5&#10;lru     12 12 10  8  5&#10;anomaly: fifo at 4 frames&#10;lru monotone: yes&#10;"
+	hints={[
+		'FIFO keeps a ring of frames and a next-victim index; an access that hits does not change the order, which is exactly why it can evict the page that is about to be reused.',
+		'Three frames give 9 FIFO faults and four frames give 10, so the anomaly appears when the fourth frame is added; LRU gives 10, 8, 5 for three, four and five frames.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* FIFO and LRU over the classic twelve-reference string. The table is the&#10; * whole argument: one policy gains faults when a frame is added. */&#10;&#10;#define MAX_FRAMES 5&#10;#define REF_LEN 12&#10;&#10;static int fifo_faults(const int *ref, int n, int frames) &#123;&#10;    int pages[MAX_FRAMES] = &#123;0&#125;;&#10;    int filled = 0;&#10;    int next = 0;&#10;    int faults = 0;&#10;&#10;    for (int i = 0; i &lt; n; i++) &#123;&#10;        int page = ref[i];&#10;        int found = 0;&#10;&#10;        for (int j = 0; j &lt; filled; j++) &#123;&#10;            if (pages[j] == page) &#123;&#10;                found = 1;&#10;                break;&#10;            &#125;&#10;        &#125;&#10;        if (found) &#123;&#10;            continue;&#10;        &#125;&#10;        faults++;&#10;        if (filled &lt; frames) &#123;&#10;            pages[filled] = page;&#10;            filled++;&#10;        &#125; else &#123;&#10;            pages[next] = page;&#10;            next = (next + 1) % frames;&#10;        &#125;&#10;    &#125;&#10;    return faults;&#10;&#125;&#10;&#10;static int lru_faults(const int *ref, int n, int frames) &#123;&#10;    int pages[MAX_FRAMES] = &#123;0&#125;;&#10;    int stamp[MAX_FRAMES] = &#123;0&#125;;&#10;    int filled = 0;&#10;    int clock = 0;&#10;    int faults = 0;&#10;&#10;    for (int i = 0; i &lt; n; i++) &#123;&#10;        int page = ref[i];&#10;        int found = -1;&#10;&#10;        clock++;&#10;        for (int j = 0; j &lt; filled; j++) &#123;&#10;            if (pages[j] == page) &#123;&#10;                found = j;&#10;                break;&#10;            &#125;&#10;        &#125;&#10;        if (found &gt;= 0) &#123;&#10;            stamp[found] = clock;&#10;            continue;&#10;        &#125;&#10;        faults++;&#10;        if (filled &lt; frames) &#123;&#10;            pages[filled] = page;&#10;            stamp[filled] = clock;&#10;            filled++;&#10;        &#125; else &#123;&#10;            int victim = 0;&#10;            for (int j = 1; j &lt; frames; j++) &#123;&#10;                if (stamp[j] &lt; stamp[victim]) &#123;&#10;                    victim = j;&#10;                &#125;&#10;            &#125;&#10;            pages[victim] = page;&#10;            stamp[victim] = clock;&#10;        &#125;&#10;    &#125;&#10;    return faults;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const int ref[REF_LEN] = &#123;1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5&#125;;&#10;    int fifo[MAX_FRAMES] = &#123;0&#125;;&#10;    int lru[MAX_FRAMES] = &#123;0&#125;;&#10;    int anomaly = 0;&#10;&#10;    for (int frames = 1; frames &lt;= MAX_FRAMES; frames++) &#123;&#10;        fifo[frames - 1] = fifo_faults(ref, REF_LEN, frames);&#10;        lru[frames - 1] = lru_faults(ref, REF_LEN, frames);&#10;        if (frames &gt; 1 &amp;&amp; fifo[frames - 1] &gt; fifo[frames - 2]) &#123;&#10;            anomaly = frames;&#10;        &#125;&#10;    &#125;&#10;&#10;    printf(&quot;frames  1  2  3  4  5\n&quot;);&#10;    printf(&quot;fifo   &quot;);&#10;    for (int i = 0; i &lt; MAX_FRAMES; i++) &#123;&#10;        printf(&quot;%3d&quot;, fifo[i]);&#10;    &#125;&#10;    printf(&quot;\nlru    &quot;);&#10;    for (int i = 0; i &lt; MAX_FRAMES; i++) &#123;&#10;        printf(&quot;%3d&quot;, lru[i]);&#10;    &#125;&#10;    printf(&quot;\nanomaly: fifo at %d frames\n&quot;, anomaly);&#10;&#10;    int monotone = 1;&#10;    for (int i = 1; i &lt; MAX_FRAMES; i++) &#123;&#10;        if (lru[i] &gt; lru[i - 1]) &#123;&#10;            monotone = 0;&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;lru monotone: %s\n&quot;, monotone ? &quot;yes&quot; : &quot;no&quot;);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Believing LRU is always better than FIFO
+
+It is not, and this program shows a twelve-reference string where FIFO
+wins by one fault. LRU's guarantee is that it never suffers Belady's
+anomaly, which is a statement about what happens when you *add a frame*,
+not about any fixed comparison with another policy.
+
+### Conflating LRU with optimal
+
+The optimal policy, Belady's MIN, evicts the page whose next use is
+furthest in the future. It is unimplementable — it needs the future — and
+it exists to bound how much better a real policy could possibly be. LRU
+is a heuristic that approximates it under locality; on a cyclic access
+pattern larger than memory, LRU is pessimal and MIN is not.
+
+### Forgetting that real kernels approximate
+
+Exact LRU requires a timestamp update on every memory access, which would
+mean a write to memory on every instruction. Hardware does not do it.
+Kernels use the accessed bit, swept periodically, and evict pages that
+were not touched in the last interval. The algorithm is called clock or
+second-chance, and its fault counts differ from textbook LRU in exactly
+the cases where the sweep interval is comparable to the reuse distance.
+
+### Assuming a fault always costs a write
+
+An evicted page costs a write only if its dirty bit is set. Read-only
+code pages are clean and can be dropped, and the frame reused
+immediately. A workload of pure computation over a read-only text
+segment can churn frames with almost no disk traffic; a workload of
+writes to a large heap pays for every eviction. This asymmetry is why
+"swap usage" alone does not tell you whether a machine is in trouble.
+
+### Measuring with too short a reference string
+
+Three frames and twelve references is a teaching example, not a
+benchmark. Policies that differ by one fault in twelve can differ by
+orders of magnitude on a workload that is just above the frame count, and
+by nothing at all on one that fits. Vary both the frame count and the
+string length before drawing a conclusion.
+
+<QuizCard
+	id="m17-quiz-lru"
+	question="A program cycles through six pages on a machine with five frames, reading each page once per second. Compare FIFO and LRU fault counts per second, and explain what the result says about the value of recency information when the reuse distance exceeds the memory size."
+	options={[
+		'Both fault on all six accesses per second: six faults per second each. With a cycle wider than memory, the page needed next is always the one that was just evicted, and LRU and FIFO pick that same victim, so recency information is worthless.',
+		'LRU faults five times per second and FIFO six, because recency lets LRU keep the page that is about to be reused.',
+		'FIFO faults once per second and LRU six, because a cyclic order means the oldest arrival is the one needed next.',
+		'Both fault once per cycle, so once per second, because the six pages are re-read in the same order and each is still resident.'
+	]}
+	answer={0}
+	explanation="In a cycle that does not fit, the next page needed is precisely the one whose reuse distance is the whole cycle, so it is always the least recently used and always the oldest arrival. The two policies coincide, and the recency information cannot help — LRU is pessimal here and only more frames or a smaller working set fixes it."
+/>
+
+<LectureReference lecture="Lecture 17 — Virtual Memory" slides="16–30" />

@@ -1,0 +1,67 @@
+{
+  "chunks": [
+    {
+      "chunk_id": "chunk-001",
+      "heading_path": "cst1500-week-4",
+      "page_start": 1,
+      "page_end": 2,
+      "token_estimate": 432,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-002",
+      "heading_path": "cst1500-week-4 > Lab Objectives",
+      "page_start": 3,
+      "page_end": 3,
+      "token_estimate": 747,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-003",
+      "heading_path": "cst1500-week-4 > EX 1: Getting started with Batch files",
+      "page_start": 4,
+      "page_end": 4,
+      "token_estimate": 650,
+      "has_tables": false,
+      "has_figures": true
+    },
+    {
+      "chunk_id": "chunk-004",
+      "heading_path": "cst1500-week-4 > EX 2: Understanding batch code of parent/child relationship",
+      "page_start": 5,
+      "page_end": 7,
+      "token_estimate": 646,
+      "has_tables": false,
+      "has_figures": true
+    },
+    {
+      "chunk_id": "chunk-005",
+      "heading_path": "cst1500-week-4 > The Windows Script Host",
+      "page_start": 8,
+      "page_end": 8,
+      "token_estimate": 704,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-006",
+      "heading_path": "cst1500-week-4 > EX 6: Understanding the VBScripts II",
+      "page_start": 9,
+      "page_end": 9,
+      "token_estimate": 674,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-007",
+      "heading_path": "cst1500-week-4 > EX 11: Perform more complex administrative tasks using Batch scripting",
+      "page_start": 1,
+      "page_end": 1,
+      "token_estimate": 99,
+      "has_tables": false,
+      "has_figures": false
+    }
+  ]
+}

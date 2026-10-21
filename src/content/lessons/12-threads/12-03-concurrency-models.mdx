@@ -1,0 +1,217 @@
+---
+id: 12-03-concurrency-models
+title: Concurrency Models
+module: 12
+lecture: 'Lecture 12 — Threads'
+slides: '30–44'
+estimatedMinutes: 16
+prerequisites: ['12-02-pthreads']
+tags: ['concurrency', 'worker-pool', 'threads']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Three ways to use more than one thread
+
+Pthreads gives you the primitives; it does not tell you how to arrange them. Four
+arrangements cover almost everything real software does:
+
+| Model | Shape | Cost | Seen in |
+| --- | --- | --- | --- |
+| thread per task | one thread per request, exit when done | high with many tasks | simple servers |
+| worker pool | fixed N threads drain a queue | bounded, predictable | most servers, web app compilers |
+| pipeline | stages connected by queues | good for streaming | video, shell pipelines |
+| fork–join | split, work, combine | simple to reason about | numeric code |
+
+The worker pool is the default for a reason: it bounds the number of threads
+regardless of how many tasks arrive, so memory and scheduling stay predictable.
+A thread per task under load creates thousands of threads and spends more time
+switching than working.
+
+## What you'll be able to do
+
+- Compare thread-per-task, worker pool, pipeline, and fork–join on cost and shape.
+- Explain why a fixed pool bounds memory when a thread-per-task server does not.
+- Claim a task atomically so two workers never run the same one.
+- Keep order-dependent output on one thread so the result stays deterministic.
+
+<TheoryBlock label="Why it matters for C" title="The queue is shared, so the claim must be atomic">
+
+	The pool's only shared state is "which task is next". Everything else — the task's own data, its
+	result slot — belongs to one worker at a time. Getting the claim right is a two-instruction
+	critical section: read the counter, increment it, release the lock. Get it wrong and two workers
+	run the same task, which is module 14's race condition with a friendlier face.
+</TheoryBlock>
+
+<Eli5Block
+	topic="worker-pool"
+	football="Four kit men and a trolley of eight bags. Whichever kit man is free takes the next bag off the trolley and delivers it. Nobody is assigned a fixed bag, and no bag goes with two men, because the trolley has one queue and one person picks at a time. Finish all eight and they all go home."
+	money="Four cashiers and one queue of eight customers, with customers called to whichever till is free. No cashier owns a customer and no customer is served twice, because the calling is a single operation. Twenty customers would still mean four cashiers — the queue absorbs the load, not the staffing."
+/>
+
+## A fixed pool draining a fixed queue
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <pthread.h>
+#include <stdio.h>
+
+#define WORKERS 4
+#define TASKS 8
+
+/* A tiny fixed queue of independent tasks. This is the worker-pool model:
+   a small number of threads drain a larger number of jobs. */
+
+static int task_value[TASKS] = { 3, 1, 4, 1, 5, 9, 2, 6 };
+static int next_task = 0;
+static long result[TASKS];
+static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *worker(void *arg) {
+    (void)arg;
+
+    for (;;) {
+        pthread_mutex_lock(&queue_lock);
+        int slot = next_task;
+        if (slot < TASKS) {
+            next_task++;        /* claim the job while holding the lock */
+        }
+        pthread_mutex_unlock(&queue_lock);
+
+        if (slot >= TASKS) {
+            return NULL;        /* queue drained */
+        }
+
+        result[slot] = (long)task_value[slot] * task_value[slot];
+    }
+}
+
+int main(void) {
+    pthread_t pool[WORKERS];
+
+    for (int i = 0; i < WORKERS; i++) {
+        if (pthread_create(&pool[i], NULL, worker, NULL) != 0) {
+            fprintf(stderr, "could not create worker %d\n", i);
+            return 1;
+        }
+    }
+    for (int i = 0; i < WORKERS; i++) {
+        if (pthread_join(pool[i], NULL) != 0) {
+            fprintf(stderr, "could not join worker %d\n", i);
+            return 1;
+        }
+    }
+
+    /* Results land in slot order no matter which worker ran which task. */
+    long total = 0;
+    for (int i = 0; i < TASKS; i++) {
+        printf("task %d: %d squared is %ld\n", i, task_value[i], result[i]);
+        total += result[i];
+    }
+    printf("total of all squares = %ld\n", total);
+    return 0;
+}
+```
+
+`pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;` is the static initialiser,
+correct for a mutex with file scope. `pthread_mutex_init` is for one inside a
+struct or allocated at runtime.
+
+Compile with `-pthread`:
+
+```text
+gcc -std=c11 -Wall -Wextra -pthread pool.c -o pool
+```
+
+## Expected output
+
+```text
+task 0: 3 squared is 9
+task 1: 1 squared is 1
+task 2: 4 squared is 16
+task 3: 1 squared is 1
+task 4: 5 squared is 25
+task 5: 9 squared is 81
+task 6: 2 squared is 4
+task 7: 6 squared is 36
+total of all squares = 173
+```
+
+No "possible orderings" caveat here, and that is deliberate. The workers finish
+in an unpredictable order, but every line is printed by the **main** thread after
+every join, iterating `i` from 0. The output is a function of the task array, not
+of the schedule.
+
+The rule this generalizes to: keep the order-dependent part on one thread, and
+let the parallel part write into disjoint slots.
+
+## Common pitfalls
+
+### Claiming the task outside the lock
+
+```c
+int slot = next_task;          /* no lock */
+pthread_mutex_lock(&queue_lock);
+next_task++;
+pthread_mutex_unlock(&queue_lock);
+```
+
+Two workers read the same `next_task` before either increments, both take the
+same job, and one result overwrites the other. The claim must be read *and*
+incremented inside one critical section — that is what "atomic" means here.
+
+### Forgetting the `slot >= TASKS` check
+
+Without it, a worker that sees a drained queue still indexes `result[8]`, writing
+past the array. The check happens after the unlock, which is fine because `slot`
+is a local copy taken under the lock.
+
+### Using `pthread_cond_wait` when a busy check is enough
+
+A real pool blocks on a condition variable when the queue is empty instead of
+spinning. This program's queue is fixed and finite, so the worker can exit when
+drained. Adding a condition variable to a fixed queue is complexity with no
+benefit; adding it to an unbounded one is required.
+
+### Shrinking the pool to the number of tasks
+
+`WORKERS 8, TASKS 8` looks tidier and is worse: you get no benefit from the pool
+and one thread per task. The pool should be sized to the number of cores you want
+to occupy, not to the workload.
+
+<ExerciseCard
+	id="concurrency-sum-pool"
+	concept="work pool with partial sums"
+	prompt="Model the pool: one shared queue of eight tasks, four workers each claiming the next task from a counter, and each worker adding the claimed values into its own slot of a partial array. No global accumulator, because that is the race. Print exactly:&#10;&#10;worker 0 sum 8&#10;worker 1 sum 10&#10;worker 2 sum 6&#10;worker 3 sum 7&#10;total 31&#10;&#10;The values are 3, 1, 4, 1, 5, 9, 2, 6. Let the scheduler hand out one claim per worker per round so the distribution is round-robin, and compute the total by adding the partials afterwards."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define WORKERS 4&#10;#define TASKS 8&#10;&#10;static int task_value[TASKS] = &#123;3, 1, 4, 1, 5, 9, 2, 6&#125;;&#10;static int partial[WORKERS];&#10;static unsigned next_task;&#10;&#10;static int claim(void) &#123;&#10;    /* TODO: return the next task index, or -1 when the queue is empty */&#10;    return -1;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: rounds of claims, per-worker partials, then the total */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="worker 0 sum 8&#10;worker 1 sum 10&#10;worker 2 sum 6&#10;worker 3 sum 7&#10;total 31&#10;"
+	hints={[
+		'claim returns next_task and increments it, or -1 once all eight are taken. A worker only ever writes partial[its own index], which is why the workers never race with each other.',
+		'Loop rounds then workers: round 0 gives 3, 1, 4, 1 and round 1 gives 5, 9, 2, 6, so the partials are 8, 10, 6 and 7. Summing them at the end yields 31 no matter which worker got which task.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* A worker pool: tasks sit in one queue and each worker claims the next&#10; * index with an atomic fetch-and-add. Here the claim is a plain counter&#10; * because the workers run one after another, but the shape of the result&#10; * is the same: one partial total per worker, no shared accumulator. */&#10;&#10;#define WORKERS 4&#10;#define TASKS 8&#10;&#10;static int task_value[TASKS] = &#123;3, 1, 4, 1, 5, 9, 2, 6&#125;;&#10;static int partial[WORKERS];&#10;static unsigned next_task;&#10;&#10;static int claim(void) &#123;&#10;    if (next_task &gt;= TASKS) &#123;&#10;        return -1;&#10;    &#125;&#10;    return (int)next_task++;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* The scheduler hands out one claim per worker per round. Every task is&#10;     * taken exactly once, and no worker touches another worker's slot. */&#10;    for (int round = 0; round &lt; TASKS; round++) &#123;&#10;        for (size_t w = 0; w &lt; WORKERS; w++) &#123;&#10;            int claimed = claim();&#10;            if (claimed &gt;= 0) &#123;&#10;                partial[w] += task_value[claimed];&#10;            &#125;&#10;        &#125;&#10;    &#125;&#10;&#10;    for (size_t w = 0; w &lt; WORKERS; w++) &#123;&#10;        printf(&quot;worker %zu sum %d\n&quot;, w, partial[w]);&#10;    &#125;&#10;&#10;    int total = 0;&#10;    for (size_t w = 0; w &lt; WORKERS; w++) &#123;&#10;        total += partial[w];&#10;    &#125;&#10;    printf(&quot;total %d\n&quot;, total);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="concurrency-model-quiz-1"
+	question="A server spawns one thread per incoming request. Under a traffic spike it slows down badly even though the CPU is not saturated. Which concurrency model would you move it to, and what resource does that model bound?"
+	options={[
+		'Move to an event loop with a fixed number of workers: a thread per request bounds nothing, and under a spike the thread count and its stacks become the scarce resource',
+		'Move to one thread per core and no queue, because the CPU was not saturated so more parallelism cannot help',
+		'Move to a process per request, since separate processes use less memory than threads',
+		'Keep the thread-per-request model and raise the thread stack size, because the slowdown comes from small stacks'
+	]}
+	answer={0}
+	explanation="Thread per request makes concurrency proportional to load, so a spike multiplies threads and their stacks until scheduling and memory dominate; an event loop or fixed pool bounds the number of concurrent workers."
+/>
+
+<LectureReference lecture="Lecture 12 — Threads" slides="30–44" />

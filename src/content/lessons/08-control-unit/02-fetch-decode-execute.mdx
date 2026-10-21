@@ -1,0 +1,289 @@
+---
+id: 08-02-fetch-decode-execute
+title: Fetch, Decode, Execute
+module: 8
+lecture: 'Lecture 08 — Control & Microprogramming'
+slides: '19–34'
+estimatedMinutes: 18
+prerequisites: ['08-01-hardwired-vs-micro']
+tags: ['cpu', 'state-machine', 'cycles']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Three states, forever
+
+The processor's life is a loop with three beats. It reads the instruction
+the program counter points at — **fetch**. It works out what that
+instruction means — **decode**. It does it — **execute**. Then it does the
+whole thing again, ten million times a second on the machine you are
+reading this on.
+
+Everything else in this module is an optimisation on that loop. The
+states themselves do not change, and that is the point: a CPU is a state
+machine with three states and a counter.
+
+## What you'll be able to do
+
+- Model a CPU as a state machine over an instruction array.
+- Trace a program's execution one cycle at a time.
+- Explain why a jump makes the cycle count data-dependent.
+- Say what the program counter holds during each state.
+
+## The loop, precisely
+
+| State   | Reads              | Writes              | Advances PC? |
+| ------- | ------------------ | ------------------- | ------------ |
+| fetch   | memory at `pc`     | instruction register | no          |
+| decode  | instruction register | control signals    | no           |
+| execute | registers, memory  | registers, memory   | yes          |
+
+The program counter does not move during fetch. That surprises people:
+fetch *reads* from `pc`, it does not increment it. The increment happens
+in execute, alongside the instruction's real work, so that a jump can
+overwrite the counter before it is ever incremented. Do it in the wrong
+order and every jump lands one instruction too far.
+
+<TheoryBlock label="Why it matters for C" title="A loop costs what its branches say">
+
+	The cycle count of a C loop is not a property of the loop's body. It is
+	the body plus the compare and the branch, and on a modern core the
+	branch is often free while the compare is not. This is why a `for` loop
+	over an array and a `while` loop with an index can differ by 30% on the
+	same data — the compiler turns one into a pointer walk and leaves the
+	other with an explicit counter.
+</TheoryBlock>
+
+<Eli5Block
+	topic="fetch-decode-execute"
+	football="Fetch is the referee reading the next line of the rulebook. Decode is deciding which rule it is. Execute is blowing the whistle. The referee never does all three for one line at once, and the game only makes sense because the order never changes."
+	money="Fetch is taking the next receipt out of the pile. Decode is reading what it says. Execute is filing it in the right drawer. A clerk who filed before reading would produce a plausible-looking drawer and a wrong set of books."
+/>
+
+## A machine you can single-step
+
+The program below is a complete CPU for a six-instruction language. It
+has an accumulator, eight words of memory, and a program that adds two
+numbers and then counts down to zero with a conditional jump.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* A fetch-decode-execute machine over a fixed instruction array.
+ * Three states, one cycle function, and a program counter that can move
+ * backwards when a jump says so. That is the whole CPU model. */
+
+enum { FETCH, DECODE, EXECUTE, HALTED };
+static const char *const STATE_NAME[] = {"FETCH", "DECODE", "EXECUTE", "HALTED"};
+
+enum opcode { LD = 0, ST, ADD, SUB, JNZ, HLT };
+static const char *const OP_NAME[] = {"LD", "ST", "ADD", "SUB", "JNZ", "HLT"};
+
+struct instr {
+    uint8_t op;
+    uint8_t arg;  /* memory address, or jump target for JNZ */
+};
+
+struct cpu {
+    int state;
+    unsigned pc;
+    int acc;
+    unsigned cycles;
+    int memory[8];
+};
+
+/* acc = 1 + 2, then subtract 1 until acc is zero, store it, halt.
+ *   0 LD 0     acc = mem[0]      (1)
+ *   1 ADD 1    acc += mem[1]     (2 -> 3)
+ *   2 SUB 2    acc -= mem[2]     (-1 each pass)
+ *   3 JNZ 2    if acc != 0, jump back to 2
+ *   4 ST 3     mem[3] = acc
+ *   5 HLT */
+static const struct instr PROGRAM[] = {
+    {LD, 0}, {ADD, 1}, {SUB, 2}, {JNZ, 2}, {ST, 3}, {HLT, 0},
+};
+#define PROGRAM_LEN (sizeof PROGRAM / sizeof PROGRAM[0])
+
+/* Run exactly one cycle. Returns the instruction executed this cycle, or
+ * NULL for the fetch and decode cycles that produce no visible change. */
+static const struct instr *cycle(struct cpu *c) {
+    c->cycles++;
+    switch (c->state) {
+    case FETCH:
+        c->state = (c->pc < PROGRAM_LEN) ? DECODE : HALTED;
+        return NULL;
+    case DECODE:
+        c->state = EXECUTE;
+        return NULL;
+    case EXECUTE: {
+        const struct instr *in = &PROGRAM[c->pc];
+        c->pc++;
+        switch (in->op) {
+        case LD:  c->acc = c->memory[in->arg];  break;
+        case ST:  c->memory[in->arg] = c->acc;  break;
+        case ADD: c->acc += c->memory[in->arg]; break;
+        case SUB: c->acc -= c->memory[in->arg]; break;
+        case JNZ: if (c->acc != 0) { c->pc = in->arg; } break;
+        case HLT: c->state = HALTED; return in;
+        }
+        c->state = FETCH;
+        return in;
+    }
+    default:
+        return NULL;
+    }
+}
+
+int main(void) {
+    struct cpu cpu = {FETCH, 0, 0, 0, {1, 2, 1, 0, 0, 0, 0, 0}};
+
+    /* The first instruction, one state per line: this is the cycle the
+     * deck draws. */
+    printf("one instruction, three cycles:\n");
+    printf("  %-8s pc=%u acc=%d\n", STATE_NAME[cpu.state], cpu.pc, cpu.acc);
+    cycle(&cpu);
+    printf("  %-8s pc=%u acc=%d\n", STATE_NAME[cpu.state], cpu.pc, cpu.acc);
+    cycle(&cpu);
+    printf("  %-8s pc=%u acc=%d\n", STATE_NAME[cpu.state], cpu.pc, cpu.acc);
+
+    /* The rest, one line per executed instruction. */
+    printf("\n%-6s %-6s %-4s %-5s %-5s %s\n",
+           "cycle", "instr", "pc", "acc", "arg", "effect");
+    unsigned executed = 1;
+
+    for (unsigned guard = 0; guard < 200 && cpu.state != HALTED; guard++) {
+        const struct instr *in = cycle(&cpu);
+        if (in == NULL) {
+            continue;
+        }
+        executed++;
+        const char *effect = "";
+        if (in->op == JNZ) {
+            effect = (cpu.acc != 0) ? "jumped back" : "fell through";
+        } else if (in->op == ST) {
+            effect = "memory written";
+        } else if (in->op == HLT) {
+            effect = "stopped the clock";
+        }
+        printf("%-6u %-6s %-4u %-5d %u", cpu.cycles,
+               OP_NAME[in->op], cpu.pc, cpu.acc, (unsigned)in->arg);
+        if (effect[0] != '\0') {
+            printf("    %s", effect);
+        }
+        putchar('\n');
+    }
+
+    printf("\nhalted after %u cycles, %u instructions executed\n",
+           cpu.cycles, executed);
+    printf("acc = %d, mem[3] = %d\n", cpu.acc, cpu.memory[3]);
+    printf("cycles per instruction: %.2f\n",
+           (double)cpu.cycles / (double)executed);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+one instruction, three cycles:
+  FETCH    pc=0 acc=0
+  DECODE   pc=0 acc=0
+  EXECUTE  pc=0 acc=0
+
+cycle  instr  pc   acc   arg   effect
+3      LD     1    1     0
+6      ADD    2    3     1
+9      SUB    3    2     2
+12     JNZ    2    2     2    jumped back
+15     SUB    3    1     2
+18     JNZ    2    1     2    jumped back
+21     SUB    3    0     2
+24     JNZ    4    0     2    fell through
+27     ST     5    0     3    memory written
+30     HLT    6    0     0    stopped the clock
+
+halted after 30 cycles, 11 instructions executed
+acc = 0, mem[3] = 0
+cycles per instruction: 2.73
+```
+
+The `pc` column is the counter *after* the instruction ran, which is why
+the last line shows 6 — one past the end of a six-instruction program.
+
+The interesting number is `cycles per instruction: 2.73`, not 3. Two
+instructions in this run were wasted on fetch cycles that discovered the
+end of the program. In a longer program the ratio converges on exactly
+three, and a real processor gets it closer to one by overlapping the
+stages — which is the next lesson.
+
+`acc = 0, mem[3] = 0` confirms the countdown worked: 3, 2, 1, then zero,
+and the store happened after the loop exited.
+
+<ExerciseCard
+	id="m08-trace-jump"
+	concept="program counter control"
+	prompt="Add an unconditional JMP to the three-state machine and rewrite the countdown to use it. The program is: LD 0 (memory[0] holds 3), JMP 3, LD 1, SUB 1, JNZ 3, ST 2, HLT. Print one line per executed instruction in exactly this form, three cycles per instruction:&#10;&#10;cycle=3 LD pc=1 acc=3&#10;&#10;That is the cycle counter, the mnemonic, the pc after any jump has been applied, and the accumulator. End with:&#10;&#10;cycles=30 instructions=10&#10;multiple of three: yes&#10;&#10;The &quot;multiple of three&quot; field is `yes` only when the cycle count is exactly three times the number of executed instructions. Apply a taken jump by overwriting the pc after its single increment, never by incrementing twice."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum opcode &#123; LD, ST, ADD, SUB, JNZ, JMP, HLT &#125;;&#10;&#10;struct instr &#123;&#10;    enum opcode op;&#10;    unsigned arg;&#10;&#125;;&#10;&#10;/* 0 LD 0, 1 JMP 3, 2 LD 1, 3 SUB 1, 4 JNZ 3, 5 ST 2, 6 HLT */&#10;static const struct instr PROGRAM[] = &#123;&#10;    /* TODO: fill in the seven instructions */&#10;    &#123;HLT, 0&#125;,&#10;&#125;;&#10;&#10;struct cpu &#123;&#10;    unsigned pc;&#10;    int acc;&#10;    unsigned cycles;&#10;    int memory[8];&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: fetch the instruction at pc, increment pc once, add three&#10;       cycles, then let JMP and JNZ overwrite the counter */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="cycle=3 LD pc=1 acc=3&#10;cycle=6 JMP pc=3 acc=3&#10;cycle=9 SUB pc=4 acc=2&#10;cycle=12 JNZ pc=3 acc=2&#10;cycle=15 SUB pc=4 acc=1&#10;cycle=18 JNZ pc=3 acc=1&#10;cycle=21 SUB pc=4 acc=0&#10;cycle=24 JNZ pc=5 acc=0&#10;cycle=27 ST pc=6 acc=0&#10;cycle=30 HLT pc=7 acc=0&#10;cycles=30 instructions=10&#10;multiple of three: yes&#10;mem[2]=0&#10;"
+	hints={[
+		'Increment the pc once at the top of the execute step so a sequential program just works, then let a taken JMP or JNZ assign the target afterwards; incrementing again after the jump is what skips a target.',
+		'The LD at pc 2 never runs: JMP sets pc to 3, the SUB/JNZ pair loops three times (3, 2, 1, 0), the final JNZ falls through to the ST at pc 5, and the run is 10 instructions at 30 cycles.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum opcode &#123; LD, ST, ADD, SUB, JNZ, JMP, HLT &#125;;&#10;static const char *const OP_NAME[] = &#123;&quot;LD&quot;,  &quot;ST&quot;,  &quot;ADD&quot;, &quot;SUB&quot;,&#10;                                     &quot;JNZ&quot;, &quot;JMP&quot;, &quot;HLT&quot;&#125;;&#10;&#10;struct instr &#123;&#10;    enum opcode op;&#10;    unsigned arg;&#10;&#125;;&#10;&#10;static const struct instr PROGRAM[] = &#123;&#10;    &#123;LD, 0&#125;, &#123;JMP, 3&#125;, &#123;LD, 1&#125;, &#123;SUB, 1&#125;, &#123;JNZ, 3&#125;, &#123;ST, 2&#125;, &#123;HLT, 0&#125;,&#10;&#125;;&#10;#define PROGRAM_LEN (sizeof PROGRAM / sizeof PROGRAM[0])&#10;&#10;struct cpu &#123;&#10;    unsigned pc;&#10;    int acc;&#10;    unsigned cycles;&#10;    int memory[8];&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    struct cpu cpu = &#123;0, 0, 0, &#123;3, 1, 0, 0, 0, 0, 0, 0&#125;&#125;;&#10;    unsigned executed = 0;&#10;&#10;    while (cpu.pc &lt; PROGRAM_LEN) &#123;&#10;        const struct instr *in = &amp;PROGRAM[cpu.pc];&#10;        cpu.pc++;            /* the one and only increment */&#10;        cpu.cycles += 3u;    /* fetch, decode, execute */&#10;        executed++;&#10;&#10;        switch (in-&gt;op) &#123;&#10;        case LD: cpu.acc = cpu.memory[in-&gt;arg]; break;&#10;        case ST: cpu.memory[in-&gt;arg] = cpu.acc; break;&#10;        case ADD: cpu.acc += cpu.memory[in-&gt;arg]; break;&#10;        case SUB: cpu.acc -= cpu.memory[in-&gt;arg]; break;&#10;        case JMP: cpu.pc = in-&gt;arg; break;&#10;        case JNZ:&#10;            if (cpu.acc != 0) &#123;&#10;                cpu.pc = in-&gt;arg;&#10;            &#125;&#10;            break;&#10;        case HLT: cpu.pc = PROGRAM_LEN; break;&#10;        &#125;&#10;&#10;        printf(&quot;cycle=%u %s pc=%u acc=%d\n&quot;, cpu.cycles, OP_NAME[in-&gt;op],&#10;               cpu.pc, cpu.acc);&#10;        if (in-&gt;op == HLT) &#123;&#10;            break;&#10;        &#125;&#10;    &#125;&#10;&#10;    printf(&quot;cycles=%u instructions=%u\n&quot;, cpu.cycles, executed);&#10;    printf(&quot;multiple of three: %s\n&quot;,&#10;           (cpu.cycles % 3u == 0u &amp;&amp; executed == cpu.cycles / 3u) ? &quot;yes&quot;&#10;                                                                 : &quot;no&quot;);&#10;    printf(&quot;mem[2]=%d\n&quot;, cpu.memory[2]);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Incrementing the program counter during fetch
+
+If fetch does `c->pc++`, a jump instruction that overwrites `pc` in
+execute has already had its target incremented. The program runs one
+instruction past every jump target, which looks like a subtle arithmetic
+bug rather than a control bug. Increment in execute, after the jump has
+had its chance.
+
+### Forgetting the halt state
+
+Without a `HLT`, a program that runs off the end of the array reads
+whatever follows in memory. The model above checks `pc < PROGRAM_LEN`
+during fetch and halts. Real machines have no such check — they execute
+whatever bytes are at that address, which is how a bad jump corrupts a
+program in ways that look like data errors.
+
+### Counting cycles as three per instruction
+
+It is three only when nothing goes wrong. Fetching past the end, a
+branch, and a cache miss all add cycles. The `2.73` above is not a bug in
+the division; it is what an honest cycle count looks like on a short
+program.
+
+### Confusing the accumulator with memory
+
+`acc` is a register — one value inside the CPU. `memory` is an array
+outside it. `LD` copies memory into the accumulator, `ST` copies back.
+Forgetting the distinction makes `LD 0` look like it should change
+`mem[0]`, which it never does.
+
+<QuizCard
+	id="m08-quiz-pc"
+	question="An instruction is fetched from address 100 and it is a jump to 500. At which point in the fetch-decode-execute cycle is the program counter set to 500, and what would the value be if the increment happened during fetch?"
+	options={[
+		'During execute: the counter becomes 500 there. If the increment happened during fetch, the pc would already be 101 when the jump is applied, and jumps would land one instruction past every target',
+		'During fetch: the pc is set to 500 while the instruction is being read, and an increment in execute would then make it 501',
+		'During decode: the pc becomes 500 as the target is recognised, and moving the increment to fetch would leave it at exactly 500',
+		'Only at the start of the next fetch, so both designs end up at 500 and the ordering makes no observable difference'
+	]}
+	answer={0}
+	explanation="Fetch reads the instruction at 100 and execute is the stage that knows the jump is taken, so the pc is overwritten there; incrementing during fetch would make the jump operate on 101 instead of 100 and shift every target by one."
+/>
+
+<LectureReference lecture="Lecture 08 — Control & Microprogramming" slides="19–34" />

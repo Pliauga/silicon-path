@@ -1,0 +1,399 @@
+---
+id: 16-02-paging
+title: Paging
+module: 16
+lecture: 'Lecture 16 — Memory Management'
+slides: '15–29'
+estimatedMinutes: 20
+prerequisites: ['16-01-contiguous']
+tags: ['paging', 'frames', 'tlb']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Fixed-size units, everywhere
+
+Paging replaces "one contiguous run per request" with a fixed unit. The
+address space is divided into **pages** of a constant size — 4096 bytes
+on almost everything you will touch — and physical memory into
+**frames** of the same size. Any page can go in any frame. A **page
+table** records which.
+
+The change looks small and removes the previous lesson's problem
+outright. A program's pages no longer need to be adjacent in physical
+memory, because the table translates each page independently. External
+fragmentation disappears: every free frame is 4096 bytes and can hold any
+page. What replaces it is internal fragmentation — a program that needs
+1 byte gets a whole page — and a translation cost on every memory
+access.
+
+That trade is the architecture: **pay on every access, save on the
+layout**. And the cost is why the TLB exists, why page size is a tunable,
+and why huge pages are worth a kernel patch.
+
+## What you'll be able to do
+
+- Split a virtual address into page number and offset by hand.
+- Compute a physical address from a page table entry.
+- Predict the waste of any allocation size using the round-up rule.
+- Read a struct's layout as the same rounding rule in miniature.
+
+## The address split
+
+A virtual address is not one number to the hardware. It is two fields
+packed together: the high bits are the **virtual page number (VPN)**, the
+low bits are the **offset within the page**. With 4096-byte pages the
+offset needs 12 bits, because 2^12 = 4096.
+
+```text
+virtual address 0x00001ABC
+                |-------|---------|
+                  VPN 1   offset 0xABC = 2748
+```
+
+The translation is two steps:
+
+1. Look up the VPN in the page table to get a **frame number**.
+2. Concatenate the frame number with the offset.
+
+Adding is not the right mental model — the offset passes through
+unchanged. Frame 7 with offset 2748 is physical address
+`7 * 4096 + 2748` = `0x07ABC`. The low twelve bits of the virtual address
+and of the physical address are identical, always, which is exactly why
+pages are aligned to their own size.
+
+| Virtual    | VPN | Offset | Frame | Physical   |
+| ---------- | --- | ------ | ----- | ---------- |
+| `0x00001ABC` | 1 | 2748 | 7 | `0x00007ABC` |
+| `0x00001000` | 1 | 0    | 7 | `0x00007000` |
+| `0x00000010` | 0 | 16   | not resident | page fault |
+| `0x00002ABC` | 2 | 2748 | 2 | `0x00002ABC` |
+
+The fourth row is a coincidence worth naming so it does not become a
+misconception: VPN 2 maps to frame 2 here, so the numbers agree. Change
+one entry and the physical address changes without the program noticing.
+The mapping is data, not arithmetic.
+
+The third row is the interesting one. A valid bit of zero means the page
+is not in memory at all, and the hardware raises a fault. That is not an
+error, it is the mechanism — the next lesson is entirely about it.
+
+<TheoryBlock label="Why it matters for C" title="Alignment is the page rule in miniature">
+
+	The compiler applies the same rounding to a struct. Every member must
+	start at an offset that is a multiple of its own alignment, because a
+	misaligned `int` would straddle two words. So a `char` followed by an
+	`int` costs 8 bytes, not 5: three bytes of padding, then the int. The
+	struct is then padded so an *array* keeps the promise for element 1 —
+	padding at the end is not decoration, it is what makes `p[1]` legal.
+	Page size is the same idea one level up, and it is not a coincidence
+	that 4096 is a multiple of every fundamental alignment.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="paging"
+	football="The pitch is divided into identical grids before anyone arrives. A team needing one square metre gets a whole grid square and leaves the rest empty, and the groundskeeper never hunts for a run of adjacent squares, because a team's squares can sit anywhere. Every square is the same size, so any square fits anything."
+	money="A warehouse is divided into identical pallet slots. A shop that orders a single box gets a whole slot, wasting most of it, and the manager never has to search for a run of adjacent free slots. The price of never searching is that the slot is the minimum unit, so small orders pay for space they do not use."
+/>
+
+## Translating and rounding in C
+
+The program below does two things with one rule. First it translates four
+virtual addresses through a hardcoded four-entry page table. Then it
+applies the same round-up to a list of allocation sizes, and finally to a
+struct. Offsets are printed rather than raw addresses on purpose: the
+offsets are identical on every machine, the addresses are not.
+
+```c
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
+/* Paging rounds memory up to a fixed unit, and so does the compiler.
+ *
+ * A page is the smallest thing the memory system can give you: ask for
+ * 1 byte and you get 4096, with 4095 wasted inside your own page. That is
+ * internal fragmentation, and it is the same rule the compiler applies
+ * to a struct -- a char followed by an int costs 8 bytes, not 5. Seeing
+ * both at once is the point of this program. */
+
+#define PAGE_BYTES 4096u
+#define PAGE_SHIFT 12u
+#define PAGES       4u   /* entries in this process's page table */
+#define FRAMES     16u  /* frames of physical memory in the machine */
+#define HEAP_BYTES (PAGE_BYTES * FRAMES)
+
+struct request {
+    const char *name;
+    unsigned bytes;
+};
+
+struct padded {
+    char tag;
+    int  value;
+    char flag;
+};
+
+static unsigned pages_for(unsigned bytes)
+{
+    /* Round up. Integer division alone would round down and hand out
+     * one page too few for any size that is not a multiple of the page. */
+    return (bytes + PAGE_BYTES - 1u) / PAGE_BYTES;
+}
+
+/* Translate a virtual address through the page table. Returns -1 for a
+ * page that is not resident, which the hardware reports as a fault. */
+static long translate(const long table[PAGES], uint32_t virtual_addr)
+{
+    uint32_t page = virtual_addr / PAGE_BYTES;
+    uint32_t offset = virtual_addr % PAGE_BYTES;
+
+    printf("virtual 0x%08X -> page %u, offset %u\n",
+           virtual_addr, page, offset);
+
+    if (table[page] == -1) {
+        printf("  page %u is not in memory: page fault\n\n", page);
+        return -1;
+    }
+
+    uint32_t physical = (uint32_t)table[page] * PAGE_BYTES + offset;
+    printf("  frame %ld, physical 0x%08X\n\n", table[page], physical);
+    return (long)physical;
+}
+
+int main(void)
+{
+    /* A four-entry page table, one entry per virtual page. -1 means
+     * "not resident". The virtual numbers and the frame numbers are
+     * unrelated on purpose: the whole point is that they need not match. */
+    static const long table[PAGES] = {-1, 7, 2, 9};
+
+    printf("page size %u bytes, %u frames of physical memory\n",
+           PAGE_BYTES, FRAMES);
+    printf("this process has %u virtual pages = %u bytes of address space\n\n",
+           PAGES, PAGES * PAGE_BYTES);
+
+    translate(table, 0x00001ABCu);
+    translate(table, 0x00001000u);
+    translate(table, 0x00000010u);
+    translate(table, 0x00002ABCu);
+
+    /* Rounding an allocation up to whole pages. */
+    const struct request requests[] = {
+        {"counter",     4u},
+        {"row",        64u},
+        {"frame",    4000u},
+        {"buffer",   4096u},
+        {"table",    4097u},
+        {"image",   14000u},
+    };
+    const int n = (int)(sizeof requests / sizeof requests[0]);
+
+    printf("six requests, each rounded up to whole pages:\n");
+    printf("%-10s %8s %6s %8s %12s\n",
+           "request", "bytes", "pages", "granted", "wasted");
+    unsigned used = 0;
+    for (int i = 0; i < n; i++) {
+        unsigned pages = pages_for(requests[i].bytes);
+        unsigned granted = pages * PAGE_BYTES;
+        printf("%-10s %8u %6u %8u %12u\n",
+               requests[i].name, requests[i].bytes, pages, granted,
+               granted - requests[i].bytes);
+        used += pages;
+    }
+    printf("\nthese requests need %u frames of the %u; %u would be free\n",
+           used, FRAMES, FRAMES - used);
+
+    /* Say the same thing about structs: each member starts at a multiple
+     * of its own alignment, so the gaps are the compiler's pages. */
+    printf("\nstruct padded is %zu bytes with alignment %zu\n",
+           sizeof(struct padded), _Alignof(struct padded));
+    printf("  tag   offset %zu\n", offsetof(struct padded, tag));
+    printf("  value offset %zu\n", offsetof(struct padded, value));
+    printf("  flag  offset %zu\n", offsetof(struct padded, flag));
+    size_t members = sizeof(char) + sizeof(int) + sizeof(char);
+    printf("members need %zu bytes, the struct takes %zu, so %zu are padding\n\n",
+           members, sizeof(struct padded), sizeof(struct padded) - members);
+
+    printf("the largest alignment any type requires here is %zu bytes\n",
+           _Alignof(max_align_t));
+    printf("a struct inside a page is safe because %u %% %zu == %zu\n",
+           PAGE_BYTES, _Alignof(max_align_t),
+           (size_t)PAGE_BYTES % _Alignof(max_align_t));
+    /* Division and shifting agree only because the page size is a power
+     * of two. Check it rather than assert it. */
+    unsigned mismatches = 0;
+    for (uint32_t a = 0; a < HEAP_BYTES; a++) {
+        if ((a / PAGE_BYTES) != (a >> PAGE_SHIFT)) {
+            mismatches++;
+        }
+    }
+    printf("checked %u addresses: %u where >> %u disagrees with / %u\n",
+           HEAP_BYTES, mismatches, PAGE_SHIFT, PAGE_BYTES);
+    printf("they agree here only because %u is a power of two\n", PAGE_BYTES);
+
+    printf("one page table entry takes %zu bytes; %u entries take %zu\n",
+           sizeof(long), PAGES, sizeof(long) * PAGES);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+page size 4096 bytes, 16 frames of physical memory
+this process has 4 virtual pages = 16384 bytes of address space
+
+virtual 0x00001ABC -> page 1, offset 2748
+  frame 7, physical 0x00007ABC
+
+virtual 0x00001000 -> page 1, offset 0
+  frame 7, physical 0x00007000
+
+virtual 0x00000010 -> page 0, offset 16
+  page 0 is not in memory: page fault
+
+virtual 0x00002ABC -> page 2, offset 2748
+  frame 2, physical 0x00002ABC
+
+six requests, each rounded up to whole pages:
+request       bytes  pages  granted       wasted
+counter           4      1     4096         4092
+row              64      1     4096         4032
+frame          4000      1     4096           96
+buffer         4096      1     4096            0
+table          4097      2     8192         4095
+image         14000      4    16384         2384
+
+these requests need 10 frames of the 16; 6 would be free
+
+struct padded is 12 bytes with alignment 4
+  tag   offset 0
+  value offset 4
+  flag  offset 8
+members need 6 bytes, the struct takes 12, so 6 are padding
+
+the largest alignment any type requires here is 8 bytes
+a struct inside a page is safe because 4096 % 8 == 0
+checked 65536 addresses: 0 where >> 12 disagrees with / 4096
+they agree here only because 4096 is a power of two
+one page table entry takes 8 bytes; 4 entries take 32
+```
+
+Three parts of that output deserve a minute each.
+
+**The translations.** `0x1ABC` and `0x1000` both have VPN 1, so they both
+land in frame 7 — and notice that `0x07ABC` and `0x07000` ends with the
+same three hex digits as their virtual counterparts. That is the offset
+passing through untouched. `0x0010` maps to page 0, the table says
+minus one, and the fault is reported rather than guessed at.
+
+**`table`, 4097 bytes, 8192 granted.** One byte over a page boundary
+costs an entire extra page and the waste is 4095 — almost exactly one
+page. The waste of any size is `(page - size % page) % page`, so a
+structure of 4097 bytes is a structure that wanted to be 4096. Compare
+`buffer`, exactly 4096, which wastes nothing. These two rows are the
+same lesson the allocator taught in the previous lesson, with a coarser
+unit.
+
+**`struct padded`, 12 bytes, 6 of them padding.** The members need 6
+bytes. `tag` sits at 0, `value` cannot start at 1 because it must be
+4-byte aligned, so it goes at 4, and `flag` lands at 8. The struct ends
+at 9 and is rounded to 12 so that `struct padded p[2]` puts element 1 at
+offset 12 — a multiple of 4. Reorder the same three members as
+`int, char, char` and the struct is 8 bytes with 2 bytes of padding,
+purely because the largest-aligned member came first.
+
+The last four lines connect the levels. `max_align_t` is 8 bytes here and
+4096 % 8 is 0, so any struct at any offset within a page is properly
+aligned without a check. The shift comparison is a deliberate trap: it
+passes 65536 times, and it would be wrong on a machine with, say, a
+3 KB page, because the equivalence between `>> 12` and `/ 4096` holds
+only for powers of two.
+
+<ExerciseCard
+	id="m16-page-split"
+	concept="page number and offset"
+	prompt="Compute the page number and offset twice: once with division and modulo, once with a shift and a mask. Compare them for every address from 0 to 20000 inclusive at page sizes 4096, 2048 and 3000, using shift 12 for 4096 and for 3000 and shift 11 for 2048 (the shift a power-of-two implementation would pick). Count an address when either the page number or the offset disagrees. Print exactly:&#10;page 4096 shift 12 disagreements 0&#10;page 2048 shift 11 disagreements 0&#10;page 3000 shift 12 disagreements 17001&#10;Nothing else. The third line is the point: a mask is only a division when the divisor is a power of two."
+	starter="#include &lt;stdio.h&gt;&#10;#include &lt;stdint.h&gt;&#10;&#10;/* TODO: page_of() and offset_of() using division, then the same&#10; * two using shifts and masks, then compare them in a loop. */&#10;&#10;int main(void) &#123;&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="page 4096 shift 12 disagreements 0&#10;page 2048 shift 11 disagreements 0&#10;page 3000 shift 12 disagreements 17001&#10;"
+	hints={[
+		'A mask such as shift 12 gives a divisor of 4096, so it can only match a division by 4096; for 2048 the shift has to be 11.',
+		'For a page of 3000 bytes the two methods agree only for addresses below 3000, so 20001 minus 3000 addresses disagree: 17001.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;/* Division and modulo are correct for any page size. Shifts and masks are&#10; * only correct when the size is a power of two, and the third case shows&#10; * what happens when somebody assumes the mask anyway. */&#10;&#10;static uint32_t page_div(uint32_t addr, uint32_t size) &#123;&#10;    return addr / size;&#10;&#125;&#10;&#10;static uint32_t offset_div(uint32_t addr, uint32_t size) &#123;&#10;    return addr % size;&#10;&#125;&#10;&#10;static uint32_t page_shift(uint32_t addr, unsigned shift) &#123;&#10;    return addr &gt;&gt; shift;&#10;&#125;&#10;&#10;static uint32_t offset_mask(uint32_t addr, unsigned shift) &#123;&#10;    return addr &amp; ((1u &lt;&lt; shift) - 1u);&#10;&#125;&#10;&#10;static unsigned disagreements(uint32_t size, unsigned shift) &#123;&#10;    unsigned count = 0;&#10;&#10;    for (uint32_t addr = 0; addr &lt;= 20000u; addr++) &#123;&#10;        uint32_t pd = page_div(addr, size);&#10;        uint32_t od = offset_div(addr, size);&#10;        uint32_t ps = page_shift(addr, shift);&#10;        uint32_t os = offset_mask(addr, shift);&#10;&#10;        if (pd != ps || od != os) &#123;&#10;            count++;&#10;        &#125;&#10;    &#125;&#10;    return count;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    printf(&quot;page 4096 shift 12 disagreements %u\n&quot;, disagreements(4096u, 12u));&#10;    printf(&quot;page 2048 shift 11 disagreements %u\n&quot;, disagreements(2048u, 11u));&#10;    printf(&quot;page 3000 shift 12 disagreements %u\n&quot;, disagreements(3000u, 12u));&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Rounding down when allocating pages
+
+`bytes / PAGE_BYTES` truncates, so 4097 becomes 1 page and one byte of
+the allocation falls outside what was granted. Use the ceiling division
+`(bytes + PAGE_BYTES - 1) / PAGE_BYTES` and test it at the boundaries:
+0, 1, 4095, 4096, 4097. The 4097 case is the one that catches a missing
+`- 1`.
+
+### Adding instead of concatenating
+
+The physical address is frame * 4096 + offset, not frame + offset.
+Because both operations produce a number, the wrong one runs happily and
+returns a plausible address that reads the wrong frame. Writing the
+translation as shifting the frame number left by 12 and OR-ing the
+offset makes the structure visible and harder to get wrong.
+
+### Assuming consecutive pages are consecutive frames
+
+A program that allocates one big block and walks through it will touch
+many pages, and nothing guarantees those pages land in ascending frames.
+This is invisible in normal code and very visible in code that assumes
+it — for example, a driver computing a physical address by adding an
+offset to the frame of the first page.
+
+### Using bit shifts instead of division
+
+On a 4 KB page system, `addr >> 12` and `addr / 4096` compile to the same
+instruction. On a non-power-of-two page size they diverge, and the shift
+version is silently wrong. Division and modulo express the intent; let
+the compiler choose the instruction. The comparison loop at the end of
+the program is there to show that agreement is a property of the page
+size, not of the notation.
+
+### Assuming the page table is small
+
+The entry in this program takes 8 bytes and there are four of them. Scale
+up: a 4 GB address space with 4 KB pages has 1048576 entries, so the
+table alone is 8 MB per process, and it must be consulted on every
+access. Multi-level tables, inverted tables, and the TLB all exist to
+make that number smaller, and none of them exists in the toy above.
+
+### Comparing `sizeof` across machines
+
+`sizeof(struct padded)` is 8 or 12 depending on the ABI, and both are
+correct implementations of C11. Code that assumes a specific value is not
+depending on alignment, it is guessing at it. Use `offsetof` and
+`_Alignof` — both computed by the same compiler that laid the struct out.
+
+<QuizCard
+	id="m16-quiz-page"
+	question="A 64-bit process on a machine with 4 KB pages uses 4-level page tables of 512 entries each. How many bits does each level consume, and why does the answer make the top level small enough to keep in memory?"
+	options={[
+		'Nine bits per level. Four levels plus the 12-bit page offset cover 48 of the 64 address bits, so each table is one 4 KB page and the top level alone maps 512 GB — small enough to stay resident.',
+		'Sixteen bits per level. Four levels plus the 12-bit offset use all 64 bits, and the top level is a 64 KB table.',
+		'Nine bits per level, but the top level must be 2 MB because it covers the whole 64-bit address space in one table.',
+		'Twelve bits per level, matching the page offset, which is why every level is exactly one page in size.'
+	]}
+	answer={0}
+	explanation="512 entries is 2^9, so each level consumes 9 address bits; four levels plus the 12-bit offset reach 48 bits, which is why x86-64 cannot address the full 64 bits with four levels. Every table is 512 entries of 8 bytes, one 4 KB page, and the top level spans 2^39 bytes of user space with a single page of overhead."
+/>
+
+<LectureReference lecture="Lecture 16 — Memory Management" slides="15–29" />

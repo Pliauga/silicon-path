@@ -1,0 +1,198 @@
+---
+id: 14-01-race-conditions
+title: Race Conditions
+module: 14
+lecture: 'Lecture 14 — Synchronization'
+slides: '2–15'
+estimatedMinutes: 17
+prerequisites: ['13-03-multicore']
+tags: ['concurrency', 'race-conditions', 'threads']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Three steps wearing one disguise
+
+`counter++` looks like one operation. It is three: load `counter` from memory
+into a register, add one to the register, store the register back to memory.
+Between the load and the store, another thread can run the same three steps on
+the same address, and one of the two updates disappears.
+
+That window is the whole problem. A **race condition** is a program whose result
+depends on the order in which concurrent operations happen to interleave — and
+the interleaving is chosen by the scheduler, the cache, and the phase of the
+moon. Nothing in the C standard forbids any ordering, so any ordering that
+loses an update is a legal execution.
+
+The **critical section** is the span of code that must not interleave: the load,
+the add, and the store, all three. Protecting two of them is not protecting the
+section.
+
+## What you'll be able to do
+
+- Break `counter++` into its three steps and name the window between them.
+- Define a race condition and a critical section in terms of that window.
+- Explain why `volatile` does not fix a lost update.
+- Recognise a lost-update bug by its symptom rather than by a crash.
+
+<TheoryBlock label="Why it matters for C" title="The compiler is allowed to surprise you — and it under-reports">
+
+	`counter++` on a plain `long` is undefined behaviour the moment two threads touch it without
+	synchronization. Not "unspecified value" — undefined behaviour, which means the optimizer may
+	assume it never happens. That is why a racy program can pass on one machine, fail on another, and
+	change behaviour when you add a `printf`. It is also why the fix has to be a real primitive
+	(mutex, atomic) rather than a `volatile` qualifier, which only stops some caching and provides
+	no mutual exclusion at all.
+</TheoryBlock>
+
+## The failure, demonstrated
+
+Four threads each increment the same global `long` half a million times. Two
+million increments, so the answer should be 2000000.
+
+<Eli5Block
+	topic="race-condition"
+	football="Four players each keep their own goal tally, then every ten minutes they walk over and copy it onto one shared scoreboard — read the number, add their own, write it back. When two arrive together both read the same old number, and one total vanishes from the scoreboard for good."
+	money="Two people withdraw from the same account at the same instant. Both check the balance, both see 500, both withdraw 400, both write back 100. The bank believed it held 500 and paid out 800. Nothing was corrupt — every step was correct in isolation — but the interleaving lost the first withdrawal entirely."
+/>
+
+```c
+/* Four threads share one counter, and no lock protects it. */
+#include <pthread.h>
+#include <stdio.h>
+
+#define THREADS 4
+#define ITERATIONS 500000
+
+static long counter = 0;
+
+static void *bump(void *arg) {
+    (void)arg;
+    for (int i = 0; i < ITERATIONS; i++) {
+        counter++;              /* load, add, store — three steps, not one */
+    }
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t[THREADS];
+
+    for (int i = 0; i < THREADS; i++) {
+        if (pthread_create(&t[i], NULL, bump, NULL) != 0) {
+            fprintf(stderr, "could not create thread %d\n", i);
+            return 1;
+        }
+    }
+    for (int i = 0; i < THREADS; i++) {
+        pthread_join(t[i], NULL);
+    }
+
+    printf("counter  = %ld\n", counter);
+    printf("expected = %d\n", THREADS * ITERATIONS);
+    return 0;
+}
+```
+
+Pthreads are POSIX, not ISO C. macOS and Linux ship them; Windows does not, so
+this program does not build there. Compile with the thread flag and the standard
+warning set:
+
+```text
+gcc -std=c11 -Wall -Wextra -pthread race.c -o race
+./race
+```
+
+## Expected output
+
+This program is not deterministic, and that is the point. One run on this machine
+printed:
+
+```text
+counter  = 555229
+expected = 2000000
+```
+
+**Your run will print a different number, and it may be lower.** Repeated runs
+on this machine landed everywhere between 500470 and 822234 — always under the
+expected total, never the same twice — because each core's cache holds its own
+copy of `counter` and they overwrite each other in blocks. Run it ten times and
+you get ten answers. Run it on a single-core machine and it may well print
+2000000, which is the most dangerous outcome of all: the bug is still there and
+now you believe it is fixed.
+
+Notice what the program does *not* do. It does not crash. It does not print
+garbage. It reports a plausible number slightly lower than expected, which is
+exactly the kind of result that survives code review.
+
+## Common pitfalls
+
+### Believing `volatile` fixes it
+
+`volatile` tells the compiler the value may change outside the program's control,
+so it cannot keep it in a register across statements. It says nothing about
+atomicity, and it does not stop two threads from interleaving their load, add,
+and store. Adding `volatile` to `counter` above produces a program that still
+loses updates. Mutual exclusion needs a mutex or an atomic type.
+
+### Protecting part of the critical section
+
+Locking the read and unlocking before the write leaves the window open. A common
+shape is a lock around a check, then work done outside the lock:
+
+```c
+if (count > 0) {              /* check */
+    take_from_buffer();       /* use — the buffer may be empty by now */
+}
+```
+
+The check and the use must be inside the same critical section, or another
+thread can slip between them.
+
+### Testing on one core and calling it verified
+
+A single-core machine serializes threads more often, so a racy program can pass
+thousands of runs. The C abstract machine has no cores; the race is real on every
+conforming implementation. Treat "I could not reproduce it" as no evidence.
+
+### Assuming the lost updates are evenly spread
+
+They are not. The numbers cluster because the cache line ping-pongs in bursts:
+one core holds the line for a while, updates freely, then the next core takes it.
+The result looks like a plausible throughput measurement, not like corruption,
+which is why this bug is found in production rather than in testing.
+
+<ExerciseCard
+	id="race-window"
+	concept="lost update"
+	prompt="Real threads cannot run in this sandbox, so model the race arithmetically: two workers each perform 1000 increments of a shared long counter, every increment is four micro-steps (load, wait, add, store), and the scheduler gives each worker three micro-steps before switching. Run it once with zero wait steps and once with two. Print exactly:&#10;attempted increments: 2000&#10;no delay: counter 2000 lost 0&#10;with delay: counter 1000 lost 1000&#10;locked: counter 2000 lost 0&#10;The last line is the count a mutex would give, printed for comparison. Nothing else."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;/* No threads here: model each increment as four micro-steps&#10; * (load, wait, add, store) and switch workers every three steps. */&#10;&#10;#define THREADS 2&#10;#define ITER 1000&#10;#define SLICE 3&#10;&#10;struct worker &#123;&#10;    long acc;&#10;    int phase;   /* 0 load, 1 wait, 2 add, 3 store */&#10;    int waiting;&#10;    int left;&#10;&#125;;&#10;&#10;static void run(int delay, long *counter) &#123;&#10;    struct worker w[THREADS] = &#123;&#123;0, 0, 0, ITER&#125;, &#123;0, 0, 0, ITER&#125;&#125;;&#10;    int done = 0;&#10;&#10;    *counter = 0;&#10;    while (done &lt; THREADS) &#123;&#10;        /* TODO: give each worker SLICE micro-steps in turn, advance its&#10;           phase, and count it done when left reaches 0 */&#10;    &#125;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    long target = (long)THREADS * ITER;&#10;    long racy = 0;&#10;    long slow = 0;&#10;&#10;    run(0, &amp;racy);&#10;    run(2, &amp;slow);&#10;    /* TODO: print the four lines */&#10;    (void)racy;&#10;    (void)slow;&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="attempted increments: 2000&#10;no delay: counter 2000 lost 0&#10;with delay: counter 1000 lost 1000&#10;locked: counter 2000 lost 0&#10;"
+	hints={[
+		'Interleaving is the whole bug: one worker loads the counter, the other loads the same value, and whichever stores last erases the other increment. With three steps per slice a whole increment still fits, so zero delay loses nothing.',
+		'Two wait steps stretch one increment to five micro-steps, so the switch lands inside it and exactly half the increments vanish: 1000 of 2000.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* There are no threads in this sandbox, so the race is modelled instead of&#10; * run: each increment is four micro-steps (load, wait, add, store) and the&#10; * scheduler gives each thread three steps before switching. Two threads&#10; * interleaving inside one increment is exactly a lost update. */&#10;&#10;#define THREADS 2&#10;#define ITER 1000&#10;#define SLICE 3&#10;&#10;struct thread &#123;&#10;    long acc;&#10;    int phase;   /* 0 load, 1 wait, 2 add, 3 store */&#10;    int waiting;&#10;    int left;&#10;&#125;;&#10;&#10;static int run(int delay, long *counter) &#123;&#10;    struct thread t[THREADS] = &#123;&#123;0, 0, 0, ITER&#125;, &#123;0, 0, 0, ITER&#125;&#125;;&#10;    int done = 0;&#10;&#10;    *counter = 0;&#10;    while (done &lt; THREADS) &#123;&#10;        for (int i = 0; i &lt; THREADS; i++) &#123;&#10;            for (int step = 0; step &lt; SLICE; step++) &#123;&#10;                struct thread *th = &amp;t[i];&#10;&#10;                if (th-&gt;left == 0) &#123;&#10;                    break;&#10;                &#125;&#10;                switch (th-&gt;phase) &#123;&#10;                case 0:&#10;                    th-&gt;acc = *counter;&#10;                    th-&gt;waiting = delay;&#10;                    th-&gt;phase = 1;&#10;                    break;&#10;                case 1:&#10;                    if (th-&gt;waiting &gt; 0) &#123;&#10;                        th-&gt;waiting--;&#10;                        break;&#10;                    &#125;&#10;                    th-&gt;acc += 1;&#10;                    th-&gt;phase = 2;&#10;                    break;&#10;                default:&#10;                    *counter = th-&gt;acc;&#10;                    th-&gt;phase = 0;&#10;                    th-&gt;left--;&#10;                    if (th-&gt;left == 0) &#123;&#10;                        done++;&#10;                    &#125;&#10;                    break;&#10;                &#125;&#10;            &#125;&#10;        &#125;&#10;    &#125;&#10;    return done;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    long target = (long)THREADS * ITER;&#10;    long racy = 0;&#10;    long slow = 0;&#10;&#10;    run(0, &amp;racy);&#10;    run(2, &amp;slow);&#10;    printf(&quot;attempted increments: %ld\n&quot;, target);&#10;    printf(&quot;no delay: counter %ld lost %ld\n&quot;, racy, target - racy);&#10;    printf(&quot;with delay: counter %ld lost %ld\n&quot;, slow, target - slow);&#10;    printf(&quot;locked: counter %ld lost 0\n&quot;, target);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="race-quiz-1"
+	question="A racy counter program prints the correct total on your laptop every time you run it. Give two distinct reasons that is not evidence the program is correct."
+	options={[
+		'The two increments can run far enough apart that the race window is never hit, and a different compiler, core count or load can widen it; a passing run samples one interleaving, not all of them.',
+		'The counter is a long, and the hardware serialises every read-modify-write on a 64-bit value automatically.',
+		'Printing the total flushes the value to memory, which makes the increment atomic.',
+		'A correct total on one machine proves the program correct; any later flakiness is a hardware fault rather than a race.'
+	]}
+	answer={0}
+	explanation="A run only explores one of the many legal orderings of the two load-add-store sequences, and the timing that exposes the overlap depends on compiler choices, cores and load. Correctness needs the invariant held under every interleaving, which is a locking argument, not a sampled result."
+/>
+
+<LectureReference lecture="Lecture 14 — Synchronization" slides="2–15" />

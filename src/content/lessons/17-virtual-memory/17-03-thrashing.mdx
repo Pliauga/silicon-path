@@ -1,0 +1,345 @@
+---
+id: 17-03-thrashing
+title: Thrashing
+module: 17
+lecture: 'Lecture 17 — Virtual Memory'
+slides: '31–45'
+estimatedMinutes: 19
+prerequisites: ['17-02-page-replacement']
+tags: ['thrashing', 'working-set', 'locality', 'scheduling']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## When adding memory does not help
+
+The previous two lessons assumed the resident set was adequate and asked
+how to choose which pages to keep. This lesson is about the case where no
+choice works.
+
+**Thrashing** is the state in which a system spends more time servicing
+page faults than executing instructions. It is self-reinforcing in a way
+that is worth understanding precisely, because it explains a behaviour
+that otherwise looks like a bug: a machine under memory pressure gets
+slower, so the scheduler gives each ready process less CPU, so each
+process finishes a smaller fraction of its working set before being
+switched out, so the next switch evicts pages the process is about to
+need again, so the fault rate rises further.
+
+Each individual decision is defensible. The kernel raises the priority of
+a faulting process because faults are slow and it wants them resolved. It
+preempts a process that has held a frame for a while. It admits one more
+job because there is idle memory. Together they form a loop with positive
+feedback, and the machine can pin itself at close to zero throughput.
+
+The quantity that breaks the loop is not a better replacement policy. It
+is knowledge of the **working set**: the set of pages a process is
+actually using over an interval. If the resident frames are at least that
+large, faults are compulsory or minor. If they are smaller, the process
+thrashes no matter which page it evicts.
+
+## What you'll be able to do
+
+- Explain the feedback loop that turns memory pressure into zero throughput.
+- Define the working set and measure it from a reference string.
+- Recognise a fault-versus-frames curve with a knee and a plateau.
+- Say what a scheduler should do when the total working set exceeds frames.
+
+## The shape of the curve
+
+If you hold a program's access pattern fixed and vary only how many frames
+it is allowed, the fault count does not fall linearly. It falls steeply,
+reaches a minimum, and then stops falling entirely.
+
+| Frames | Behaviour                          | Cause                              |
+| ------ | ---------------------------------- | ---------------------------------- |
+| 1–2    | nearly every access faults         | the loop cannot fit at all         |
+| 3      | still nearly every access faults   | one page short of the loop         |
+| 4      | compulsory faults only             | the loop fits exactly              |
+| 5–6    | identical to 4                     | extra frames are never touched     |
+
+The knee is the working set size. Everything to the left of it is
+thrashing, and the important property is that the penalty near the knee
+is not proportional: one frame short can multiply the fault count by
+nine. That discontinuity is why thrashing arrives suddenly on a real
+machine rather than gradually. A system can run at 5 faults per 100
+accesses and then, after one extra process is admitted, at 100 per 100.
+
+<TheoryBlock label="Why it matters for C" title="Your loop's stride decides">
+
+	The distance between the working set and the frame count is not
+	something the kernel can change for you. A C program that walks a
+	matrix column by column on a row-major array touches a new page on
+	almost every access, because the stride is the row length. The same
+	data walked row by row touches each page 512 times in a row. Both
+	programs compute the same result; one has a working set of a few pages
+	and the other has a working set of the entire matrix. On a machine
+	that is already tight on memory, this is the difference between
+	running and thrashing, and the fix is in your loop nest, not in the
+	kernel.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="thrashing"
+	football="The squad has eleven shirts and thirty players, and the manager keeps substituting. Every switch costs a warm-up, and a player sent off just as he found his rhythm must warm up again on his return. The manager's answer to the chaos is to substitute more often, so nobody ever gets warm. Field fewer players."
+	money="A kitchen has four work surfaces and takes six simultaneous orders. Every time a cook starts a dish another needs his surface, so the first goes back in the fridge half-made and must be restarted later. Adding an order slows every other order, and the kitchen answers falling output by accepting more."
+/>
+
+## Measuring the knee
+
+The program keeps one reference string fixed and varies the frame count
+from one to six. The string is four hot pages in a tight loop, preceded by
+a single cold page — deliberately, so the compulsory fault is charged
+once and does not get confused with pressure.
+
+```c
+#include <stdio.h>
+
+/* Thrashing, measured as a function of frames.
+ *
+ * Keep the reference string fixed and add one frame at a time. Faults
+ * fall steeply and then stop falling, because once every page the
+ * program is actually looping over fits, no extra frame can help: the
+ * program was never asking for more. That plateau is the working set
+ * size, and it is the number a scheduler needs. Below it, the process
+ * spends its whole time in the fault handler. */
+
+#define MAX_FRAMES 8
+
+/* FIFO over an arbitrary frame count. `frames` is how many pages the
+ * process is allowed to keep resident at once. */
+static int simulate(const int *reference, int n, int frames)
+{
+    int slot[MAX_FRAMES];
+    int next_in = 0;
+    int resident = 0;
+    int faults = 0;
+
+    for (int i = 0; i < frames; i++) {
+        slot[i] = -1;
+    }
+
+    for (int r = 0; r < n; r++) {
+        int page = reference[r];
+        int hit = 0;
+
+        for (int i = 0; i < frames; i++) {
+            if (slot[i] == page) {
+                hit = 1;
+                break;
+            }
+        }
+        if (hit) {
+            continue;
+        }
+
+        faults++;
+        if (resident < frames) {
+            slot[resident++] = page;
+        } else {
+            slot[next_in] = page;
+            next_in = (next_in + 1) % frames;
+        }
+    }
+    return faults;
+}
+
+int main(void)
+{
+    /* Four hot pages in a tight loop, eleven times around. A fifth page
+     * is touched exactly once at the start: it contributes one compulsory
+     * fault and nothing else, which is what distinguishes "big working
+     * set" from "one cold page". */
+    const int reference[] = {5,
+                             1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4,
+                             1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4,
+                             1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4,
+                             1, 2, 3, 4, 1, 2, 3, 4};
+    const int n = (int)(sizeof reference / sizeof reference[0]);
+
+    printf("reference string: one cold page, then %d accesses cycling "
+           "over 4 hot pages\n\n", n - 1);
+
+    int faults_at[MAX_FRAMES + 1];
+    int best = n + 1;
+
+    for (int frames = 1; frames <= 6; frames++) {
+        faults_at[frames] = simulate(reference, n, frames);
+        if (faults_at[frames] < best) {
+            best = faults_at[frames];
+        }
+    }
+
+    /* The working set is the smallest frame count that already achieves
+     * the best fault count. Every frame past it is idle. */
+    int working_set = 1;
+    while (working_set <= 6 && faults_at[working_set] > best) {
+        working_set++;
+    }
+
+    printf("frames  faults  faults/access  cpu busy  verdict\n");
+    for (int frames = 1; frames <= 6; frames++) {
+        int faults = faults_at[frames];
+        double rate = (double)faults / (double)n;
+
+        /* A crude but honest model: a process that faults on a fraction
+         * f of its accesses spends a proportional share of its life
+         * waiting, so the CPU sees 1 - f of it. */
+        double busy = 1.0 - rate;
+
+        printf("%6d  %6d  %12.2f  %7.0f%%  %s\n", frames, faults, rate,
+               busy * 100.0,
+               frames < working_set ? "thrashing: a hot page is always missing"
+                                    : "working set resident");
+    }
+
+    printf("\nworking set size: %d pages\n", working_set);
+    printf("faults stop falling at %d frames; the 5th and 6th are idle\n",
+           working_set);
+
+    printf("\nthe asymmetry is the point. Going from 3 frames to 4 cuts\n");
+    printf("faults from 45 to 5; going from 4 to 6 changes nothing at all.\n");
+    printf("Adding memory helps only up to the working set. A scheduler\n");
+    printf("that admits one more process past that point takes frames away\n");
+    printf("from everyone and can push the whole system below its working\n");
+    printf("set at once.\n");
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+reference string: one cold page, then 44 accesses cycling over 4 hot pages
+
+frames  faults  faults/access  cpu busy  verdict
+     1      45          1.00        0%  thrashing: a hot page is always missing
+     2      45          1.00        0%  thrashing: a hot page is always missing
+     3      45          1.00        0%  thrashing: a hot page is always missing
+     4       5          0.11       89%  working set resident
+     5       5          0.11       89%  working set resident
+     6       5          0.11       89%  working set resident
+
+working set size: 4 pages
+faults stop falling at 4 frames; the 5th and 6th are idle
+
+the asymmetry is the point. Going from 3 frames to 4 cuts
+faults from 45 to 5; going from 4 to 6 changes nothing at all.
+Adding memory helps only up to the working set. A scheduler
+that admits one more process past that point takes frames away
+from everyone and can push the whole system below its working
+set at once.
+```
+
+The numbers to sit with are 45, 45, 45, 5.
+
+With one, two, or three frames the process faults on **every single
+access** — 45 out of 45, a rate of 1.00. Three frames hold pages 1, 2,
+and 3, and the loop asks for 4 next, evicting 1. Then it asks for 1,
+evicting 2. The loop is one page wider than memory, and FIFO's cyclic
+eviction pattern guarantees that the page about to be requested is
+always the one just thrown out. This is the pessimal case for FIFO, and
+note that LRU would do no better: with a cyclic pattern larger than
+memory, *every* policy that keeps only `frames` pages must evict the page
+that will be needed next. No policy can win here. Only more frames can.
+
+With four frames the fault count collapses to 5 — the one cold page plus
+the four compulsory loads of the loop — and stays at 5 for five and six
+frames. The extra frames are never used, because the loop over four pages
+has run out of distinct pages to ask for.
+
+That plateau is the working set, and it is what a scheduler needs to
+know. Below it the machine is not slow, it is **not working**; above it
+the extra memory is free and buys nothing. The 89% CPU figure is a
+deliberately simple model — `1 - fault_rate` — but the direction is
+right: at a fault rate of 1.00 the CPU busy number is 0%, which is the
+signature of thrashing on a real machine, where `top` shows high system
+time and low user time and almost no work gets done.
+
+The last paragraph is the policy conclusion. A scheduler that admits
+processes until memory is full is making the classic mistake, because
+"partial working sets for five processes" is worse than "full working
+sets for three". Algorithms like **working set** and **page fault
+frequency** exist to detect exactly this: track the recent fault rate per
+process and refuse admission when the system-wide rate crosses a
+threshold. Rejecting work looks wasteful and is the only thing that
+preserves throughput.
+
+<ExerciseCard
+	id="m17-working-set"
+	concept="working set window"
+	prompt="Write working_set(ref, end, w) returning the number of distinct pages in the last w references (including the current one) and a FIFO fault counter. Run both over the eighteen accesses 1 2 3 1 2 4 5 1 2 3 6 4 5 7 1 2 3 4 for w = 4 and w = 8, printing the working set size at every access, the maximum, the FIFO fault count at that frame count, and finally the number of distinct pages. Print exactly:&#10;w=4: 1 2 3 3 3 4 4 4 4 4 4 4 4 4 4 4 4 4&#10;max working set: 4&#10;faults with 4 frames: 16&#10;w=8: 1 2 3 3 3 4 5 5 5 5 6 6 6 7 7 7 7 7&#10;max working set: 7&#10;faults with 7 frames: 7&#10;distinct pages: 7&#10;Nothing else. The w = 8 line reaches the compulsory count; the w = 4 line shows a window too narrow to size the frames correctly."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;/* distinct pages among the last w references */&#10;static int working_set(const int *ref, int end, int w) &#123;&#10;    return 0; /* TODO */&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="w=4: 1 2 3 3 3 4 4 4 4 4 4 4 4 4 4 4 4 4&#10;max working set: 4&#10;faults with 4 frames: 16&#10;w=8: 1 2 3 3 3 4 5 5 5 5 6 6 6 7 7 7 7 7&#10;max working set: 7&#10;faults with 7 frames: 7&#10;distinct pages: 7&#10;"
+	hints={[
+		'For each access, clamp the window start at zero, then mark pages in a small visited array and count the first sighting of each.',
+		'The window maxes out at 4 for w = 4 and 7 for w = 8; only the 7-frame run is big enough to make every fault compulsory, so it matches the 7 distinct pages.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* The working set is the set of pages touched in the last w references.&#10; * Its maximum is the frame count below which the process cannot keep its&#10; * pages, so at that frame count every fault is compulsory. */&#10;&#10;#define REF_LEN 18&#10;#define MAX_PAGES 16&#10;#define MAX_FRAMES 8&#10;&#10;static int working_set(const int *ref, int end, int w) &#123;&#10;    int seen[MAX_PAGES] = &#123;0&#125;;&#10;    int start = end - w + 1;&#10;    int count = 0;&#10;&#10;    if (start &lt; 0) &#123;&#10;        start = 0;&#10;    &#125;&#10;    for (int i = start; i &lt;= end; i++) &#123;&#10;        if (!seen[ref[i]]) &#123;&#10;            seen[ref[i]] = 1;&#10;            count++;&#10;        &#125;&#10;    &#125;&#10;    return count;&#10;&#125;&#10;&#10;static int fifo_faults(const int *ref, int n, int frames) &#123;&#10;    int pages[MAX_FRAMES] = &#123;0&#125;;&#10;    int filled = 0;&#10;    int next = 0;&#10;    int faults = 0;&#10;&#10;    for (int i = 0; i &lt; n; i++) &#123;&#10;        int page = ref[i];&#10;        int found = 0;&#10;&#10;        for (int j = 0; j &lt; filled; j++) &#123;&#10;            if (pages[j] == page) &#123;&#10;                found = 1;&#10;                break;&#10;            &#125;&#10;        &#125;&#10;        if (found) &#123;&#10;            continue;&#10;        &#125;&#10;        faults++;&#10;        if (filled &lt; frames) &#123;&#10;            pages[filled] = page;&#10;            filled++;&#10;        &#125; else &#123;&#10;            pages[next] = page;&#10;            next = (next + 1) % frames;&#10;        &#125;&#10;    &#125;&#10;    return faults;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const int ref[REF_LEN] = &#123;1, 2, 3, 1, 2, 4, 5, 1, 2, 3,&#10;                              6, 4, 5, 7, 1, 2, 3, 4&#125;;&#10;    const int windows[2] = &#123;4, 8&#125;;&#10;    int distinct = 0;&#10;&#10;    for (int w = 0; w &lt; 2; w++) &#123;&#10;        int max = 0;&#10;&#10;        printf(&quot;w=%d:&quot;, windows[w]);&#10;        for (int end = 0; end &lt; REF_LEN; end++) &#123;&#10;            int size = working_set(ref, end, windows[w]);&#10;            printf(&quot; %d&quot;, size);&#10;            if (size &gt; max) &#123;&#10;                max = size;&#10;            &#125;&#10;        &#125;&#10;        printf(&quot;\nmax working set: %d\n&quot;, max);&#10;        printf(&quot;faults with %d frames: %d\n&quot;, max,&#10;               fifo_faults(ref, REF_LEN, max));&#10;    &#125;&#10;&#10;    int seen[MAX_PAGES] = &#123;0&#125;;&#10;    for (int i = 0; i &lt; REF_LEN; i++) &#123;&#10;        if (!seen[ref[i]]) &#123;&#10;            seen[ref[i]] = 1;&#10;            distinct++;&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;distinct pages: %d\n&quot;, distinct);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Adding memory to a thrashed machine and stopping at the first improvement
+
+The curve is flat on both sides of the knee and steep at it, so any
+measurement taken just past the knee suggests that a little more memory
+will help a lot. It will not; the next frame buys nothing. Measure the
+plateau, not the slope.
+
+### Blaming the replacement policy
+
+The 45-fault rows are not a bug in FIFO. With a cyclic pattern wider than
+memory, every policy produces the same answer, because the page to be
+needed next is always the one that was least recently used and always the
+oldest arrival. Throwing LRU at this problem changes nothing; the fix is
+more frames or a narrower working set.
+
+### Confusing a high fault rate with a slow disk
+
+A high fault rate on a fast SSD still costs throughput, but the
+self-reinforcing loop depends on the fault being slower than the
+scheduling decision. On a machine with fast storage, thrashing exists but
+the knee moves, and a fault rate that would have been fatal on a
+spinning disk can be merely expensive. Model the cost, do not assume the
+constant.
+
+### Forgetting that the working set moves
+
+Real programs have phases: an initialisation phase touches one region, a
+compute phase touches another. The global working set is the union and
+can be much larger than the current phase's, which is why measuring over
+too long a window overestimates. The window size is a parameter with no
+universally right value, and both directions have a failure mode.
+
+### Assuming the kernel will refuse the work
+
+Most general-purpose schedulers are optimistic: they admit until pressure
+is observed, then try to recover by swapping or by killing something.
+Recovery is much more expensive than the admission check would have been.
+This is a policy choice, not a limitation, and it is why a machine can be
+unresponsive for minutes before the OOM killer acts.
+
+<QuizCard
+	id="m17-quiz-thrash"
+	question="Six processes each have a working set of 300 pages, and the machine has 1024 free frames. Trace what happens to the fault rate as all six run, and describe the two levers a scheduler has to break the cycle without adding memory."
+	options={[
+		'The six working sets total 1800 pages against 1024 frames, so each process holds about 170 of its 300 and faults on nearly every access; the fault rate saturates and throughput collapses. The levers are admitting fewer processes at a time and shrinking each process\'s working set, both of which make the sets fit.',
+		'Nothing happens until the sixth process starts, at which point the kernel kills one and the system recovers; the only lever is buying more memory.',
+		'The fault rate rises to a plateau of about 300 faults per second, one per process working set, and the levers are a larger page size or a faster disk.',
+		'FIFO and LRU each produce about 1800 faults per round, so the levers are switching to LRU and enabling transparent huge pages.'
+	]}
+	answer={0}
+	explanation="1800 pages of demand against 1024 frames means no process ever has its working set resident, so every access evicts a page that will be needed again — the self-reinforcing loop. Without more memory, the scheduler must either run fewer processes (admission control, or suspending a whole process) or reduce each process's working set."
+/>
+
+<LectureReference lecture="Lecture 17 — Virtual Memory" slides="31–45" />

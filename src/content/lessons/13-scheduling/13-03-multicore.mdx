@@ -1,0 +1,267 @@
+---
+id: 13-03-multicore
+title: Multicore Scheduling
+module: 13
+lecture: 'Lecture 13 — Scheduling'
+slides: '33–45'
+estimatedMinutes: 16
+prerequisites: ['13-02-algorithms']
+tags: ['multicore', 'affinity', 'scheduling']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## One queue or many
+
+With two cores, a scheduler faces a choice the single-core case never raised:
+is there one pool of ready processes, or one per core?
+
+A **shared run queue** means whichever core goes idle takes the next process. It
+balances load automatically and no core sits idle while work waits. The cost is
+contention: every scheduling decision takes a lock on the shared queue, and the
+queue becomes a hot cache line that bounces between cores.
+
+**Per-core queues** eliminate that contention — each core owns its list and never
+talks to the others. The cost is imbalance: if one core's queue holds long jobs
+and another's holds short ones, the short core finishes early and idles while
+work remains. That is where **work stealing** comes in: an idle core takes from
+the back of another core's queue, which happens rarely enough to be cheap.
+
+## What you'll be able to do
+
+- Compare a shared run queue with per-core queues on contention and balance.
+- Say what work stealing fixes and what it costs.
+- Explain cache affinity and why it is a hint rather than a guarantee.
+- Recognise false sharing and separate the hot fields that cause it.
+
+## Two other effects
+
+**Cache affinity.** A process that ran on core 0 has its data in core 0's cache.
+Moving it to core 1 means refilling that cache — a cost measured in microseconds,
+against a context switch measured in single-digit microseconds. Kernels therefore
+try to keep a process on the core it last ran on, and only migrate for balance.
+
+**False sharing.** Two threads write to different variables that happen to share
+a 64-byte cache line. The hardware transfers the whole line back and forth, so
+both threads slow down as though they shared one variable. The fix is padding:
+put the hot values in separate cache lines. Module 6 covers the cache; this is
+the case where it bites in a multithreaded program.
+
+<TheoryBlock label="Why it matters for C" title="A thread's core is not stable, and your code must not care">
+
+	Nothing in C promises which core a thread runs on, or that it stays there. `sched_setaffinity` can
+	pin it, but pinning is a performance hint, not a correctness tool. If correctness depends on
+	which core runs what, the code was wrong before it was pinned.
+</TheoryBlock>
+
+## Comparing the two arrangements
+
+This is a model, not a measurement: it computes where each job would run under
+each policy, with no real threads and no wall-clock time. That makes it
+deterministic and lets you compare the two arrangements on identical work.
+
+<Eli5Block
+	topic="run-queue"
+	football="One shared subs' bench for the whole stadium, and whichever coach is free grabs the next player — a shared run queue. Or each coach has their own bench, so nobody reaches across, but one may run out while the other still has three waiting. Work stealing lets an idle coach quietly take one."
+	money="One ticket machine for the whole station, or one per platform. A single machine balances itself but everyone queues at it; separate machines never queue but one can run dry while the other has a line. Neither is wrong — the choice is contention against imbalance, and the crowd size decides which hurts more."
+/>
+
+```c
+#include <stdio.h>
+
+/* Two cores, eight processes. Compare one global run queue against two
+   per-core queues that each pull from the same list. Deterministic model:
+   no real threads, just arithmetic on the scheduling decision.        */
+
+#define CORES 2
+#define COUNT 8
+
+struct job {
+    const char *name;
+    int service;
+};
+
+/* Global run queue: whichever core is free takes the next job in order.
+   This is what a modern kernel approximates with a shared run queue. */
+static void global_queue(const struct job *jobs, int n) {
+    int core_free[CORES] = { 0 };
+    int total_wait = 0;
+    int makespan = 0;
+
+    printf("one shared run queue:\n");
+    for (int i = 0; i < n; i++) {
+        int core = 0;
+        for (int c = 1; c < CORES; c++) {
+            if (core_free[c] < core_free[core]) {
+                core = c;               /* earliest free core wins */
+            }
+        }
+        int start = core_free[core];
+        int wait = start;               /* all jobs are ready at time 0 */
+        core_free[core] = start + jobs[i].service;
+
+        printf("  %-3s core %d  start %3d ms  finish %3d ms\n",
+               jobs[i].name, core, start, core_free[core]);
+        total_wait += wait;
+    }
+
+    for (int c = 0; c < CORES; c++) {
+        if (core_free[c] > makespan) {
+            makespan = core_free[c];
+        }
+    }
+    printf("  average wait = %.1f ms, makespan = %d ms\n",
+           (double)total_wait / n, makespan);
+}
+
+/* Per-core queues: deal the jobs out round robin, then each core runs its
+   own list front to back. A core that finishes early sits idle.        */
+static void per_core_queues(const struct job *jobs, int n) {
+    int core_free[CORES] = { 0 };
+    int total_wait = 0;
+    int makespan = 0;
+
+    printf("\ntwo per-core queues:\n");
+    for (int i = 0; i < n; i++) {
+        int core = i % CORES;
+        int start = core_free[core];
+        int wait = start;
+        core_free[core] = start + jobs[i].service;
+
+        printf("  %-3s core %d  start %3d ms  finish %3d ms\n",
+               jobs[i].name, core, start, core_free[core]);
+        total_wait += wait;
+    }
+
+    for (int c = 0; c < CORES; c++) {
+        if (core_free[c] > makespan) {
+            makespan = core_free[c];
+        }
+    }
+    printf("  average wait = %.1f ms, makespan = %d ms\n",
+           (double)total_wait / n, makespan);
+}
+
+int main(void) {
+    const struct job jobs[COUNT] = {
+        { "A", 7 }, { "B", 3 }, { "C", 9 },
+        { "D", 2 }, { "E", 5 }, { "F", 8 },
+        { "G", 1 }, { "H", 4 },
+    };
+
+    int total = 0;
+    for (int i = 0; i < COUNT; i++) {
+        printf("%s=%d ms  ", jobs[i].name, jobs[i].service);
+        total += jobs[i].service;
+    }
+    printf("\ntotal work = %d ms on %d cores (perfect balance = %.1f ms)\n\n",
+           total, CORES, (double)total / CORES);
+
+    global_queue(jobs, COUNT);
+    per_core_queues(jobs, COUNT);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+A=7 ms  B=3 ms  C=9 ms  D=2 ms  E=5 ms  F=8 ms  G=1 ms  H=4 ms  
+total work = 39 ms on 2 cores (perfect balance = 19.5 ms)
+
+one shared run queue:
+  A   core 0  start   0 ms  finish   7 ms
+  B   core 1  start   0 ms  finish   3 ms
+  C   core 1  start   3 ms  finish  12 ms
+  D   core 0  start   7 ms  finish   9 ms
+  E   core 0  start   9 ms  finish  14 ms
+  F   core 1  start  12 ms  finish  20 ms
+  G   core 0  start  14 ms  finish  15 ms
+  H   core 0  start  15 ms  finish  19 ms
+  average wait = 7.5 ms, makespan = 20 ms
+
+two per-core queues:
+  A   core 0  start   0 ms  finish   7 ms
+  B   core 1  start   0 ms  finish   3 ms
+  C   core 0  start   7 ms  finish  16 ms
+  D   core 1  start   3 ms  finish   5 ms
+  E   core 0  start  16 ms  finish  21 ms
+  F   core 1  start   5 ms  finish  13 ms
+  G   core 0  start  21 ms  finish  22 ms
+  H   core 1  start  13 ms  finish  17 ms
+  average wait = 8.1 ms, makespan = 22 ms
+```
+
+Two numbers to compare. The shared queue finishes the batch in 20 ms; the split
+queues take 22 ms, because core 0 ends up with 22 ms of work while core 1 has 17.
+The perfect balance is 19.5 ms, so the shared queue is within 0.5 ms of ideal and
+the split queues are 2.5 ms off.
+
+On eight jobs that difference is noise. At eight thousand jobs it is the
+difference between a batch finishing at 2 pm and at 4 pm — which is why work
+stealing exists, and why "just give each core its own queue" is not the end of
+the design.
+
+## Common pitfalls
+
+### Expecting per-core queues to balance themselves
+
+Dealing jobs round robin only balances when the jobs are the same size. Here they
+range from 1 to 9 ms, and the deal puts the four longest on core 0. Any static
+split has this failure mode; only migration fixes it.
+
+### Measuring makespan while ignoring when work becomes ready
+
+Every job in this model is runnable at time 0. Real workloads have arrivals, and
+a queue with nothing ready yet must not be counted as busy. Add an arrival field
+and the "earliest free core" rule needs an idle check, or the model runs jobs
+before they exist.
+
+### Assuming a process stays on one core
+
+Cache affinity is a preference, not a guarantee. A program that is correct only
+when a thread stays on one core is incorrect on every real system, because the
+kernel will migrate it the moment balance demands it.
+
+### Forgetting false sharing on adjacent variables
+
+Two `int` counters declared next to each other land in the same cache line. Two
+threads incrementing them serialize on the cache coherency protocol despite
+touching different memory. The symptom is a program that does not scale past one
+core for no visible reason; the fix is a 64-byte pad between the hot fields.
+
+<ExerciseCard
+	id="multicore-makespan"
+	concept="makespan with arrivals"
+	prompt="Add arrival times to the two-core model and make the queue respect them: a core may not start a job before that job has arrived, and a core with nothing ready waits. The jobs are A(0,7), B(0,3), C(4,9), D(4,2), E(8,5), F(8,8), G(12,1), H(12,4), each triple being name, arrival and service in milliseconds. Global queue: walk the jobs in order and send each to the core that is free earliest (ties to core 0), with start = max(free, arrival). Per-core queues: deal job i to core i mod 2 and run each core list in order with the same start rule. Print exactly:&#10;&#10;total work 39 ms on 2 cores&#10;global: makespan 21 ms&#10;per-core: makespan 22 ms&#10;&#10;The one millisecond gap is the whole lesson: with arrivals, an idle core cannot help if the next job has not been created yet."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define CORES 2&#10;#define COUNT 8&#10;&#10;struct job &#123;&#10;    const char *name;&#10;    int arrival;&#10;    int service;&#10;&#125;;&#10;&#10;static const struct job JOBS[COUNT] = &#123;&#10;    &#123;&quot;A&quot;, 0, 7&#125;, &#123;&quot;B&quot;, 0, 3&#125;, &#123;&quot;C&quot;, 4, 9&#125;, &#123;&quot;D&quot;, 4, 2&#125;,&#10;    &#123;&quot;E&quot;, 8, 5&#125;, &#123;&quot;F&quot;, 8, 8&#125;, &#123;&quot;G&quot;, 12, 1&#125;, &#123;&quot;H&quot;, 12, 4&#125;,&#10;&#125;;&#10;&#10;static int global_makespan(void) &#123;&#10;    /* TODO: earliest-free core, start = max(free, arrival) */&#10;    return 0;&#10;&#125;&#10;&#10;static int per_core_makespan(void) &#123;&#10;    /* TODO: job i belongs to core i mod CORES */&#10;    return 0;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: print total work, then the two makespans */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="total work 39 ms on 2 cores&#10;global: makespan 21 ms&#10;per-core: makespan 22 ms&#10;"
+	hints={[
+		'One array free_at[CORES] is the whole state. For each job: start is the larger of the chosen core free time and the job arrival, then that core becomes start + service.',
+		'In the global queue the core is the one with the smallest free_at, scanning from core 0 so a tie goes to core 0; in the per-core model the core is i % CORES. The global run finishes at 21 ms and the split queues at 22 ms.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;#define CORES 2&#10;#define COUNT 8&#10;&#10;struct job &#123;&#10;    const char *name;&#10;    int arrival;&#10;    int service;&#10;&#125;;&#10;&#10;static const struct job JOBS[COUNT] = &#123;&#10;    &#123;&quot;A&quot;, 0, 7&#125;, &#123;&quot;B&quot;, 0, 3&#125;, &#123;&quot;C&quot;, 4, 9&#125;, &#123;&quot;D&quot;, 4, 2&#125;,&#10;    &#123;&quot;E&quot;, 8, 5&#125;, &#123;&quot;F&quot;, 8, 8&#125;, &#123;&quot;G&quot;, 12, 1&#125;, &#123;&quot;H&quot;, 12, 4&#125;,&#10;&#125;;&#10;&#10;/* One shared run queue: each job goes to whichever core frees up first,&#10; * and a core that is ready before the job exists has to wait for it. */&#10;static int global_makespan(void) &#123;&#10;    int free_at[CORES] = &#123;0, 0&#125;;&#10;&#10;    for (int i = 0; i &lt; COUNT; i++) &#123;&#10;        int pick = 0;&#10;        for (int c = 1; c &lt; CORES; c++) &#123;&#10;            if (free_at[c] &lt; free_at[pick]) &#123;&#10;                pick = c;&#10;            &#125;&#10;        &#125;&#10;        int start = free_at[pick] &gt; JOBS[i].arrival ? free_at[pick] : JOBS[i].arrival;&#10;        free_at[pick] = start + JOBS[i].service;&#10;    &#125;&#10;&#10;    int makespan = free_at[0];&#10;    for (int c = 1; c &lt; CORES; c++) &#123;&#10;        if (free_at[c] &gt; makespan) &#123;&#10;            makespan = free_at[c];&#10;        &#125;&#10;    &#125;&#10;    return makespan;&#10;&#125;&#10;&#10;/* Two private queues: job i is dealt to core i %% CORES and each core runs&#10; * its own list in order. */&#10;static int per_core_makespan(void) &#123;&#10;    int free_at[CORES] = &#123;0, 0&#125;;&#10;&#10;    for (int i = 0; i &lt; COUNT; i++) &#123;&#10;        int c = i % CORES;&#10;        int start = free_at[c] &gt; JOBS[i].arrival ? free_at[c] : JOBS[i].arrival;&#10;        free_at[c] = start + JOBS[i].service;&#10;    &#125;&#10;&#10;    int makespan = free_at[0];&#10;    for (int c = 1; c &lt; CORES; c++) &#123;&#10;        if (free_at[c] &gt; makespan) &#123;&#10;            makespan = free_at[c];&#10;        &#125;&#10;    &#125;&#10;    return makespan;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    int total = 0;&#10;    for (int i = 0; i &lt; COUNT; i++) &#123;&#10;        total += JOBS[i].service;&#10;    &#125;&#10;    printf(&quot;total work %d ms on %d cores\n&quot;, total, CORES);&#10;    printf(&quot;global: makespan %d ms\n&quot;, global_makespan());&#10;    printf(&quot;per-core: makespan %d ms\n&quot;, per_core_makespan());&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="multicore-quiz-1"
+	question="Two threads, each incrementing its own int counter, run on two cores and are much slower than when each runs alone. The counters are declared one after the other at file scope. What is happening and what is the fix?"
+	options={[
+		'False sharing: the two counters sit in one 64-byte cache line, so each increment invalidates the other core copy and the line ping-pongs. Pad or align the counters onto separate cache lines',
+		'A data race on the two counters, because both are int and both are at file scope; the fix is a mutex around each increment',
+		'Cache thrashing caused by too many cores, fixed by pinning both threads to a single core',
+		'Branch misprediction, because incrementing a counter is an unpredictable branch; the fix is a branchless add'
+	]}
+	answer={0}
+	explanation="The counters are distinct objects, so the program is race-free, but coherency works at cache-line granularity, which makes two adjacent hot variables behave like one shared variable until they are separated."
+/>
+
+<LectureReference lecture="Lecture 13 — Scheduling" slides="33–45" />

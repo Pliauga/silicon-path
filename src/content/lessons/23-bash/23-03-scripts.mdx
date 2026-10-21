@@ -1,0 +1,133 @@
+---
+id: 23-03-scripts
+title: 'Writing a Script'
+module: 23
+lecture: 'Module 23 — Bash & Scripting'
+slides: 'supplementary'
+estimatedMinutes: 15
+prerequisites: ['23-01-navigation', '23-02-permissions']
+tags: ['bash', 'scripts', 'variables', 'loops']
+hasExercise: false
+hasQuiz: false
+---
+
+<script>
+	import BashTerminal from '$lib/components/viz/BashTerminal.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+</script>
+
+## A script is a file the shell reads line by line
+
+You have been typing commands into the shell all along. A script is the same
+text, saved to a file, so the shell can read it instead of you. Nothing
+about the language changes. `echo` is still `echo`; the skill is in
+arranging lines so the file survives being run tomorrow.
+
+The interpreter reads from top to bottom, one command per line, exactly as
+if you had typed them. That is why a script can be tested by pasting its
+lines into a terminal — and why a script that depends on your current
+directory breaks when somebody runs it from somewhere else.
+
+## The first line is a contract
+
+```
+#!/bin/bash
+```
+
+This is the **shebang**. The `#!` tells the kernel "this file is not machine
+code; hand it to the named interpreter". The rest of the path names Bash.
+Without it, `./script.sh` may be run by whatever shell the system prefers,
+and a script that worked on your laptop takes its first line of output from
+a different language.
+
+The shebang is only honoured when the file has an execute bit — the same bit
+from lesson 2. A readable script with no `x` can still be fed to Bash by
+hand, which is exactly what the section that follows the theory does.
+
+## Variables
+
+A shell variable is a name and a string. Assignment has **no spaces around
+the equals sign**; that is not style, it is the grammar. `name = "world"`
+would be read as a command called `name` with two arguments.
+
+| Syntax | Means |
+| --- | --- |
+| `name="world"` | assign the string `world` |
+| `$name` | substitute the value |
+| `"$name"` | substitute the value, keep it one word even if it has spaces |
+| `$USER`, `$HOME` | variables the environment already provided |
+
+Quoting deserves more than a shrug. Unquoted, the shell splits a value on
+whitespace; quoted, it does not. This is why `cp "$file" "$dir"` survives
+filenames with spaces and `cp $file $dir` fails on them. In this course we
+quote whenever the value came from outside the script.
+
+<TheoryBlock label="Why it matters for C" title="The shell's variables are strings, and so are argv">
+
+Bash has no types: every variable is a string, and arithmetic has to be asked
+for explicitly. That is not a limitation unique to the shell — a C program
+started from the shell receives `argv` as an array of strings, and has to
+convert them with `atoi` or `strtol` before it can add. Both worlds agree
+that the interface between a program and its user is text.
+
+</TheoryBlock>
+
+## Loops: doing the same thing to a list
+
+The loop you will write most is a `for` over words. The shape never varies:
+
+```
+for day in mon tue wed; do
+  echo "practise $day"
+done
+```
+
+`do` and `done` are keywords, and the body is indented only by convention.
+The variable `day` is rebound for each word in the list, so the output is
+three lines. There is no array to allocate and no iterator to advance — the
+list is expanded and the body runs for each element.
+
+That is also the trap. The list is expanded *before* the loop starts, so
+changing a variable inside the body does not change what the loop walks
+over. If you need each item to influence the next, you are writing a `while`
+loop, which is a topic for its own lesson.
+
+## Reading before running
+
+The practice filesystem ships two scripts. Read them before you run them —
+this is the habit that makes reading unfamiliar scripts on a real machine
+safe.
+
+<BashTerminal />
+
+Try this:
+
+1. `cat greet.sh` — a shebang, a variable, two `echo` lines.
+2. `bash greet.sh` — works despite `644`, because Bash only needs read.
+3. `chmod +x greet.sh` and `./greet.sh` — the shebang is honoured now.
+4. `cat loop.sh` — a `for` loop over three words.
+5. `bash loop.sh` — three lines of output, in the order the words appear.
+6. `./loop.sh` — fails, because you only made `greet.sh` executable.
+7. `chmod +x loop.sh` and `./loop.sh` — same three lines, one command.
+8. `echo "made by $USER" > author.txt` then `cat author.txt` — the shell
+   expands `$USER` before `echo` ever sees the text.
+
+## Putting it together
+
+Every script in this module has the same skeleton: a shebang, some
+variables, a handful of commands, and a chmod before the first run.
+
+| Part | Line |
+| --- | --- |
+| shebang | `#!/bin/bash` |
+| variable | `name="world"` |
+| output | `echo "hello, $name"` |
+| loop | `for x in a b c; do ... done` |
+| run | `chmod +x script.sh` then `./script.sh` |
+
+The final check is always the same three questions. Does the shebang name
+the interpreter you tested with? Are the variables quoted where the value
+could contain spaces? Does the file have the execute bit — and if not, is
+`bash script.sh` enough for what you are doing right now?
+
+Answer those and the script will still work tomorrow.

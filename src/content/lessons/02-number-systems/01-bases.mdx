@@ -1,0 +1,237 @@
+---
+id: 02-01-bases
+title: Number Bases
+module: 2
+lecture: 'Lecture 02 — Data Representation 2'
+slides: '5–17'
+estimatedMinutes: 14
+prerequisites: []
+tags: ['binary', 'hex', 'radix']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import BitToggle from '$lib/components/viz/BitToggle.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## A number is not its notation
+
+The byte in memory is eight voltages. Nothing about those voltages says
+"165". That reading is a convention layered on top, and the convention
+has more than one spelling.
+
+The same byte prints as `165`, `0xA5`, `0245`, or `1010 0101`. All four
+describe identical hardware. Changing the base changes the characters you
+type, never the bits.
+
+This matters because C will happily accept any of them in source code,
+and will happily print any of them at runtime — but it will not convert
+between them for you unless you ask. Knowing which spelling is in front
+of you is half of reading systems code.
+
+## What you'll be able to do
+
+- Convert a byte between binary, decimal, hex, and octal by hand.
+- Explain why one hex digit is exactly four bits and one octal digit is exactly three.
+- Print an `unsigned` value with `%d`, `%x`, and `%o`, and say what each one changes.
+- Parse a prefixed string with `strtol` and control the base explicitly.
+
+## Positional notation, once
+
+Every base works the same way: each digit is multiplied by the base raised
+to its position, counting from zero at the right. Decimal `407` is
+`4×100 + 0×10 + 7`. Binary `1011` is `1×8 + 0×4 + 1×2 + 1×1`, which is 11.
+Hex `0xA5` is `10×16 + 5`, which is 165.
+
+The base is not a property of the value. It is a property of the string
+you wrote down.
+
+| Base | Name    | Digits used          | One digit covers | C prefix |
+| ---- | ------- | -------------------- | ---------------- | -------- |
+| 2    | binary  | `0`–`1`              | 1 bit            | `0b` (C23) or none |
+| 8    | octal   | `0`–`7`              | 3 bits           | leading `0` |
+| 10   | decimal | `0`–`9`              | ~3.32 bits       | none |
+| 16   | hex     | `0`–`9`, `A`–`F`     | 4 bits           | `0x` |
+
+Binary is the machine's own notation but unreadable at width. Hex wins
+because 16 is 2⁴: **one hex digit is exactly four bits**, so a byte is
+always exactly two hex digits, with no padding and no arithmetic. Octal
+is 2³, so it aligns to three bits — which is why it survived on machines
+with 12-, 24-, and 36-bit words, and why it is still the notation for
+Unix file permissions.
+
+<TheoryBlock label="Why it matters for C" title="The literal's prefix is part of the value">
+
+	C sees `0x10`, `020`, and `16` as the same number, and sees `010` as
+	eight, not ten. A leading zero means octal. That single fact has caused
+	more than one permission bug: `chmod 755` is decimal digits in the
+	shell, but `chmod(0755)` is octal, and writing `755` where you meant
+	`0755` sets a completely different mode.
+</TheoryBlock>
+
+<BitToggle initial={165} label="One byte, four notations" />
+
+Try flipping a bit. The hex readout changes by one digit at a time, and
+each change spans exactly one nibble — four bits. That alignment is what
+makes hex the readable form of binary.
+
+<Eli5Block
+	topic="bases"
+	football="A goal is worth one, and the scoreboard writes it as 1. A different league might write that goal as a tally mark, or as a digit in a column of fours. Same goal, different chalk. Nobody argues the match was 0x01 to 0x00."
+	money="A ten-pound note is worth ten pounds whether the till records 10, 0xA, or 1010. The ledger's base is bookkeeping, not value. If you change the base without changing the amount, the balance is still the same and the accountant is still confused."
+/>
+
+## Printing and parsing
+
+`printf` converts the same value into different notations, chosen by the
+conversion letter:
+
+| Specifier | Prints        | Example for `165` |
+| --------- | ------------- | ----------------- |
+| `%d`      | signed decimal | `165`            |
+| `%u`      | unsigned decimal | `165`          |
+| `%x`      | lowercase hex  | `a5`             |
+| `%X`      | uppercase hex  | `A5`             |
+| `%o`      | octal, no prefix | `245`         |
+
+Two things surprise people. First, `%x` and `%o` never print the `0x` or
+leading `0` prefix — you write those yourself if you want them. Second,
+`%d` reinterprets the bits as signed, so a byte that reads `255` with `%u`
+may read `-1` with `%d`.
+
+In the other direction, `strtol` converts text to a `long` and takes a
+base argument. A base of `0` means "read the prefix and decide", and that
+is the mode that matches C's own source syntax.
+
+The program below converts one byte into all four notations, then parses
+the same value back from three differently prefixed strings.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+/* One byte, written four ways. The byte is the same in memory;
+ * only the notation changes. */
+
+int main(void) {
+    uint8_t value = 0xA5u;
+
+    printf("decimal: %u\n", (unsigned)value);
+    printf("hex:     0x%02X\n", (unsigned)value);
+    printf("octal:   0%o\n", (unsigned)value);
+    printf("binary:  ");
+    for (int bit = 7; bit >= 0; bit--) {
+        printf("%u", (unsigned)((value >> bit) & 1u));
+        if (bit == 4) {
+            printf(" ");
+        }
+    }
+    printf("\n\n");
+
+    printf("strtol reads base 0 from the prefix:\n");
+    const char *inputs[3] = {"165", "0xA5", "0245"};
+    for (int i = 0; i < 3; i++) {
+        long parsed = strtol(inputs[i], NULL, 0);
+        printf("  strtol(\"%s\", NULL, 0) = %ld\n", inputs[i], parsed);
+    }
+    printf("  strtol(\"1010\", NULL, 2) = %ld\n", strtol("1010", NULL, 2));
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+decimal: 165
+hex:     0xA5
+octal:   0245
+binary:  1010 0101
+
+strtol reads base 0 from the prefix:
+  strtol("165", NULL, 0) = 165
+  strtol("0xA5", NULL, 0) = 165
+  strtol("0245", NULL, 0) = 165
+  strtol("1010", NULL, 2) = 10
+```
+
+Note the `0` in front of `0245` is not produced by `%o`. It is printed by
+the literal `0` in the format string, because octal notation without it
+would be indistinguishable from decimal. Note also that `%02X` pads to two
+digits, which is why `0x0A` would not print as `0xA`.
+
+The three `strtol` calls all return 165. Base `0` inspected the prefix:
+none means decimal, `0x` means hex, a leading `0` means octal. This is the
+same rule the compiler applies to literals in your source.
+
+## Converting without a calculator
+
+Split the byte into nibbles and convert each independently. `1010` is
+`8 + 2`, so `A`. `0101` is `4 + 1`, so `5`. The byte is `0xA5`.
+
+Going the other way, expand each hex digit into its four bits and
+recombine. No division, no repeated subtraction, no calculator — this is
+the entire reason hex is used on machines with power-of-two words.
+
+<ExerciseCard
+	id="m02-bases-roundtrip"
+	concept="binary and hex round-trip"
+	prompt="Print the binary form of 0, 90, and 255 in exactly the form `90 = 0101 1010 = 0x5a` — the decimal value, the eight bits with a space between the nibbles, and the hex value as two lowercase digits. Then loop over every byte value, build that same hex string, parse it back with strtol in base 16, and print exactly `roundtrip ok: 256` when all 256 values survive the trip."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;#include &lt;stdlib.h&gt;&#10;&#10;/* Print eight bits, with a space between the two nibbles. */&#10;static void print_nibbles(unsigned value) &#123;&#10;    /* TODO: walk bit 7 down to 0, print '0' or '1', add a space after bit 4 */&#10;    (void)value;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    unsigned samples[] = &#123;0u, 90u, 255u&#125;;&#10;    for (int i = 0; i &lt; 3; i++) &#123;&#10;        /* TODO: print &quot;90 = 0101 1010 = 0x5a&quot; for this sample */&#10;    &#125;&#10;    /* TODO: build the hex string, parse it back with strtol, count the matches */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="0 = 0000 0000 = 0x00&#10;90 = 0101 1010 = 0x5a&#10;255 = 1111 1111 = 0xff&#10;roundtrip ok: 256&#10;"
+	hints={[
+		'Bit 7 is the leftmost: shift the value right by the bit index and test the low bit, then print a space when the index reaches 4.',
+		'snprintf into a char[5] with the format 0x%02x builds the string; strtol(text, &end, 16) reads it back, and *end == 0 proves the whole string was consumed.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;#include &lt;stdlib.h&gt;&#10;&#10;/* Print eight bits, with a space between the two nibbles. */&#10;static void print_nibbles(unsigned value) &#123;&#10;    for (int bit = 7; bit &gt;= 0; bit--) &#123;&#10;        putchar(((value &gt;&gt; bit) &amp; 1u) != 0u ? '1' : '0');&#10;        if (bit == 4) &#123;&#10;            putchar(' ');&#10;        &#125;&#10;    &#125;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    unsigned samples[] = &#123;0u, 90u, 255u&#125;;&#10;&#10;    for (int i = 0; i &lt; 3; i++) &#123;&#10;        printf(&quot;%u = &quot;, samples[i]);&#10;        print_nibbles(samples[i]);&#10;        printf(&quot; = 0x%02x\n&quot;, samples[i]);&#10;    &#125;&#10;&#10;    int ok = 0;&#10;    for (unsigned value = 0; value &lt; 256u; value++) &#123;&#10;        char text[5];&#10;        snprintf(text, sizeof text, &quot;0x%02x&quot;, value);&#10;        char *end = NULL;&#10;        long parsed = strtol(text, &amp;end, 16);&#10;        if (end != NULL &amp;&amp; *end == '\0' &amp;&amp; parsed == (long)value) &#123;&#10;            ok++;&#10;        &#125;&#10;    &#125;&#10;&#10;    printf(&quot;roundtrip ok: %d\n&quot;, ok);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Expecting `%x` to print the prefix
+
+`printf("%x\n", 165u)` prints `a5`, not `0xa5`. The prefix belongs to the
+grammar of C source, not to the output of the conversion. If you need
+round-trippable text, write `"0x%02X"` and decide the width yourself.
+
+### Forgetting that a leading zero means octal
+
+`010` is eight and `08` is not valid at all, because 8 is not an octal
+digit. This bites hardest with file modes, where `0644` is the intent and
+`644` is a very different set of permissions. Compilers warn about
+suspicious octal constants; take the warning.
+
+### Using `%d` for an unsigned value
+
+`%d` reads the same bits as a signed integer. For a `uint8_t` holding 200,
+passing it to `%d` without the `(unsigned)` cast promotes it to `int` 200
+and prints correctly, but for `UINT_MAX` on 32 bits it prints `-1`. Use
+`%u` with an `unsigned` argument, and let `-Wformat` check the pairing.
+
+### Assuming `strtol` succeeded
+
+`strtol` returns `0` both for the string `"0"` and for a failed parse. It
+also sets `errno` to `ERANGE` on overflow, and reports where it stopped
+through its `endptr` argument. Checking one of those is the difference
+between parsing and guessing.
+
+<QuizCard
+	id="m02-quiz-octal"
+	question="The C literal 0110 has what decimal value, and what would you write to mean one hundred and ten?"
+	options={[
+		'72 — and 110 is how you write one hundred and ten',
+		'110 — the leading zero changes nothing, and 110 also means one hundred and ten',
+		'72 — and 0x110 is how you write one hundred and ten',
+		'18 — the digits are read as decimal and then converted'
+	]}
+	answer={0}
+	explanation="A leading zero makes an integer literal octal, so 0110 is 1 x 64 + 1 x 8 + 0 = 72. Decimal one hundred and ten has no prefix at all: write 110."
+/>
+
+<LectureReference lecture="Lecture 02 — Data Representation 2" slides="5–17" />

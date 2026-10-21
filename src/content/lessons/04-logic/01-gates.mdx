@@ -1,0 +1,220 @@
+---
+id: 04-01-gates
+title: Logic Gates
+module: 4
+lecture: 'Lecture 04 — Boolean Logic'
+slides: '4–16'
+estimatedMinutes: 14
+prerequisites: []
+tags: ['gates', 'truth-tables', 'bitwise']
+hasExercise: false
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import BitToggle from '$lib/components/viz/BitToggle.svelte';
+	import LazyStudy from '$lib/components/viz/LazyStudy.svelte';
+	import LogicGateSim3D from '$lib/components/viz/LogicGateSim3D.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## One wire, two voltages
+
+A logic gate is a circuit with one output and a small number of inputs,
+where every wire carries one of two voltages. High is called `1`, low is
+called `0`. That is the entire abstraction. The gate does not know what
+the bit means — a number, a letter, a pixel — and it does not need to.
+
+There are only a handful of useful one- and two-input gates, and you can
+name them by their truth tables. A one-input gate has two rows; a
+two-input gate has four. That is why gate behaviour is so easy to reason
+about: every question about a two-input gate has four cases, and you can
+write them all down.
+
+| `a` | `b` | `a AND b` | `a OR b` | `a XOR b` | `a NAND b` | `a NOR b` |
+| --- | --- | --------- | -------- | --------- | ---------- | --------- |
+| 0 | 0 | 0 | 0 | 0 | 1 | 1 |
+| 0 | 1 | 0 | 1 | 1 | 1 | 0 |
+| 1 | 0 | 0 | 1 | 1 | 1 | 0 |
+| 1 | 1 | 1 | 1 | 0 | 0 | 0 |
+
+`NOT` is the one-input case, and it flips its input.
+
+## What you'll be able to do
+
+- Read a gate's behaviour from its truth table, and write the table from the gate.
+- Explain why NAND and NOR are called universal gates.
+- Map each gate to the C bitwise operator that applies it across a whole word.
+- Predict the result of a bitwise expression on a known byte.
+
+## Two things worth noticing in that table
+
+**XOR is addition without the carry.** Compare the `XOR` column with
+binary addition of two one-bit numbers: `0+0=0`, `0+1=1`, `1+0=1`,
+`1+1=10`. The XOR column matches the low bit of the sum in every row, and
+the `AND` column matches the carry. That pair of gates is a half adder,
+which is where the next lesson goes.
+
+**NAND and NOR can build everything else.** `a AND b == NOT(NAND(a, b))`,
+and once you have NOT and one of the two, you can construct AND, OR, and
+XOR from it. This is not trivia: a manufacturing process that reliably
+produces one gate type is cheaper than one that must produce five, and
+real chips are largely built from NAND or NOR. The universality is proved
+by construction, not by assertion.
+
+<Eli5Block
+	topic="gates"
+	football="A linesman raises a flag or does not; there is no third state. Two linesmen report, and the referee combines their signals with a fixed rule — either flag means stop, both flags are needed for something else. The rule is the gate, and it is decided before the match."
+	money="A shop has two switches in series for the safe light: both must be on for it to glow. Wired in parallel, either one is enough. Same two switches, different wiring, and the difference between 'both' and 'either' is the whole design decision."
+/>
+
+<TheoryBlock label="Why it matters for C" title="Bitwise operators are gate arrays">
+
+	C's `&`, `|`, `^`, and `~` apply a gate to every bit position of a
+	word at once. On a 32-bit `int`, one `&` is 32 AND gates working in
+	parallel. That is why masking is cheap and why the same expression works
+	whether you think of the value as one number or 32 flags.
+
+</TheoryBlock>
+
+The board below makes that concrete. Toggle A and B on the posts, switch between the three gates, and follow the wire to the lamp. Each gate is a physical part — a 7408, a 7432, a 7486 — and the lamp is the output.
+
+<LazyStudy label="Logic gates — interactive 3D study" fig="04.1" caption="Logic gates and their truth tables" size="tall">
+	<LogicGateSim3D />
+</LazyStudy>
+
+## Gates across a whole byte
+
+The program below prints a byte in binary, then applies each gate to two
+bytes position by position. Read the columns as four copies of the truth
+table, one per bit.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+static void bits8(const char *label, uint8_t value) {
+    printf("  %-8s 0x%02X  ", label, (unsigned)value);
+    for (int bit = 7; bit >= 0; bit--) {
+        printf("%u", (unsigned)((value >> bit) & 1u));
+        if (bit == 4) {
+            printf(" ");
+        }
+    }
+    printf("\n");
+}
+
+int main(void) {
+    uint8_t a = 0x5Au; /* 0101 1010 */
+    uint8_t b = 0x3Cu; /* 0011 1100 */
+
+    printf("a = 0x5A, b = 0x3C\n");
+    bits8("a", a);
+    bits8("b", b);
+    printf("\n");
+
+    /* Each operator applies its gate to all eight bit positions. */
+    bits8("a & b", (uint8_t)(a & b));
+    bits8("a | b", (uint8_t)(a | b));
+    bits8("a ^ b", (uint8_t)(a ^ b));
+    bits8("~a", (uint8_t)~a);
+    bits8("a << 1", (uint8_t)(a << 1));
+    bits8("a >> 1", (uint8_t)(a >> 1));
+
+    printf("\nthe same gates used as flags:\n");
+    uint8_t flags = 0x08u; /* bit 3 set */
+    printf("  set bit 3     0x%02X\n", (unsigned)(flags | 0x08u));
+    printf("  clear bit 3   0x%02X\n", (unsigned)(flags & ~0x08u));
+    printf("  toggle bit 5  0x%02X\n", (unsigned)(flags ^ 0x20u));
+    printf("  test bit 3    %s\n", (flags & 0x08u) ? "set" : "clear");
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+a = 0x5A, b = 0x3C
+  a        0x5A  0101 1010
+  b        0x3C  0011 1100
+
+  a & b    0x18  0001 1000
+  a | b    0x7E  0111 1110
+  a ^ b    0x66  0110 0110
+  ~a       0xA5  1010 0101
+  a << 1   0xB4  1011 0100
+  a >> 1   0x2D  0010 1101
+
+the same gates used as flags:
+  set bit 3     0x08
+  clear bit 3   0x00
+  toggle bit 5  0x28
+  test bit 3    set
+```
+
+Check one column by hand. Bit 7 of `a` is 0 and bit 7 of `b` is 0, so
+`AND` gives 0, `OR` gives 0, `XOR` gives 0, and `~a` gives 1. In the printed
+rows, the leftmost digit of `a & b` is 0 and of `~a` is 1. Bit 4 is
+`a = 1`, `b = 1`, so `AND` is 1, `OR` is 1, `XOR` is 0 — and indeed
+`0x18` has a 1 in the middle where the printed digits are `1 1`. Every
+other position behaves the same way; the eight columns are eight
+independent truth tables.
+
+`a << 1` shifts every bit left, and the bit that leaves the top is
+discarded — `0xB4` has lost the original bit 7. `a >> 1` brings a zero in
+at the top because `a` is unsigned; on a signed negative value a `>>`
+may duplicate the sign bit instead, which is the difference between
+`0x5A >> 1` and what you might expect from arithmetic on a negative
+number.
+
+The flag section is the practical form. `flags | 0x08` sets bit 3
+unconditionally, `flags & ~0x08` clears it, and `flags ^ 0x20` flips bit 5.
+The `~` in the clear case matters: `flags & 0x08` would keep *only* bit 3,
+which is the opposite of what clearing means.
+
+<BitToggle initial={90} label="a = 0x5A — flip bits and compare with the table" />
+
+## Common pitfalls
+
+### Using `~` on a small unsigned type without masking
+
+`~a` where `a` is `uint8_t` is computed at `int` width, so the result is
+`0xFFFFFFA5`, not `0xA5`. The cast back to `uint8_t` in the print call is
+what makes it print as one byte. Store the result without a cast and the
+high bits will reappear the moment the variable widens.
+
+### Writing `&&` when you meant `&`
+
+`a && b` is a logical test that yields `0` or `1`. `a & b` is eight gates
+acting on eight bit pairs. For `0x5A` and `0x3C`, `&&` gives `1` and `&`
+gives `0x18`. They differ in type as well as value.
+
+### Shifting by the width of the type
+
+`1u << 32` on a 32-bit `unsigned` is undefined, not zero. The shift count
+must be strictly less than the width. This bites in loops written as
+`1 << i` where `i` can reach the width.
+
+### Assuming right shift preserves the value of a negative number
+
+For signed negatives, `>>` is implementation-defined: the compiler may
+fill with zeros or with copies of the sign bit. Use unsigned types for bit
+manipulation and the ambiguity disappears.
+
+<QuizCard
+	id="m04-quiz-xor"
+	question="0x5A ^ 0xFF produces the same value as which other single operation on 0x5A? State the operation and the result in hex."
+	options={[
+		'~0x5A, giving 0xA5',
+		'0x5A & 0xFF, giving 0x5A',
+		'~0x5A, giving 0x5B',
+		'0x5A, unchanged, because XOR with 0xFF cancels every bit'
+	]}
+	answer={0}
+	explanation="XOR with an all-ones mask flips every bit, which is exactly what ~ does. 0x5A is 0101 1010, so the result is 1010 0101 = 0xA5."
+/>
+
+<LectureReference lecture="Lecture 04 — Boolean Logic" slides="4–16" />

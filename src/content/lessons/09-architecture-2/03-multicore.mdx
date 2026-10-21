@@ -1,0 +1,209 @@
+---
+id: 09-03-multicore
+title: Multicore
+module: 9
+lecture: 'Lecture 09 — Architecture 2'
+slides: '36–50'
+estimatedMinutes: 17
+prerequisites: ['09-02-arm']
+tags: ['multicore', 'parallelism', 'amdahl']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Faster clocks stopped working
+
+For forty years, each generation of processor was faster because its
+clock was faster. Around 2005 that stopped: pushing the clock higher
+raised power consumption faster than performance, and the chips melted.
+The industry's answer was to put several cores on one die and run them at
+a reasonable speed.
+
+That worked, with a catch. Two cores do twice the work only if the work
+can be split. A program that computes one long dependency chain gets no
+benefit at all — the second core has nothing to do.
+
+## What you'll be able to do
+
+- State Amdahl's law and use it to bound a speedup.
+- Explain why the serial fraction sets the ceiling.
+- Compute when adding cores stops being worth it.
+- Say why multicore made concurrency a C programmer's problem.
+
+## The ceiling is the serial part
+
+If a fraction *p* of the work can run in parallel, the best possible
+speedup on *n* cores is:
+
+```text
+speedup(n) = 1 / ((1 - p) + p / n)
+```
+
+As *n* grows, the `p/n` term shrinks to nothing and the denominator
+approaches `1 - p`. So the ceiling is `1 / (1 - p)`, no matter how many
+cores you add.
+
+| Parallel fraction | 2 cores | 4 cores | 8 cores | 16 cores | Ceiling |
+| ----------------- | ------- | ------- | ------- | -------- | ------- |
+| 50%               | 1.33×   | 1.61×   | 1.78×   | 1.88×    | 2.0×    |
+| 90%               | 1.81×   | 3.12×   | 4.76×   | 6.66×    | 10×     |
+| 99%               | 2.00×   | 4.00×   | 7.69×   | 14.28×   | 100×    |
+
+A program that is 90% parallel gets a 10× ceiling. Sixteen cores buy it
+6.66×, and the remaining 3.34× is unreachable — not because the hardware
+is bad, but because 10% of the work refuses to be divided.
+
+<TheoryBlock label="Why it matters for C" title="This is why threads became unavoidable">
+
+	Before multicore, concurrency in C was for servers and operating
+	systems. After multicore, a single-threaded program uses a quarter of the
+	machine it runs on. That is the pressure that made pthreads, atomics, and
+	memory models part of ordinary C work — and it is why modules 11 through
+	15 exist. The hardware change forced the language change.
+</TheoryBlock>
+
+<Eli5Block
+	topic="amdahl"
+	football="Amdahl's law is a team where only the strikers can be doubled. You can field eleven strikers, and the ball still has to come out of defence, one pass at a time. Adding forwards stops helping once the midfield is the bottleneck."
+	money="It is a checkout with one cashier and many baggers. Hiring a hundred baggers does not make the queue move faster, because every customer still has to be scanned by the one cashier. The serial step sets the pace."
+/>
+
+## Computing the table
+
+Integer arithmetic keeps the output exact and identical on every machine,
+which matters more here than decimal precision: the point is the shape of
+the curve, not the third digit.
+
+```c
+#include <stdio.h>
+
+/* Amdahl's law: if a fraction p of the work can run in parallel, the best
+ * speedup on n cores is 1 / ((1 - p) + p / n). Integer maths so the output
+ * is exact and reproducible everywhere. */
+
+static void print_row(unsigned parallel_percent, unsigned max_cores) {
+    printf("parallel fraction %u%%\n", parallel_percent);
+    for (unsigned n = 1; n <= max_cores; n *= 2) {
+        /* serial + parallel/n, scaled by 100 for integer arithmetic. */
+        unsigned long denom = (100u - parallel_percent) + parallel_percent / n;
+        unsigned long speedup_x100 = (100u * 100u) / denom;
+        printf("  %2u cores  speedup %lu.%02lux\n",
+               n, speedup_x100 / 100, speedup_x100 % 100);
+    }
+    printf("\n");
+}
+
+int main(void) {
+    print_row(50, 16);
+    print_row(90, 16);
+    print_row(99, 16);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+parallel fraction 50%
+   1 cores  speedup 1.00x
+   2 cores  speedup 1.33x
+   4 cores  speedup 1.61x
+   8 cores  speedup 1.78x
+  16 cores  speedup 1.88x
+
+parallel fraction 90%
+   1 cores  speedup 1.00x
+   2 cores  speedup 1.81x
+   4 cores  speedup 3.12x
+   8 cores  speedup 4.76x
+  16 cores  speedup 6.66x
+
+parallel fraction 99%
+   1 cores  speedup 1.00x
+   2 cores  speedup 2.00x
+   4 cores  speedup 4.00x
+   8 cores  speedup 7.69x
+  16 cores  speedup 14.28x
+
+```
+
+The 50% row is the sobering one. Sixteen cores deliver 1.88× — almost
+all of the possible 2×, and almost none of the possible 16×. Going from
+eight cores to sixteen adds one tenth of a times speedup. That is what a
+serial half of the program does to a machine with sixteen cores.
+
+The 99% row shows the opposite: doubling the cores nearly doubles the
+throughput, right up to sixteen. Between 90% and 99% parallel lies most
+of the difference between a program that scales and one that does not.
+
+Note the integer arithmetic: `p / n` truncates, so at `p = 99` and `n = 4`
+the parallel term is 24, not 24.75. The printed values are therefore
+slightly pessimistic. That is acceptable for a table whose point is the
+asymptote, and it is honest — the program does not claim a precision it
+does not have.
+
+<ExerciseCard
+	id="m09-serial-fraction"
+	concept="Amdahl inverted"
+	prompt="Amdahl says speedup = 1 / ((1 - p) + p / n). Work backwards: a program measured 3.20x on 8 cores. Search the parallel fraction from 0 to 100% in steps of 0.1% and keep the one whose predicted speedup is closest to 3.20. Print exactly:&#10;&#10;cores: 8&#10;target speedup: 3.20x&#10;closest parallel fraction: 78.6%&#10;speedup at 78.6%: 3.203x&#10;error: 0.003x&#10;&#10;Use doubles and keep the search honest: the winning fraction must come from the same formula that produced the speedup, and the error is the absolute difference from the target."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define CORES 8&#10;#define TARGET 3.2&#10;&#10;static double speedup(unsigned permille, unsigned cores) &#123;&#10;    double p = (double)permille / 1000.0;&#10;    return 1.0 / ((1.0 - p) + p / (double)cores);&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: scan permille 0..1000, track the smallest absolute error,&#10;       then print the winner and the speedup it predicts */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="cores: 8&#10;target speedup: 3.20x&#10;closest parallel fraction: 78.6%&#10;speedup at 78.6%: 3.203x&#10;error: 0.003x&#10;"
+	hints={[
+		'Search in thousandths of a percent: loop permille from 0 to 1000, convert to a fraction as permille / 1000.0, predict with the formula, and remember the value with the smallest absolute gap to 3.2.',
+		'The closest fraction is 786 permille, which prints as 78.6%; it predicts 3.203x, so the error is 0.003x. Format with %.1f for the percentage, %.3f for the speedup and the error.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;#define CORES 8&#10;#define TARGET 3.2&#10;&#10;static double speedup(unsigned permille, unsigned cores) &#123;&#10;    double p = (double)permille / 1000.0;&#10;    return 1.0 / ((1.0 - p) + p / (double)cores);&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    unsigned best = 0;&#10;    double best_error = 1e9;&#10;&#10;    for (unsigned permille = 0; permille &lt;= 1000u; permille++) &#123;&#10;        double got = speedup(permille, CORES);&#10;        double error = got &gt; TARGET ? got - TARGET : TARGET - got;&#10;        if (error &lt; best_error) &#123;&#10;            best_error = error;&#10;            best = permille;&#10;        &#125;&#10;    &#125;&#10;&#10;    printf(&quot;cores: %d\n&quot;, CORES);&#10;    printf(&quot;target speedup: %.2fx\n&quot;, TARGET);&#10;    printf(&quot;closest parallel fraction: %.1f%%\n&quot;, (double)best / 10.0);&#10;    printf(&quot;speedup at %.1f%%: %.3fx\n&quot;, (double)best / 10.0,&#10;           speedup(best, CORES));&#10;    printf(&quot;error: %.3fx\n&quot;, best_error);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Expecting linear speedup
+
+Four cores does not mean four times faster. It means at most four times
+faster, and usually much less. Anyone quoting a 4× speedup on a quad-core
+machine is either measuring a perfectly parallel workload or mismeasuring.
+
+### Forgetting the overhead of coordination
+
+Amdahl's law assumes dividing work is free. It is not: threads cost
+memory, cache coherence traffic, and locking. Beyond some core count,
+adding another thread makes the program slower. The law is an upper
+bound, and real speedups sit below it.
+
+### Confusing cores with threads
+
+Two threads on one core interleave; they do not run simultaneously. This
+is why oversubscribing a machine with threads gives no speedup for
+CPU-bound work, and why a program that is fast on eight threads may be
+identical on eight cores' worth of four threads.
+
+### Assuming the serial fraction is fixed
+
+It is not — it depends on the input size. The serial setup cost is often
+constant while the parallel work grows with the data, so a program that is
+50% serial on a small input becomes 99% parallel on a large one. This is
+the **weak scaling** argument, and it is why "does it scale?" is a
+question about your workload rather than about the hardware.
+
+<QuizCard
+	id="m09-quiz-ceiling"
+	question="A program is 95% parallel. What is the maximum speedup with any number of cores, and how many cores does it take to get within 10% of that ceiling?"
+	options={[
+		'20x from any number of cores, and about 171 cores to reach 18x, which is within 10% of that ceiling',
+		'20x from any number of cores, and 16 cores is enough because 95% of 16 is about 15',
+		'9.5x, because 95% of the work parallelises and the rest is exactly half, and 32 cores gets there',
+		'100x, because 95% parallel means only 5% wasted, and 2000 cores reaches within 10% of it'
+	]}
+	answer={0}
+	explanation="With 5% serial, Amdahl caps the speedup at 1 / 0.05 = 20x no matter how many cores you add, and solving 1 / (0.05 + 0.95/n) = 18 gives about 171 cores to reach 90% of that ceiling."
+/>
+
+<LectureReference lecture="Lecture 09 — Architecture 2" slides="36–50" />

@@ -1,0 +1,332 @@
+---
+id: 14-02-mutex-semaphore
+title: Mutex & Semaphore
+module: 14
+lecture: 'Lecture 14 — Synchronization'
+slides: '16–30'
+estimatedMinutes: 20
+prerequisites: ['14-01-race-conditions']
+tags: ['mutex', 'semaphore', 'concurrency']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Two primitives, two jobs
+
+The previous lesson ended with a lost-update bug and no fix. There are two
+standard fixes, and they solve different problems.
+
+A **mutex** (mutual exclusion lock) is a flag with two operations: `lock` and
+`unlock`. Between them, exactly one thread may be inside. Every other thread
+that calls `lock` blocks until the holder calls `unlock`. It answers the question
+*"may I touch this data?"*
+
+A **semaphore** is a counter with two operations: `wait` (decrement, block if it
+would go below zero) and `post` (increment, wake a waiter). It answers the
+question *"how many of these are available?"* A mutex is a semaphore with a
+maximum of one — but the reverse is not true, because a semaphore says nothing
+about ownership.
+
+That ownership difference matters. A mutex must be unlocked by the thread that
+locked it. A semaphore can be posted by anyone, which is exactly what you want
+for signalling: a producer posts to say "an item is ready" and the consumer —
+a different thread — waits on it.
+
+| | Mutex | Semaphore |
+| --- | --- | --- |
+| State | locked / unlocked | integer count |
+| Use | protect shared data | count resources, signal events |
+| Owner | must unlock | anyone may post |
+| POSIX type | `pthread_mutex_t` | `sem_t` |
+
+## What you'll be able to do
+
+- Choose a mutex or a semaphore based on whether you need exclusion or counting.
+- Fix a lost update with `PTHREAD_MUTEX_INITIALIZER` and a lock/unlock pair.
+- Build a bounded buffer from one mutex and two semaphores.
+- Say why acquiring the mutex before a blocking `sem_wait` deadlocks.
+
+<TheoryBlock label="Why it matters for C" title="Locks do not make code faster, and they do not make it correct by themselves">
+
+	A mutex serialises; it never parallelises. Every nanosecond two threads spend queueing on one lock
+	is a nanosecond they are not computing, which is why the fixed counter in this lesson is about 19×
+	slower than the broken one. The lock is still the right answer, because a wrong fast number is
+	worth less than a right slow one. But the discipline is what makes it correct: every path out of
+	the critical section must unlock, and every lock must be taken in the same order by every thread.
+	The mutex enforces exclusion; it cannot enforce your design.
+</TheoryBlock>
+
+## Fixing the counter with a mutex
+
+The smallest possible change to the racy program: wrap the increment.
+
+<Eli5Block
+	topic="mutex"
+	football="One dressing-room key for the tactics board. Whoever holds the key is the only one allowed to change the formation; everyone else stands outside until the key comes back. The key does not make the change faster — the same chalk marks get written — it just means two players never write different formations at once."
+	money="One key to the petty-cash tin. Whoever holds it counts out the notes and updates the ledger, then hands the key on. Two people cannot both count the same banknotes, so the ledger always agrees with the tin. The queue outside is the price: the tin is safe, and slower to use than an open drawer."
+/>
+
+```c
+#include <pthread.h>
+#include <stdio.h>
+
+#define THREADS 4
+#define ITERATIONS 500000
+
+static long counter = 0;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *bump(void *arg) {
+    (void)arg;
+    for (int i = 0; i < ITERATIONS; i++) {
+        pthread_mutex_lock(&lock);
+        counter++;
+        pthread_mutex_unlock(&lock);
+    }
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t[THREADS];
+
+    for (int i = 0; i < THREADS; i++) {
+        if (pthread_create(&t[i], NULL, bump, NULL) != 0) {
+            fprintf(stderr, "could not create thread %d\n", i);
+            return 1;
+        }
+    }
+    for (int i = 0; i < THREADS; i++) {
+        pthread_join(t[i], NULL);
+    }
+
+    pthread_mutex_destroy(&lock);
+    printf("counter  = %ld\n", counter);
+    printf("expected = %d\n", THREADS * ITERATIONS);
+    return 0;
+}
+```
+
+`PTHREAD_MUTEX_INITIALIZER` is the static initializer, so no setup call is
+needed. The `pthread_mutex_destroy` at the end is not decoration: it releases
+whatever the implementation reserved, and static analysers and leak checkers
+notice when it is missing. Destroying a locked mutex is undefined behaviour, so
+it goes after every join.
+
+```text
+gcc -std=c11 -Wall -Wextra -pthread mutex.c -o mutex
+./mutex
+```
+
+## Expected output
+
+```text
+counter  = 2000000
+expected = 2000000
+```
+
+Deterministic, every run, on every machine. The mutex is not making the
+increments atomic in the hardware sense; it is forcing the four threads to take
+turns, so no two load-add-store sequences overlap.
+
+The cost is real. Measured on this machine, seven runs each: the racy version
+finishes in a median 4 ms, the mutex version in a median 75 ms — about 19×
+slower, which is 2 million lock/unlock pairs at roughly 35 ns each. Most of that
+is contention: four threads fighting over one lock spend their time queueing
+rather than incrementing. For a counter that is a bad trade, and `<stdatomic.h>`
+offers `atomic_long` which does the same job without the lock. For a linked list
+insert a mutex is the right tool and there is no cheaper option.
+
+## Counting slots with a semaphore
+
+The second program is a bounded buffer with four slots, one producer, one
+consumer, six items. It needs two answers at once: *how many free slots remain*
+and *how many items are waiting*. Two semaphores, plus a mutex for the buffer
+indices themselves.
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <stdio.h>
+
+#define SLOTS 4
+#define ITEMS 6
+
+static int buffer[SLOTS];
+static int in_slot = 0;
+static int out_slot = 0;
+static int produced = 0;
+static int consumed = 0;
+
+static sem_t *empty_slots;
+static sem_t *filled_slots;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+static sem_t *open_semaphore(const char *name, unsigned value) {
+    sem_unlink(name);                       /* leftovers from an earlier run */
+    sem_t *sem = sem_open(name, O_CREAT | O_EXCL, 0600, value);
+    if (sem == SEM_FAILED) {
+        perror("sem_open");
+        return NULL;
+    }
+    return sem;
+}
+
+static void *producer(void *arg) {
+    (void)arg;
+    for (int i = 0; i < ITEMS; i++) {
+        sem_wait(empty_slots);              /* claim a free slot */
+        pthread_mutex_lock(&lock);
+        buffer[in_slot] = i;
+        in_slot = (in_slot + 1) % SLOTS;
+        produced++;
+        pthread_mutex_unlock(&lock);
+        sem_post(filled_slots);             /* announce one more item */
+    }
+    return NULL;
+}
+
+static void *consumer(void *arg) {
+    (void)arg;
+    for (int i = 0; i < ITEMS; i++) {
+        sem_wait(filled_slots);             /* claim a filled slot */
+        pthread_mutex_lock(&lock);
+        int value = buffer[out_slot];
+        out_slot = (out_slot + 1) % SLOTS;
+        consumed++;
+        pthread_mutex_unlock(&lock);
+        sem_post(empty_slots);              /* announce one more free slot */
+        printf("consumer took %d\n", value);
+    }
+    return NULL;
+}
+
+int main(void) {
+    pthread_t prod;
+    pthread_t cons;
+
+    empty_slots = open_semaphore("/sp_empty_slots", SLOTS);
+    filled_slots = open_semaphore("/sp_filled_slots", 0);
+    if (empty_slots == NULL || filled_slots == NULL) {
+        return 1;
+    }
+
+    if (pthread_create(&prod, NULL, producer, NULL) != 0 ||
+        pthread_create(&cons, NULL, consumer, NULL) != 0) {
+        fprintf(stderr, "could not create threads\n");
+        return 1;
+    }
+
+    pthread_join(prod, NULL);
+    pthread_join(cons, NULL);
+
+    printf("produced = %d\n", produced);
+    printf("consumed = %d\n", consumed);
+
+    sem_close(empty_slots);
+    sem_close(filled_slots);
+    sem_unlink("/sp_empty_slots");
+    sem_unlink("/sp_filled_slots");
+    return 0;
+}
+```
+
+Two details worth reading twice. The semaphore is acquired *before* the mutex,
+never after: holding the mutex while blocking on a semaphore is the standard
+recipe for a deadlock, because the thread that could free the slot needs the
+mutex you are holding. And `sem_unlink` before `sem_open` clears a named
+semaphore left behind by a crashed run — on Linux these live in `/dev/shm` and
+survive the process.
+
+## Expected output
+
+```text
+consumer took 0
+consumer took 1
+consumer took 2
+consumer took 3
+consumer took 4
+consumer took 5
+produced = 6
+consumed = 6
+```
+
+The counts are deterministic. The *interleaving* is not: on a slower machine the
+producer may finish all six before the consumer takes any, or the two may
+alternate. What never changes is that the last two lines read `produced = 6` and
+`consumed = 6`, and every item appears exactly once. That is the property the
+semaphores exist to guarantee — not the order of the lines.
+
+Windows has no Pthreads and no `<semaphore.h>`, so this program is POSIX-only.
+On Linux, linking `-pthread` is what pulls in the thread library; on macOS the
+symbols are in libSystem and the flag is still the correct way to ask for
+thread-safe compiler settings.
+
+## Common pitfalls
+
+### Locking in a different order in different threads
+
+Thread A takes lock 1 then lock 2; thread B takes lock 2 then lock 1. Both
+proceed until each holds one and waits for the other. The program hangs with no
+error message. The rule is dull and absolute: every thread that takes both locks
+takes them in the same order, or you build a hierarchy, or you use
+`pthread_mutex_trylock` and back off.
+
+### Forgetting to unlock on an early return
+
+`pthread_mutex_lock`; check an argument; `return -1`; the lock is held forever.
+C has no `finally`. Either every exit path unlocks, or you restructure so the
+critical section has a single exit. In C++ a RAII guard removes the whole class
+of bug; in C it has to be discipline plus review.
+
+### Assuming a semaphore enforces mutual exclusion
+
+`sem_wait` with an initial value above 1 lets that many threads through at once.
+It counts, it does not exclude. If you want exclusion, initialize to 1 *and*
+never post without a matching wait — which is a mutex with extra steps.
+
+### Using `sem_init` and then porting
+
+`sem_init` is unnamed and lives in memory, which is convenient, but macOS does
+not implement it — `sem_open` with a name works on both. Code written against
+`sem_init` compiles on Linux, fails to link on macOS, and the error message does
+not hint at the cause.
+
+<ExerciseCard
+	id="mutex-bank-transfer"
+	concept="lock ordering and deadlock"
+	prompt="Model lock ordering arithmetically: two workers each make 500 transfers of 10 between two accounts holding 100000 each. Worker 0 moves 10 from alice to bob, worker 1 moves 10 the other way. Each worker takes one lock per action, worker 0 acts before worker 1 in every round, and a round in which neither worker can act is a deadlock. Run it twice: first with both workers locking alice then bob, then with worker 1 locking bob then alice. Print exactly:&#10;ordered: transfers 1000 alice 100000 bob 100000 deadlock no&#10;reversed: transfers 0 alice 100000 bob 100000 deadlock yes&#10;Nothing else. Note what the reversed line does not show: no money is lost, the batch simply stops forever, which is why a lock-order bug usually looks like a hang."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define TRANSFERS 500&#10;#define AMOUNT 10&#10;&#10;enum &#123; TAKE_FIRST, TAKE_SECOND, DONE &#125;;&#10;&#10;struct worker &#123;&#10;    int first;&#10;    int second;&#10;    int phase;&#10;    int completed;&#10;&#125;;&#10;&#10;/* TODO: return 1 when the lock was free and is now held, 0 otherwise */&#10;static int try_lock(int held[2], int lock) &#123;&#10;    return 0;&#10;&#125;&#10;&#10;static int run(int reversed, int *deadlock, long *alice, long *bob) &#123;&#10;    /* TODO: two workers, two locks, one action each per round; stop when&#10;       both are DONE or a whole round makes no progress */&#10;    return 0;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    int deadlock = 0;&#10;    long alice = 0;&#10;    long bob = 0;&#10;&#10;    /* TODO: run both lock orders and print the two lines */&#10;    (void)deadlock;&#10;    (void)alice;&#10;    (void)bob;&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="ordered: transfers 1000 alice 100000 bob 100000 deadlock no&#10;reversed: transfers 0 alice 100000 bob 100000 deadlock yes&#10;"
+	hints={[
+		'A deadlock needs a cycle: worker 0 holds alice and wants bob while worker 1 holds bob and wants alice. A fixed global order breaks the cycle; reversing it for one worker creates it.',
+		'After the first round each worker holds one lock, so the reversed run deadlocks before a single transfer: transfers 0, and the balances are untouched because nothing moved.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* Lock-order deadlock, modelled without threads: two workers each take two&#10; * locks one at a time, the scheduler gives worker 0 then worker 1 one&#10; * action per round, and a round with no progress is a deadlock. */&#10;&#10;#define TRANSFERS 500&#10;#define AMOUNT 10&#10;&#10;enum &#123; TAKE_FIRST, TAKE_SECOND, DONE &#125;;&#10;&#10;struct worker &#123;&#10;    int first;&#10;    int second;&#10;    int phase;&#10;    int completed;&#10;&#125;;&#10;&#10;static int try_lock(int held[2], int lock) &#123;&#10;    if (held[lock]) &#123;&#10;        return 0;&#10;    &#125;&#10;    held[lock] = 1;&#10;    return 1;&#10;&#125;&#10;&#10;static int run(int reversed, int *deadlock, long *alice, long *bob) &#123;&#10;    struct worker w[2] = &#123;&#123;0, 1, TAKE_FIRST, 0&#125;, &#123;0, 1, TAKE_FIRST, 0&#125;&#125;;&#10;    int held[2] = &#123;0, 0&#125;;&#10;&#10;    *alice = 100000;&#10;    *bob = 100000;&#10;    *deadlock = 0;&#10;&#10;    if (reversed) &#123;&#10;        w[1].first = 1;&#10;        w[1].second = 0;&#10;    &#125;&#10;&#10;    for (;;) &#123;&#10;        int progress = 0;&#10;&#10;        for (int i = 0; i &lt; 2; i++) &#123;&#10;            struct worker *me = &amp;w[i];&#10;&#10;            if (me-&gt;phase == DONE) &#123;&#10;                continue;&#10;            &#125;&#10;            if (me-&gt;phase == TAKE_FIRST &amp;&amp; try_lock(held, me-&gt;first)) &#123;&#10;                me-&gt;phase = TAKE_SECOND;&#10;                progress = 1;&#10;            &#125; else if (me-&gt;phase == TAKE_SECOND &amp;&amp; try_lock(held, me-&gt;second)) &#123;&#10;                if (i == 0) &#123;&#10;                    *alice -= AMOUNT;&#10;                    *bob += AMOUNT;&#10;                &#125; else &#123;&#10;                    *bob -= AMOUNT;&#10;                    *alice += AMOUNT;&#10;                &#125;&#10;                held[me-&gt;first] = 0;&#10;                held[me-&gt;second] = 0;&#10;                me-&gt;completed++;&#10;                me-&gt;phase = me-&gt;completed == TRANSFERS ? DONE : TAKE_FIRST;&#10;                progress = 1;&#10;            &#125;&#10;        &#125;&#10;&#10;        if (w[0].phase == DONE &amp;&amp; w[1].phase == DONE) &#123;&#10;            break;&#10;        &#125;&#10;        if (!progress) &#123;&#10;            *deadlock = 1;&#10;            break;&#10;        &#125;&#10;    &#125;&#10;    return w[0].completed + w[1].completed;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    int deadlock = 0;&#10;    long alice = 0;&#10;    long bob = 0;&#10;    int ordered = run(0, &amp;deadlock, &amp;alice, &amp;bob);&#10;    printf(&quot;ordered: transfers %d alice %ld bob %ld deadlock %s\n&quot;, ordered,&#10;           alice, bob, deadlock ? &quot;yes&quot; : &quot;no&quot;);&#10;&#10;    int reversed_deadlock = 0;&#10;    int reversed = run(1, &amp;reversed_deadlock, &amp;alice, &amp;bob);&#10;    printf(&quot;reversed: transfers %d alice %ld bob %ld deadlock %s\n&quot;, reversed,&#10;           alice, bob, reversed_deadlock ? &quot;yes&quot; : &quot;no&quot;);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="mutex-sem-quiz-1"
+	question="A bounded-buffer program acquires the mutex first and then calls sem_wait on a full-slot semaphore. It sometimes deadlocks. Explain the cycle, and state the ordering rule that avoids it."
+	options={[
+		'The consumer needs the mutex to take an item, but the producer holds it while waiting for a slot; wait on the semaphore before taking the mutex, and never block while holding it.',
+		'The semaphore is held too long; replace sem_wait with a busy loop so the producer never blocks.',
+		'The mutex must be released before refilling, because sem_wait is recursive on the same mutex.',
+		'The deadlock comes from both sides sharing one condition variable; give each its own semaphore and keep the mutex held across the wait.'
+	]}
+	answer={0}
+	explanation="Holding the mutex while blocking on a full-slot semaphore means no consumer can acquire that mutex to make a slot, so the producer waits for a slot nobody can create. Acquire the semaphore first (or drop the mutex around the wait) so the mutex is never held across a blocking wait."
+/>
+
+<LectureReference lecture="Lecture 14 — Synchronization" slides="16–30" />

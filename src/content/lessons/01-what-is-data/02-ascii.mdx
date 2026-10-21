@@ -1,0 +1,301 @@
+---
+id: 01-02-ascii
+title: ASCII
+module: 1
+lecture: 'Lecture 01 — Data Representation 1'
+slides: '12–25'
+estimatedMinutes: 12
+prerequisites: ['01-01-bits-bytes']
+tags: ['ascii', 'characters', 'encoding']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import BitToggle from '$lib/components/viz/BitToggle.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## A letter is a number with an agreed meaning
+
+A byte can hold 256 values. Text is what happens when a group of people write
+down which value stands for which character. That written agreement is a
+**character set**, and the one this lecture begins with is **ASCII**: the
+American Standard Code for Information Interchange, published in 1963.
+
+ASCII is a **7-bit** code. Seven bits give exactly 128 values, numbered 0 to
+127, and that is the entire standard. On the machines you will use, each of
+those values sits in a `char`, which is 8 bits wide. The eighth bit was left out
+of the standard on purpose: some systems used it as a parity bit for checking
+transmission errors, others as the first step into a national variant.
+
+The part that matters for C is not the table itself. It is that `char` is an
+integer type. The compiler does not have a category called "letter". `'A'` is
+the number 65, written in a notation that documents your intent.
+
+## What you'll be able to do
+
+- Say which of the two readings of a byte a given line of C asks for.
+- Recall the three anchor values 48, 65, and 97 without a table.
+- Explain why the gap between `'Z'` and `'a'` breaks careless range checks.
+- Convert a digit character to its numeric value with `c - '0'`.
+- State what the eighth bit of a `char` is doing, and why `EOF` is not a character.
+
+## The table has three regions
+
+ASCII is best remembered as three regions, not 128 separate facts.
+
+Codes 0 to 31 are **control characters**. They do not print. They were commands
+for a teletype: move the cursor, ring a bell, start a new line. Every one of them
+has a C escape that survives in string literals today.
+
+Codes 32 to 126 are **printable**. This is the block you see on screen, and the
+reason the space character exists as a value rather than as nothing at all.
+
+Code 127 is **DEL**, sitting alone past the printable block. On paper tape it
+punched out every hole in the row, which erased a character — hence the name. It
+is the one control code that lives above the printables rather than below them.
+
+| Decimal | Hex       | Contents                          |
+| ------- | --------- | --------------------------------- |
+| 0–31    | 0x00–0x1F | control characters                |
+| 32      | 0x20      | space, the first printable byte   |
+| 48–57   | 0x30–0x39 | the digits `0` to `9`             |
+| 65–90   | 0x41–0x5A | uppercase `A` to `Z`              |
+| 97–122  | 0x61–0x7A | lowercase `a` to `z`              |
+| 127     | 0x7F      | DEL, the last code point          |
+
+Notice what the table does not contain: no accents, no Greek, no currency symbol
+beyond `$`, no box drawing, and nothing outside the Latin alphabet. ASCII is a
+1963 American standard for teletypes, and it shows. Lecture 01 stops at this
+boundary deliberately, because the next step is a change of abstraction rather
+than a longer table — and that is what the next lesson is about.
+
+### The control block
+
+The control characters are worth reading once, because they explain a dozen
+things in Unix that otherwise look arbitrary. A terminal is a descendant of a
+printer, and these codes were the printer's commands.
+
+| Code | Hex  | Escape | Meaning                          |
+| ---- | ---- | ------ | -------------------------------- |
+| 7    | 0x07 | `\a`   | bell — literally rang a bell     |
+| 8    | 0x08 | `\b`   | backspace, move left one column  |
+| 9    | 0x09 | `\t`   | horizontal tab                   |
+| 10   | 0x0A | `\n`   | line feed, move down one row     |
+| 13   | 0x0D | `\r`   | carriage return, column one      |
+| 27   | 0x1B | `\x1b` | escape, the start of a sequence  |
+| 127  | 0x7F | none   | delete — all seven data bits set |
+
+The split between `\n` and `\r` is the reason text files from Windows look wrong
+in an old Unix tool and vice versa. Windows ends a line with both, a sequence
+inherited from "move down, then return the carriage". Unix keeps only the line
+feed. The characters are still in the file either way; only the convention about
+which ones end a line differs.
+
+Note also that `\e` is not standard C. Escape is `\x1b`, a hex escape. If you see
+`\e` in a codebase it is a GNU extension, and it will not compile everywhere.
+
+## Three anchors
+
+You do not need to memorise 128 entries. Three values, plus the structure around
+them, cover almost every case.
+
+| Character | Decimal | Hex    | Why it is the anchor        |
+| --------- | ------- | ------ | --------------------------- |
+| `'0'`     | 48      | 0x30   | the digit block starts here |
+| `'A'`     | 65      | 0x41   | the uppercase block starts here |
+| `'a'`     | 97      | 0x61   | the lowercase block starts here |
+
+From `'0'` the nine following values are the digits in order, so `'7'` is
+48 + 7 = 55. From `'A'` the next 25 are the alphabet in order, so `'D'` is 68.
+The same holds for lowercase.
+
+Two gaps are worth memorising because they are load-bearing.
+
+`'a' - 'A'` is 32, which is exactly `0x20` — one single bit. That bit is the
+only difference between the uppercase and lowercase blocks, which is why the
+classic case-conversion trick works: OR with `0x20` to reach lowercase, AND with
+`0xDF` to reach uppercase. It is also why the two ranges do not overlap.
+
+The second gap is the one that bites. From `'Z'` (90) to `'a'` (97) there are six
+characters: `[`, `\`, `]`, `^`, `_`, and the backtick. A range test written as
+`c >= 'A' && c <= 'z'` therefore accepts all six of them. The letters are not
+contiguous across the case boundary, and no amount of wishing makes them so.
+
+## char is a small integer
+
+In C, `char` is an integer type that happens to be one byte. `sizeof(char)` is 1
+by definition, so a `char` is exactly one **byte** — and on the machines this
+course targets, one byte is eight bits. The standard calls the number of bits in
+a byte `CHAR_BIT` and only guarantees it is at least 8, which is worth knowing
+before you write code that assumes 8.
+
+Because `char` is an integer, arithmetic on it is arithmetic on the code. `'A' + 1`
+is 66, and 66 is `'B'`. That is not a trick or a special case in the compiler; it
+is addition, followed by a printing convention you choose at the call.
+
+<TheoryBlock label="Why it matters for C" title="The character functions take int, not char">
+
+	`getchar()` returns an `int`, not a `char`. It has to: it must be able to
+	return any of the 256 byte values *and* a distinct value meaning "no more
+	input". That extra value is `EOF`, which is `-1`. If you store the result in
+	a plain `char`, the byte `0xFF` and `EOF` can become the same value, and a
+	loop reading a binary file stops early for no visible reason. Store the
+	result in an `int` and compare against `EOF`.
+
+</TheoryBlock>
+
+<BitToggle initial={65} label="One byte, read as a character" />
+
+Set the byte to 65 and the ASCII line shows `A`. Set it to 97 and it shows `a`.
+Set it to 32 and it shows a space — an invisible character, which is why a
+readout of " " looks like a bug until you remember that space is a value.
+
+<Eli5Block
+	topic="encoding"
+	football="A squad number belongs to the team sheet, not to the player. The digit 10 says nothing about who wears it until you read the sheet, and give that sheet to another club and 10 becomes somebody else. Nothing about the digit changed — only the agreement around it."
+	money="A till code is not the product. Code 48 means nothing until you read the price list taped beside the till, and change the list and 48 becomes something else while the receipt is unchanged. The code is an index into an agreed table; the table holds the meaning."
+/>
+
+## Printing one byte two ways
+
+`printf` has two conversion letters for a character, and the difference between
+them is exactly the point of this lesson. `%c` prints the byte as the character
+it encodes. `%d` prints the same byte as a decimal integer. Neither one converts
+anything; they read the same bits under different agreements. Writing
+`printf("%c %d", c, c)` prints both readings of one variable, which is the
+fastest way to see what a byte actually holds.
+
+The program below prints the three anchors, then ten code points starting at
+`'A'` in both readings, then three pieces of character arithmetic.
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    /* The three anchors an ASCII table is built around. */
+    char anchors[] = {'0', 'A', 'a'};
+    const char *names[] = {"'0' digit", "'A' upper", "'a' lower"};
+
+    printf("anchor        decimal  hex\n");
+    for (int i = 0; i < 3; i++) {
+        printf("%-12s  %7d  0x%02X\n", names[i], (int)anchors[i],
+               (unsigned)(unsigned char)anchors[i]);
+    }
+
+    printf("\nthe ten bytes starting at 'A':\n");
+    printf("decimal  hex   char\n");
+    for (int code = 65; code < 75; code++) {
+        printf("%7d  0x%02X  %c\n", code, (unsigned)code, code);
+    }
+
+    printf("\n'A' + 1 is %d, which prints as %c\n", 'A' + 1, 'A' + 1);
+    printf("'a' - 'A' is %d, the gap between the two cases\n", 'a' - 'A');
+    printf("'7' - '0' is %d, how a digit character becomes its value\n", '7' - '0');
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+anchor        decimal  hex
+'0' digit          48  0x30
+'A' upper          65  0x41
+'a' lower          97  0x61
+
+the ten bytes starting at 'A':
+decimal  hex   char
+     65  0x41  A
+     66  0x42  B
+     67  0x43  C
+     68  0x44  D
+     69  0x45  E
+     70  0x46  F
+     71  0x47  G
+     72  0x48  H
+     73  0x49  I
+     74  0x4A  J
+
+'A' + 1 is 66, which prints as B
+'a' - 'A' is 32, the gap between the two cases
+'7' - '0' is 7, how a digit character becomes its value
+```
+
+The `%c` column walks the alphabet because the code increments by one and ASCII
+happens to lay the capitals out consecutively. That is a property of the
+standard, not of arithmetic. Arithmetic only guarantees that 65 + 1 is 66; ASCII
+is what makes 66 print as `B`.
+
+The last line is the most useful idiom in the lesson. `'7' - '0'` is 7, and it
+works for every digit because the whole block is contiguous. This is how you turn
+typed input into a number without a lookup table — and it is why
+`atoi` is rarely necessary for a single digit.
+
+## Common pitfalls
+
+### Testing a letter with one range across both cases
+
+`if (c >= 'A' && c <= 'z')` accepts `[`, `\`, `]`, `^`, `_`, and the backtick,
+because 91 through 96 sit between the two blocks. Write two ranges joined by
+`||`, or use `isalpha()` from `<ctype.h>`. The same trap appears in reverse with
+uppercase conversion done by subtracting 32 without checking that the input was
+lowercase first.
+
+### Storing getchar's result in a char
+
+`char c = getchar();` looks correct and is wrong for two independent reasons.
+`getchar` returns `int` precisely so it can express `EOF` as `-1`, and on a
+machine where `char` is signed, the byte `0xFF` converts to -1 as well. The loop
+ends one byte early on binary input. Declare the variable `int`, and compare
+against `EOF` before converting to `char`.
+
+### Assuming char is signed, or assuming it is unsigned
+
+The standard leaves the signedness of plain `char` to the implementation. On the
+machines this course targets it is signed, so a byte above 127 becomes negative
+when you read it as a `char`. That matters the moment you feed it to `%d` or to
+a comparison. When a variable holds raw bytes rather than characters, declare it
+`unsigned char` and make the intent explicit.
+
+### Forgetting that %c takes an int
+
+The argument to `%c` is an `int`, and the conversion keeps only its lowest byte
+— the standard says it converts to `unsigned char` and writes that. A `char`
+variable is promoted to `int` automatically, so `printf("%c", c)` is fine, but
+`printf("%c", 1000)` prints the byte 1000 gives after truncation, with no
+diagnostic. If a `%c` prints something unexpected, print the same expression
+with `%d` beside it and see which number you actually produced.
+
+<ExerciseCard
+	id="m01-ascii-range-table"
+	concept="ASCII ranges and code points"
+	prompt="Print one line per code, first for 33 to 47 and then for 91 to 96, in exactly the form `33 0x21 '!'` — the decimal code, a space, `0x` plus two uppercase hex digits, a space, and the character in single quotes. Then count with isalpha how many of the six codes from 91 to 96 are not letters and print exactly `non-letters: 6` as the final line."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;int main(void) &#123;&#10;    for (int code = 33; code &lt;= 47; code++) &#123;&#10;        /* TODO: print code, 0x%02X, and the character */&#10;    &#125;&#10;    return 0;&#10;&#125;"
+	expectedStdout="33 0x21 '!'&#10;34 0x22 '&quot;'&#10;35 0x23 '#'&#10;36 0x24 '$'&#10;37 0x25 '%'&#10;38 0x26 '&amp;'&#10;39 0x27 '''&#10;40 0x28 '('&#10;41 0x29 ')'&#10;42 0x2A '*'&#10;43 0x2B '+'&#10;44 0x2C ','&#10;45 0x2D '-'&#10;46 0x2E '.'&#10;47 0x2F '/'&#10;91 0x5B '['&#10;92 0x5C '\'&#10;93 0x5D ']'&#10;94 0x5E '^'&#10;95 0x5F '_'&#10;96 0x60 '`'&#10;non-letters: 6&#10;"
+	hints={[
+		'%02X with an uppercase X gives two hex digits; cast the code to unsigned so the value is unambiguous.',
+		'Pull the second loop into its own for loop running code from 91 to 96, and let isalpha(code) == 0 do the counting.'
+	]}
+	solution="#include &lt;ctype.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;int main(void) &#123;&#10;    for (int code = 33; code &lt;= 47; code++) &#123;&#10;        printf(&quot;%d 0x%02X '%c'\n&quot;, code, (unsigned)code, code);&#10;    &#125;&#10;&#10;    int non_letters = 0;&#10;    for (int code = 91; code &lt;= 96; code++) &#123;&#10;        printf(&quot;%d 0x%02X '%c'\n&quot;, code, (unsigned)code, code);&#10;        if (!isalpha(code)) &#123;&#10;            non_letters++;&#10;        &#125;&#10;    &#125;&#10;&#10;    printf(&quot;non-letters: %d\n&quot;, non_letters);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m01-quiz-case-gap"
+	question="Without running it, what does the loop for (char c = 'Z'; c &lt;= 'a'; c++) print, and how many characters does it print?"
+	options={[
+		'6 — only the punctuation marks between the two blocks are printed',
+		'8 — Z through a inclusive, six punctuation marks sitting between them',
+		'7 — one endpoint of the range is exclusive',
+		'Nothing — comparing a char against a wider literal never terminates'
+	]}
+	answer={1}
+	explanation="'Z' is 90 and 'a' is 97, so the inclusive loop covers 90 through 97: eight code points, of which six are the punctuation marks between the two letter blocks. That is exactly why c &gt;= 'A' &amp;&amp; c &lt;= 'z' accepts characters that are not letters."
+/>
+
+<LectureReference lecture="Lecture 01 — Data Representation 1" slides="12–25" />

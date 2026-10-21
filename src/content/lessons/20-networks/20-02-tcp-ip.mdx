@@ -1,0 +1,321 @@
+---
+id: 20-02-tcp-ip
+title: TCP/IP
+module: 20
+lecture: 'Lecture 20 — Networks'
+slides: '15–28'
+estimatedMinutes: 19
+prerequisites: ['20-01-osi']
+tags: ['ip', 'tcp', 'checksum']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The two protocols that actually run the internet
+
+IP is a delivery service with one guarantee: it will try. Packets can be
+dropped, duplicated, reordered, or arrive after the application gave up. TCP is
+built on top of that best-effort service and turns it into an ordered stream of
+bytes by retransmitting, reordering, and rate-limiting. UDP skips all of that
+and hands you the packets.
+
+Almost every design decision in both protocols follows from one constraint:
+each end knows only what the other told it, and the network can lie. The
+checksum exists because a wire can flip a bit. The sequence number exists
+because a router can reorder. The three-way handshake exists because neither
+side knows whether the other is still there.
+
+## What you'll be able to do
+
+- Read an IPv4 header field by field and say what each field protects against.
+- Compute the internet checksum by hand and explain why verification is the same operation.
+- Describe what TCP's handshake establishes that a single message cannot.
+- Decide between TCP and UDP for a given workload, with reasons.
+
+## IPv4 in twenty bytes
+
+Every IPv4 packet begins with a fixed 20-byte header, then options, then the
+payload. The fields are small on purpose: the header is in every packet, and a
+packet is at least 20 bytes of overhead on a network that carries billions of
+them per second.
+
+| Offset | Size | Field | What it is for |
+| --- | --- | --- | --- |
+| 0 | 1 | version / IHL | 4 for IPv4; header length in 32-bit words |
+| 1 | 1 | DSCP / ECN | priority and congestion notification |
+| 2 | 2 | total length | header + payload, so trailing padding is ignored |
+| 4 | 2 | identification | groups fragments of one datagram |
+| 6 | 2 | flags / fragment offset | don't-fragment bit, more-fragments bit |
+| 8 | 1 | TTL | hop limit; decremented by every router |
+| 9 | 1 | protocol | 6 = TCP, 17 = UDP, 1 = ICMP |
+| 10 | 2 | header checksum | covers the header only |
+| 12 | 4 | source address | |
+| 16 | 4 | destination address | |
+
+TTL is the field that surprises people. It is not a timer. It is a count of
+hops, decremented at each router, and a packet that reaches zero is discarded.
+Its purpose is to stop a routing loop from circulating a packet forever — a
+loop without a hop limit is a packet that never dies and a network that slowly
+fills with them.
+
+The checksum covers only the header, not the payload, and that is deliberate:
+routers must decrement TTL, so they must be able to update the checksum quickly
+without touching the payload. TCP and UDP carry their own checksums over a
+pseudo-header that includes the IP addresses, so the payload is covered there.
+
+<TheoryBlock label="Why it matters for C" title="The checksum is a fold, and endianness is not a detail">
+
+	The internet checksum is a one's-complement sum of 16-bit big-endian words,
+	with carries folded back in, then complemented. Two consequences follow and both
+	bite C programmers. First, the bytes must be interpreted in **network byte
+	order**, which on a little-endian x86 is the reverse of how an integer is laid
+	out in memory — reading the buffer as `uint16_t *` gives wrong sums. Second,
+	because the receiver's verification is the same sum over the header including
+	the checksum field, a correct header sums to zero. That is not a coincidence; it
+	is the reason the algorithm was designed this way.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="tcp-vs-ip"
+	football="IP is the away coach shouting a formation across a windy pitch: most of it arrives, some words are lost, and the order is whatever the wind allows. TCP is the captain repeating back what he heard and asking for the missing words until the whole message is right — slower, but the formation is exactly as sent."
+	money="IP is a courier who promises only to try. TCP is the same courier with a receipt book: every parcel numbered, every signature collected, anything unsigned sent again. You pay in time and paperwork, and in exchange nothing goes missing without you knowing."
+/>
+
+## The checksum, computed
+
+The program below builds a 20-byte IPv4 header by hand, fills in the
+checksum, then verifies it by summing the whole header again.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Build a 20-byte IPv4 header by hand, compute the RFC 1071 internet
+ * checksum over it, then verify that the checksum of the header *including*
+ * the checksum field is zero. That round trip is the whole reason the
+ * algorithm is a one's-complement sum: verification is the same operation.
+ *
+ * No network is touched. Every byte printed is one this program wrote. */
+
+struct ipv4_header {
+    uint8_t  version_ihl;   /* 4 bits version, 4 bits header length in words */
+    uint8_t  tos;
+    uint16_t total_length;  /* network byte order */
+    uint16_t id;
+    uint16_t flags_frag;
+    uint8_t  ttl;
+    uint8_t  protocol;
+    uint16_t checksum;
+    uint32_t src;
+    uint32_t dst;
+};
+
+/* Sum 16-bit big-endian words, fold carries, complement. */
+static uint16_t internet_checksum(const uint8_t *data, size_t len) {
+    uint32_t sum = 0;
+
+    for (size_t i = 0; i + 1 < len; i += 2) {
+        sum += (uint32_t)((data[i] << 8) | data[i + 1]);
+    }
+    /* An odd trailing byte is padded with a zero on the right. */
+    if (len % 2 != 0) {
+        sum += (uint32_t)(data[len - 1] << 8);
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffffu) + (sum >> 16);
+    }
+    return (uint16_t)(~sum & 0xffffu);
+}
+
+static void put16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)(v & 0xff);
+}
+
+int main(void) {
+    uint8_t buf[20];
+    memset(buf, 0, sizeof buf);
+
+    /* 0x45: version 4, header length 5 words = 20 bytes. */
+    buf[0] = 0x45;
+    buf[1] = 0x00;              /* DSCP/ECN */
+    put16(buf + 2, 40);         /* total length: 20 header + 20 payload */
+    put16(buf + 4, 0x1c46);     /* identification */
+    put16(buf + 6, 0x4000);     /* don't fragment */
+    buf[8] = 64;                /* TTL */
+    buf[9] = 6;                 /* protocol 6 = TCP */
+    /* checksum at 10..11 stays zero while we compute it */
+    put16(buf + 12, 0xc0a8);    /* 192.168 */
+    put16(buf + 14, 0x0001);    /* .0.1 */
+    put16(buf + 16, 0xc0a8);    /* 192.168 */
+    put16(buf + 18, 0x0063);    /* .0.99 */
+
+    printf("%-14s %s\n", "field", "bytes as written");
+    printf("%-14s %s\n", "-----", "----------------");
+    printf("%-14s %02x (version %u, header %u bytes)\n", "version_ihl",
+           buf[0], (unsigned)(buf[0] >> 4), (unsigned)(buf[0] & 0x0f) * 4);
+    printf("%-14s %u\n", "total_length", (unsigned)((buf[2] << 8) | buf[3]));
+    printf("%-14s %u\n", "ttl", (unsigned)buf[8]);
+    printf("%-14s %u (TCP)\n", "protocol", (unsigned)buf[9]);
+    printf("%-14s %u.%u.%u.%u\n", "src", buf[12], buf[13], buf[14], buf[15]);
+    printf("%-14s %u.%u.%u.%u\n", "dst", buf[16], buf[17], buf[18], buf[19]);
+
+    uint16_t csum = internet_checksum(buf, sizeof buf);
+    printf("\nchecksum over zeroed field: 0x%04x\n", csum);
+    put16(buf + 10, csum);
+
+    uint16_t verify = internet_checksum(buf, sizeof buf);
+    printf("checksum including that:   0x%04x\n", verify);
+    printf("zero means the header is intact: %s\n",
+           verify == 0 ? "yes" : "no");
+
+    /* Flip one byte and watch verification fail. */
+    buf[8] = 63;  /* TTL 64 -> 63 */
+    uint16_t after = internet_checksum(buf, sizeof buf);
+    printf("\nafter changing ttl to %u:   0x%04x\n", (unsigned)buf[8], after);
+    printf("a single-bit error is caught: %s\n",
+           after != 0 ? "yes" : "no");
+
+    /* CIDR: which addresses share a /26? */
+    printf("\n/26 means the top 26 bits are the network:\n");
+    printf("  mask 255.255.255.192, 64 addresses, 62 usable\n");
+    unsigned hosts[] = {192, 168, 0, 1};
+    unsigned other[] = {192, 168, 0, 70};
+    unsigned mask = 0xffffffc0u;
+    uint32_t a = ((uint32_t)hosts[0] << 24) | ((uint32_t)hosts[1] << 16) |
+                 ((uint32_t)hosts[2] << 8) | hosts[3];
+    uint32_t b = ((uint32_t)other[0] << 24) | ((uint32_t)other[1] << 16) |
+                 ((uint32_t)other[2] << 8) | other[3];
+    printf("  192.168.0.1  & mask = 0x%08x\n", a & mask);
+    printf("  192.168.0.70 & mask = 0x%08x\n", b & mask);
+    printf("  same subnet: %s\n", ((a & mask) == (b & mask)) ? "yes" : "no");
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+field          bytes as written
+-----          ----------------
+version_ihl    45 (version 4, header 20 bytes)
+total_length   40
+ttl            64
+protocol       6 (TCP)
+src            192.168.0.1
+dst            192.168.0.99
+
+checksum over zeroed field: 0x9cd5
+checksum including that:   0x0000
+zero means the header is intact: yes
+
+after changing ttl to 63:   0x0100
+a single-bit error is caught: yes
+
+/26 means the top 26 bits are the network:
+  mask 255.255.255.192, 64 addresses, 62 usable
+  192.168.0.1  & mask = 0xc0a80000
+  192.168.0.70 & mask = 0xc0a80040
+  same subnet: no
+```
+
+Two results deserve a second look. `0x0000` after verification is the design
+working exactly as intended: the receiver does not need a special verify
+routine, it recomputes the same sum and checks for zero. And the changing of
+TTL from 64 to 63 produces `0x0100`, not zero — one field changed by one, and
+the header is rejected, which is the entire point of a header checksum.
+
+The CIDR result is the other half of addressing. `192.168.0.1` and
+`192.168.0.70` share the same first 24 bits but differ inside the /26 block
+(0–63 and 64–127 are separate), so with a 26-bit mask they are on different
+subnets. The mask, not the address, defines the network.
+
+## TCP: what the handshake buys
+
+| Step | Message | Establishes |
+| --- | --- | --- |
+| 1 | SYN, seq = x | client can reach server; proposes x |
+| 2 | SYN-ACK, seq = y, ack = x+1 | server can reach client; proposes y |
+| 3 | ACK, ack = y+1 | client received the server's sequence |
+
+Three messages, not two, because a two-way exchange cannot confirm that *both*
+directions work from *both* perspectives. After step 3 each side knows the
+other's starting sequence number, which is what makes ordering and
+retransmission possible.
+
+| Property | TCP | UDP |
+| --- | --- | --- |
+| connection | handshake required | none |
+| ordering | guaranteed | none |
+| loss | retransmitted | dropped |
+| header size | 20 bytes minimum | 8 bytes |
+| good for | file transfer, HTTP, SSH | DNS, voice, games, video |
+
+UDP is not "TCP without the bugs." It is the right choice when a late packet is
+worthless — a dropped frame in a video call is better retransmitted never than
+delivered 300 ms late.
+
+## Common pitfalls
+
+### Casting a buffer to a struct and reading fields directly
+
+`struct ipv4_header` above documents the layout; it is not used to parse.
+Casting `uint8_t *` to `struct ipv4_header *` invites padding differences and
+alignment faults, and the compiler is free to insert padding that does not
+match the wire format. Read fields byte by byte, as the program does.
+
+### Forgetting network byte order
+
+Multi-byte header fields are big-endian on the wire. On a little-endian host,
+`*(uint16_t *)(buf + 2)` gives a byte-swapped value. Use `ntohs`/`htonl` or
+assemble the bytes explicitly, as `put16` does.
+
+### Assuming the checksum detects tampering
+
+It detects accidental corruption, and weakly: it is a checksum, not a MAC. An
+attacker who can modify a packet can recompute the checksum. Integrity against
+an adversary needs TLS or IPsec, not the header checksum.
+
+### Thinking TTL is a timeout
+
+It counts hops, not seconds. A packet with TTL 64 that crosses three routers
+arrives with TTL 61 regardless of how long it took.
+
+<ExerciseCard
+	id="m20-checksum"
+	concept="one's complement checksum, odd length"
+	prompt="Sum the 12-byte payload 45 00 00 3c 1c 46 40 00 40 06 b1 e6 as big-endian 16-bit words, print the raw 32-bit sum, the sum after carry folding, and the complemented checksum. Flip one bit of the first byte and print the three numbers again to show the checksum changes. Then handle an odd length: append the byte 7f for thirteen bytes, where the last word is that byte shifted into the high half, and print the same three numbers. Print exactly:&#10;payload 12 bytes&#10;sum 0x1936e fold 0x936f checksum 0x6c90&#10;flip one bit in byte 0&#10;sum 0x1926e fold 0x926f checksum 0x6d90&#10;odd length 13 bytes, last byte 0x7f&#10;sum 0x2116e fold 0x1170 checksum 0xee8f&#10;Nothing else. The raw sum is printed with five hex digits, the folded sum and the checksum with four."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;static uint16_t internet_checksum(const uint8_t *data, size_t len) &#123;&#10;    /* TODO: sum big-endian words, fold carries, complement */&#10;    return 0;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: 12-byte payload, print sum/fold/complement, flip a bit */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="payload 12 bytes&#10;sum 0x1936e fold 0x936f checksum 0x6c90&#10;flip one bit in byte 0&#10;sum 0x1926e fold 0x926f checksum 0x6d90&#10;odd length 13 bytes, last byte 0x7f&#10;sum 0x2116e fold 0x1170 checksum 0xee8f&#10;"
+	hints={[
+		'Folding is repeated addition of the high half into the low half until nothing is left above bit 15; the checksum is the bitwise complement of that 16-bit value.',
+		'An odd buffer\'s last byte is a word with a zero low half, so 0x7f adds 0x7f00 to the raw sum rather than 0x007f.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;/* The internet checksum is a one's complement sum of big-endian 16-bit&#10; * words. An odd buffer is padded on the right with a zero byte, which adds&#10; * that byte shifted into the high half of the last word. */&#10;&#10;#define PAYLOAD_LEN 12&#10;&#10;static uint32_t raw_sum(const uint8_t *data, size_t len) &#123;&#10;    uint32_t sum = 0;&#10;    size_t i = 0;&#10;&#10;    for (; i + 1 &lt; len; i += 2) &#123;&#10;        sum += ((uint32_t)data[i] &lt;&lt; 8) | (uint32_t)data[i + 1];&#10;    &#125;&#10;    if (i &lt; len) &#123;&#10;        sum += (uint32_t)data[i] &lt;&lt; 8; /* pad with a zero byte */&#10;    &#125;&#10;    return sum;&#10;&#125;&#10;&#10;static uint16_t fold(uint32_t sum) &#123;&#10;    while (sum &gt;&gt; 16) &#123;&#10;        sum = (sum &amp; 0xffffu) + (sum &gt;&gt; 16);&#10;    &#125;&#10;    return (uint16_t)sum;&#10;&#125;&#10;&#10;static uint16_t checksum(const uint8_t *data, size_t len) &#123;&#10;    return (uint16_t)~fold(raw_sum(data, len));&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    uint8_t payload[PAYLOAD_LEN] = &#123;0x45, 0x00, 0x00, 0x3c, 0x1c, 0x46,&#10;                                    0x40, 0x00, 0x40, 0x06, 0xb1, 0xe6&#125;;&#10;&#10;    printf(&quot;payload %d bytes\n&quot;, PAYLOAD_LEN);&#10;    printf(&quot;sum 0x%05x fold 0x%04x checksum 0x%04x\n&quot;, raw_sum(payload, PAYLOAD_LEN),&#10;           fold(raw_sum(payload, PAYLOAD_LEN)), checksum(payload, PAYLOAD_LEN));&#10;&#10;    payload[0] ^= 0x01u; /* flip one bit of the version/IHL byte */&#10;    printf(&quot;flip one bit in byte 0\n&quot;);&#10;    printf(&quot;sum 0x%05x fold 0x%04x checksum 0x%04x\n&quot;, raw_sum(payload, PAYLOAD_LEN),&#10;           fold(raw_sum(payload, PAYLOAD_LEN)), checksum(payload, PAYLOAD_LEN));&#10;&#10;    uint8_t odd[PAYLOAD_LEN + 1];&#10;&#10;    for (int i = 0; i &lt; PAYLOAD_LEN; i++) &#123;&#10;        odd[i] = payload[i];&#10;    &#125;&#10;    odd[PAYLOAD_LEN] = 0x7fu;&#10;    printf(&quot;odd length %d bytes, last byte 0x7f\n&quot;, PAYLOAD_LEN + 1);&#10;    printf(&quot;sum 0x%05x fold 0x%04x checksum 0x%04x\n&quot;, raw_sum(odd, PAYLOAD_LEN + 1),&#10;           fold(raw_sum(odd, PAYLOAD_LEN + 1)), checksum(odd, PAYLOAD_LEN + 1));&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m20-quiz-ttl"
+	question="A packet leaves with TTL 64 and arrives with TTL 64. What are the two possible explanations, and which header field would you read next to tell them apart?"
+	options={[
+		'Either no router was on the path, or the sender started above 64 (128 or 255) and the routers decremented it to exactly 64. The addresses tell them apart: a source and destination in the same subnet implies no router, a remote pair implies the second explanation.',
+		'Either no router was on the path, or one router failed to decrement the field; the fragment offset distinguishes the two cases.',
+		'A NAT device rewrote the TTL back to 64 in both directions, and the source port in the transport header reveals it.',
+		'TTL 64 arriving unchanged proves the packet never left the sending host, because every router must decrement it.'
+	]}
+	answer={0}
+	explanation="TTL counts hops, not seconds, so an unchanged 64 means either zero hops or a starting value far enough above 64 to absorb the hops taken. The packet itself does not record the starting value, so you compare the addresses (or run a traceroute) to count the hops."
+/>
+
+<LectureReference lecture="Lecture 20 — Networks" slides="15–28" />

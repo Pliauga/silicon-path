@@ -1,0 +1,271 @@
+---
+id: 07-01-peripherals
+title: Peripherals
+module: 7
+lecture: 'Lecture 07 — Input & Output'
+slides: '3–17'
+estimatedMinutes: 15
+prerequisites: ['06-03-cache']
+tags: ['io', 'devices', 'polling']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The CPU is not the only thing on the board
+
+Everything so far has lived inside the processor: registers, an ALU, a
+clock. A computer that only computed would be a calculator with no
+display. The parts that connect the processor to the outside world are
+**peripherals**, and they are strange in a way memory is not.
+
+A peripheral is slow, it is asynchronous, and it has its own idea of when
+work is ready. A memory read returns in tens of nanoseconds and always
+succeeds. A keyboard read might return a character in a second, or never.
+The CPU cannot simply ask and wait — it has to negotiate, using a small
+set of registers the device exposes.
+
+## What you'll be able to do
+
+- Describe a peripheral as a set of registers rather than a function.
+- Explain what a status register is for and why it exists.
+- Read from a device by polling its ready bit.
+- Say why polling wastes CPU time even when it works.
+
+## Three registers is usually enough
+
+Almost every simple device exposes the same small interface: a **status**
+register saying whether it is ready or has failed, a **data** register
+holding the byte to transfer, and a **control** register the CPU writes to
+enable, disable, or reset it.
+
+| Register | Direction | Bit 0        | Other bits            |
+| -------- | --------- | ------------ | --------------------- |
+| status   | read      | ready        | bit 7 = error         |
+| data     | read/write | the byte    | —                     |
+| control  | write     | enable       | bit 1 = clear error   |
+
+Two protocol rules follow from that table, and both matter more than the
+register layout.
+
+First, the CPU must not read `data` until `status` says ready. Reading
+early gives the *previous* byte, and the mistake looks like missing data
+rather than an ordering bug.
+
+Second, the CPU must **acknowledge** a transfer by clearing the ready
+bit. If it does not, the device thinks the byte is still pending and
+never offers another.
+
+<TheoryBlock label="Why it matters for C" title="Two reads of a device register are not the same read">
+
+	If a function returns `1` twice, C is free to call it once and reuse the
+	result — the compiler assumes a function of no arguments and no side
+	effects is pure. Device registers are declared `volatile` precisely to
+	forbid that. Without it, a polling loop `while (!ready()) {}` can be
+	compiled into `if (!ready()) while (1) {}` and hang forever, because the
+	optimiser never expects `ready` to change on its own.
+</TheoryBlock>
+
+## Polling: ask, ask, ask
+
+The simplest way to read a device is to check the status bit in a loop
+and take a byte when it is set. In the model below, the device produces
+one byte per check and the reader consumes them until it has three.
+
+<Eli5Block
+	topic="polling"
+	football="Polling is a manager who keeps walking to the fourth official to ask whether the substitution paperwork has arrived. The answer is usually no. When it is finally yes, the walk was necessary — but so were the forty walks before it."
+	money="Polling is refreshing a banking app to see whether the transfer landed. Each refresh costs you a moment and returns nothing until the money arrives. It works, and it spends your attention on being ready rather than on anything useful."
+/>
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* A device is not a function call. It is a few registers with meanings
+ * the CPU has to agree on, plus a status bit saying whether it is ready.
+ * This models a keyboard controller with three registers. */
+
+enum {
+    STATUS_READY  = 1u << 0,
+    STATUS_ERROR  = 1u << 7
+};
+
+struct device {
+    volatile uint8_t status;  /* bit 0: byte waiting; bit 7: fault */
+    volatile uint8_t data;    /* the byte itself */
+    volatile uint8_t control; /* bit 0: enable, bit 1: clear error */
+    unsigned polls;
+};
+
+/* The guest list the device "types" at us. */
+static const char *const QUEUE = "abc";
+static size_t queue_pos;
+static int fail_next;
+
+static void device_step(struct device *d) {
+    if ((d->control & 1u) == 0u) {
+        return; /* disabled devices report nothing */
+    }
+    if (fail_next) {
+        fail_next = 0;
+        d->status = (uint8_t)(d->status | STATUS_ERROR);
+        return;
+    }
+    if (QUEUE[queue_pos] != '\0') {
+        d->data = (uint8_t)QUEUE[queue_pos++];
+        d->status = (uint8_t)(d->status | STATUS_READY);
+    }
+}
+
+/* Polling: ask, ask, ask. Every iteration costs the CPU something even
+ * when there is nothing to do, which is the whole argument for
+ * interrupts in the next lesson. */
+static int read_polling(struct device *d, char *out, size_t cap, unsigned limit) {
+    size_t n = 0;
+    while (n < cap) {
+        d->polls++;
+        device_step(d);
+
+        if ((d->status & STATUS_ERROR) != 0u) {
+            printf("  fault at poll %u, clearing\n", d->polls);
+            d->control = (uint8_t)(d->control | 2u);   /* clear error */
+            d->status = (uint8_t)(d->status & (uint8_t)~STATUS_ERROR);
+            continue;
+        }
+        if ((d->status & STATUS_READY) == 0u) {
+            if (d->polls >= limit) {
+                break;
+            }
+            continue; /* nothing yet — spin */
+        }
+        out[n++] = (char)d->data;
+        d->status = (uint8_t)(d->status & (uint8_t)~STATUS_READY); /* ack */
+    }
+    out[n] = '\0';
+    return (int)n;
+}
+
+int main(void) {
+    struct device dev = {0, 0, 0, 0}; /* all registers start at zero */
+
+    printf("control before enable: 0x%02X\n", (unsigned)dev.control);
+
+    dev.control = 1u;      /* enable */
+    fail_next = 1;         /* inject one fault to show the error path */
+
+    char buf[16];
+    int got = read_polling(&dev, buf, 3, 20u);
+
+    printf("control after enable:  0x%02X\n", (unsigned)dev.control);
+    printf("bytes read: %d -> \"%s\"\n", got, buf);
+    printf("polls spent: %u for %d useful bytes\n", dev.polls, got);
+    printf("status after ack: 0x%02X\n", (unsigned)dev.status);
+    printf("device struct: %zu bytes\n", sizeof dev);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+control before enable: 0x00
+  fault at poll 1, clearing
+control after enable:  0x03
+bytes read: 3 -> "abc"
+polls spent: 4 for 3 useful bytes
+status after ack: 0x00
+device struct: 8 bytes
+```
+
+Four polls for three bytes: one was spent on a fault, three on data. The
+`polls spent` line is the honest cost of polling — it is one iteration
+per byte *plus* however many were wasted. If the device had been idle for
+a second rather than instantaneously ready, that number would be in the
+millions, and every one of those iterations burned a cycle.
+
+The `control after enable` value is `0x03`, not `0x01`. The clear-error
+bit is still set from the recovery a moment earlier, and nothing in the
+program clears it. That is not a bug in the model; it is a reminder that
+control registers are state, and writing one bit does not reset the
+others.
+
+`device struct: 8 bytes` — four `uint8_t` fields plus an `unsigned`, with
+padding. The layout is not 5 bytes because `polls` needs four-byte
+alignment.
+
+<ExerciseCard
+	id="m07-status-bits"
+	concept="device overrun detection"
+	prompt="Add a third status bit, STATUS_OVERRUN = 1u &lt;&lt; 2, meaning a byte arrived before the previous one was read. In device_step, when the queue advances while READY is still high, the byte sitting in data is lost: raise the overrun bit and count the loss. Then run the starter's slow reader over the queue abcdefgh — eight polls, consuming a byte only on poll 1 — and print exactly three lines: `bytes offered: N`, `bytes read: N`, `overruns: N`."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum &#123;&#10;    STATUS_READY   = 1u &lt;&lt; 0,&#10;    STATUS_OVERRUN = 1u &lt;&lt; 2&#10;&#125;;&#10;&#10;struct device &#123;&#10;    volatile uint8_t status;&#10;    volatile uint8_t data;&#10;    unsigned offered;&#10;    unsigned overruns;&#10;&#125;;&#10;&#10;static const char *const QUEUE = &quot;abcdefgh&quot;;&#10;static size_t queue_pos;&#10;&#10;static void device_step(struct device *d) &#123;&#10;    /* TODO: if READY is still set, the byte in data was never read */&#10;    (void)d;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    struct device dev = &#123;0, 0, 0, 0&#125;;&#10;    unsigned consumed = 0;&#10;&#10;    for (int poll = 1; poll &lt;= 8; poll++) &#123;&#10;        device_step(&amp;dev);&#10;        /* TODO: consume only on poll 1, and acknowledge by clearing READY */&#10;    &#125;&#10;    /* TODO: print the three counts */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="bytes offered: 8&#10;bytes read: 1&#10;overruns: 6&#10;"
+	hints={[
+		'Overrun is an observation about the queue, not a fault: it happens exactly when a new byte lands while READY is still set from the last one.',
+		'Test (d->status & STATUS_READY) before you overwrite d->data, bump d->overruns there, and clear READY only on the poll where you consume.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum &#123;&#10;    STATUS_READY   = 1u &lt;&lt; 0,&#10;    STATUS_OVERRUN = 1u &lt;&lt; 2&#10;&#125;;&#10;&#10;struct device &#123;&#10;    volatile uint8_t status;&#10;    volatile uint8_t data;&#10;    unsigned offered;&#10;    unsigned overruns;&#10;&#125;;&#10;&#10;static const char *const QUEUE = &quot;abcdefgh&quot;;&#10;static size_t queue_pos;&#10;&#10;/* The device offers one byte per step. If the previous byte has not been&#10; * acknowledged, this one overwrites it: that is an overrun. */&#10;static void device_step(struct device *d) &#123;&#10;    if (QUEUE[queue_pos] == '\0') &#123;&#10;        return;&#10;    &#125;&#10;    if ((d-&gt;status &amp; STATUS_READY) != 0u) &#123;&#10;        d-&gt;status = (uint8_t)(d-&gt;status | STATUS_OVERRUN);&#10;        d-&gt;overruns++;&#10;    &#125;&#10;    d-&gt;data = (uint8_t)QUEUE[queue_pos++];&#10;    d-&gt;status = (uint8_t)(d-&gt;status | STATUS_READY);&#10;    d-&gt;offered++;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    struct device dev = &#123;0, 0, 0, 0&#125;;&#10;    unsigned consumed = 0;&#10;&#10;    for (int poll = 1; poll &lt;= 8; poll++) &#123;&#10;        device_step(&amp;dev);&#10;        if (poll == 1 &amp;&amp; (dev.status &amp; STATUS_READY) != 0u) &#123;&#10;            consumed++;&#10;            dev.status = (uint8_t)(dev.status &amp; (uint8_t)~STATUS_READY);&#10;        &#125;&#10;    &#125;&#10;&#10;    printf(&quot;bytes offered: %u\n&quot;, dev.offered);&#10;    printf(&quot;bytes read: %u\n&quot;, consumed);&#10;    printf(&quot;overruns: %u\n&quot;, dev.overruns);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Reading `data` before checking `status`
+
+```c
+char c = (char)dev->data;   /* wrong: ready may be clear */
+```
+
+The value you read is whatever was there from the last transfer — on a
+machine with no previous transfer, an uninitialised byte. The character
+you intended to read is still sitting in the device. Always test the
+ready bit first, and acknowledge after.
+
+### Forgetting to acknowledge
+
+If the program reads `data` but never clears the ready bit, the device
+believes the byte is still pending and will not produce another. The loop
+then re-reads the same byte forever, producing a plausible-looking but
+wrong output like `"aaaa"`. When a device seems to repeat itself, suspect
+a missing acknowledgement before suspecting the device.
+
+### Polling a register the compiler optimised away
+
+A loop like
+
+```c
+while ((dev->status & STATUS_READY) == 0u) { }
+```
+
+must read `status` on every iteration. Without `volatile` on the field,
+the compiler may hoist the read out of the loop and spin on a stale
+value. This is the exact failure `volatile` exists to prevent, and it is
+invisible until the optimiser is turned on.
+
+### Assuming the device is instant
+
+The model produces a byte on every call. Real devices do not, and a
+polling loop with no timeout will hang the program when the device is
+disconnected. The `limit` parameter above is there because every real
+polling loop needs a bound.
+
+<QuizCard
+	id="m07-quiz-polling"
+	question="A polling loop reads 1000 bytes and reports 1000 polls. One byte arrives every ten polls on average. What can you conclude about the loop, and what is it most likely missing?"
+	options={[
+		'The loop never waits: it reads data without testing ready, so it is collecting stale or repeated bytes and the ready check plus acknowledge are missing',
+		'Nothing is wrong — one poll per byte is the best possible result for a polling loop',
+		'The device is ten times too fast, so the loop should deliberately poll ten times per byte',
+		'The loop is fine but the device register needs to be declared static'
+	]}
+	answer={0}
+	explanation="If a byte only arrives every ten polls, a correct loop must spend about ten polls per byte. Getting a byte on every single poll means the loop is not waiting for ready at all, so it reads the same value repeatedly instead of acknowledging and moving on."
+/>
+
+<LectureReference lecture="Lecture 07 — Input & Output" slides="3–17" />

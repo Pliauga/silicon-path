@@ -1,0 +1,345 @@
+---
+id: 17-01-demand-paging
+title: Demand Paging
+module: 17
+lecture: 'Lecture 17 — Virtual Memory'
+slides: '2–15'
+estimatedMinutes: 19
+prerequisites: ['16-03-swapping']
+tags: ['virtual-memory', 'page-fault', 'demand-paging']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import LazyStudy from '$lib/components/viz/LazyStudy.svelte';
+	import VirtualMemory3D from '$lib/components/viz/VirtualMemory3D.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The lie that makes programs simple
+
+A C program behaves as if it owns a large, private, contiguous block of
+memory starting at address zero. It does not. The addresses it uses are
+**virtual**, the memory it touches is a few scattered frames of physical
+memory, and the mapping between the two lives in a page table the program
+cannot see. The previous module built that machinery and then left one
+question open: where do the pages come from, and when?
+
+The answer that made virtual memory practical is **demand paging**: a page
+is loaded when it is first touched, not before. Not at `exec`, not up
+front, not all at once. A program starts with an empty page table and
+fills it in as it runs, one fault at a time.
+
+This is why a 300 MB program starts in 40 ms. It is also why the first
+pass over a large array is slower than the second. The mechanism that
+gives you both is the same one, and it has a price printed on it: a
+fault costs a disk read, and a disk read costs roughly a hundred thousand
+memory accesses.
+
+## What you'll be able to do
+
+- Describe the five steps the kernel takes between a fault and a restart.
+- Say which page table bits implement demand paging, protection, and sharing.
+- Compute the average access time of a memory system from a fault rate.
+- Explain why a small number of faults can dominate a run.
+
+## What is in a page table entry
+
+A page table is an array, and each slot is a **page table entry (PTE)**.
+The frame number is only part of it. The bits that matter:
+
+| Bit        | Meaning when set                          | What it enables            |
+| ---------- | ----------------------------------------- | -------------------------- |
+| present    | the page is in physical memory            | demand paging              |
+| writable   | stores are allowed                        | read-only code, COW        |
+| accessed   | the page has been read or written recently | LRU approximation          |
+| dirty      | the page has been written since loading    | skipping clean write-backs |
+| user       | user-mode code may touch it               | kernel protection          |
+
+A **not-present** entry is not an error condition. It is the normal state
+of every page that has not been touched yet, and the fault handler's job
+is to change the entry to present and return. The kernel distinguishes
+"never loaded" from "swapped out" from "not a valid address" by consulting
+its own bookkeeping — the PTE only says whether the hardware may proceed.
+
+The **dirty** bit is quietly the most valuable one. When a page must be
+evicted and the dirty bit is clear, the copy on disk is still current and
+the write-back can be skipped entirely. Read-only code pages, which are
+the majority of a text segment, are clean by definition.
+
+<TheoryBlock label="Why it matters for C" title="The stack you never allocate">
+
+	Every thread gets 8 MB of stack address space by default. That number
+	appears nowhere in your binary and costs nothing at startup, because
+	demand paging hands out frames only when the stack pointer descends
+	into them. A function whose locals total 4 KB touches one page. A
+	recursive function that runs away does not corrupt a neighbour — it
+	walks into a guard page the kernel marked not-present-and-not-loadable,
+	and the resulting SIGSEGV is a deliberate design decision, not a
+	side effect. `ulimit -s` changes how far you can descend.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="demand-paging"
+	football="The physio does not walk the entire thirty-player squad onto the pitch before kick-off. Eleven start, and when another is needed the fourth official holds up a board and one player runs on. Only the players actually used ever reach the grass, and the price is the short wait at the touchline each time."
+	money="A shop keeps one display model on the floor and fetches stock from the back room only when a customer buys. The floor shows far more variety than its shelves could ever hold, at the cost of a short wait per sale instead of the impossible upfront cost of stocking everything twice."
+/>
+
+## The five steps from fault to restart
+
+When the CPU touches an address whose PTE is not present, the sequence is
+fixed and worth memorising, because every performance question in this
+module follows from it:
+
+1. The MMU raises a **page fault**, trapping into the kernel. The faulting
+   instruction is saved, not completed.
+2. The kernel finds which virtual page the address belongs to and checks
+   that the access is legal. An illegal one is a SIGSEGV, not a page-in.
+3. It finds a **free frame**. If none exists, it runs a replacement policy
+   to choose a victim, writing it back to disk first if the dirty bit is
+   set.
+4. It reads the page from disk or the executable into that frame, updates
+   the PTE to present with the new frame number, and clears the dirty bit.
+5. It returns from the trap. The faulting instruction **restarts** from
+   the beginning and this time succeeds.
+
+Step 5 is why a fault requires the instruction to be restartable, and why
+an instruction that writes to two pages can fault twice. It also explains
+a subtlety that catches people writing device drivers: the fault may be
+resolved and the instruction re-executed, so any side effect performed
+before the fault is performed twice.
+
+## Counting the cost
+
+The program below does not run a real process — it counts. Two access
+patterns are traced against a fixed number of frames, and the fault
+counts are turned into time using a stated cost model: 100 ns per hit,
+10 ms per fault. Those constants are round numbers chosen so the
+arithmetic is checkable, not measurements of this machine.
+
+```c
+#include <stdio.h>
+
+/* A demand-paged process, counted rather than run.
+ *
+ * A page fault is not an error. It is the normal consequence of not
+ * having loaded something yet. The cost is what matters: a hit costs one
+ * memory access, a fault costs a trap, a disk read of 4096 bytes, a
+ * page-table update, and a restart of the instruction. On a machine
+ * where memory takes 100 ns and the disk takes 10 ms, one fault equals
+ * one hundred thousand hits, so a handful of faults can dominate a run
+ * that otherwise looks fast. */
+
+#define PAGE_BYTES 4096u
+#define FRAMES     8
+#define ACCESS_NS  100.0       /* one memory access, nanoseconds  */
+#define FAULT_NS   10000000.0  /* one fault, nanoseconds (10 ms)  */
+
+struct process {
+    int resident[FRAMES];  /* frames held, -1 for empty */
+    unsigned faults;
+    unsigned hits;
+};
+
+static int resident(const struct process *p, int page)
+{
+    for (int i = 0; i < FRAMES; i++) {
+        if (p->resident[i] == page) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void load(struct process *p, int page)
+{
+    for (int i = 0; i < FRAMES; i++) {
+        if (p->resident[i] == -1) {
+            p->resident[i] = page;
+            return;
+        }
+    }
+    /* Full: evict the lowest-numbered page, which is crude but keeps
+     * this program's output independent of wall-clock timing. */
+    int victim = 0;
+    for (int i = 1; i < FRAMES; i++) {
+        if (p->resident[i] < p->resident[victim]) {
+            victim = i;
+        }
+    }
+    p->resident[victim] = page;
+}
+
+static void touch(struct process *p, int page)
+{
+    if (resident(p, page)) {
+        p->hits++;
+        return;
+    }
+    p->faults++;
+    load(p, page);
+}
+
+int main(void)
+{
+    /* Phase 1: walk 4 pages sequentially, 4 frames, 4 accesses each.
+     * Four compulsory faults, then every remaining access is a hit. */
+    struct process seq = {{-1, -1, -1, -1, -1, -1, -1, -1}, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        for (int k = 0; k < 4; k++) {
+            touch(&seq, i);
+        }
+    }
+
+    /* Phase 2: cycle over 12 pages with only 8 frames. The working set
+     * does not fit, so every round evicts what the next round needs. */
+    struct process cycle = {{-1, -1, -1, -1, -1, -1, -1, -1}, 0, 0};
+    for (int round = 0; round < 3; round++) {
+        for (int page = 0; page < 12; page++) {
+            touch(&cycle, page);
+        }
+    }
+
+    const struct process *cases[] = {&seq, &cycle};
+    const char *names[] = {"sequential, 4 pages, 4 frames",
+                           "cyclic, 12 pages, 8 frames"};
+
+    printf("%-30s %6s %6s %8s\n",
+           "access pattern", "faults", "hits", "fault %");
+    for (int c = 0; c < 2; c++) {
+        const struct process *p = cases[c];
+        unsigned total = p->faults + p->hits;
+        printf("%-30s %6u %6u %7u%%\n", names[c], p->faults, p->hits,
+               total ? p->faults * 100u / total : 0u);
+    }
+
+    /* The cost model, stated plainly. Illustrative round numbers. */
+    double seq_ns = seq.hits * ACCESS_NS + seq.faults * FAULT_NS;
+    double cycle_ns = cycle.hits * ACCESS_NS + cycle.faults * FAULT_NS;
+
+    printf("\ncost model: %.0f ns per hit, %.0f ns per fault\n",
+           ACCESS_NS, FAULT_NS);
+    printf("sequential %.3f ms\n", seq_ns / 1e6);
+    printf("cyclic     %.3f ms\n", cycle_ns / 1e6);
+    printf("ratio      %.0fx\n", cycle_ns / seq_ns);
+    printf("\none frame is %u bytes; %d frames hold %u bytes of a "
+           "process that thinks it has the address space\n",
+           PAGE_BYTES, FRAMES, (unsigned)FRAMES * PAGE_BYTES);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+access pattern                 faults   hits  fault %
+sequential, 4 pages, 4 frames       4     12      25%
+cyclic, 12 pages, 8 frames         22     14      61%
+
+cost model: 100 ns per hit, 10000000 ns per fault
+sequential 40.001 ms
+cyclic     220.001 ms
+ratio      5x
+
+one frame is 4096 bytes; 8 frames hold 32768 bytes of a process that thinks it has the address space
+```
+
+Read the two fault percentages against their times and the point of the
+module appears.
+
+The sequential case has 4 faults and 12 hits. Every one of those faults
+is **compulsory** — the page had never been touched, so no policy could
+have avoided it. The 12 hits cost 1.2 microseconds between them; the
+4 faults cost 40 milliseconds. The useful work is 0.003% of the runtime.
+That is the honest cost of starting a program, and the reason the second
+run of a program feels different from the first: the pages are already in
+the page cache and the disk reads are free.
+
+The cyclic case has 22 faults out of 36 accesses, and 8 frames holding
+32768 bytes for a process cycling through 12 pages — 49152 bytes of
+working set. Nothing is *wrong*; the working set simply does not fit, so
+each round evicts what the next round needs. The run takes 5× as long as
+the sequential one while doing less useful work, because it spends
+200 milliseconds of its 220 in the disk.
+
+The last two lines are the framing: a process that thinks it has the
+address space is living in 32 KB. Everything above the resident frames is
+a promise the kernel makes and settles by mail.
+
+<LazyStudy href="/paging/" fig="17.1" caption="Demand paging and page replacement">
+	<VirtualMemory3D />
+</LazyStudy>
+
+<ExerciseCard
+	id="m17-avg-access"
+	concept="expected access time, fault budget"
+	prompt="A hit costs 100 ns and a fault costs 10 ms. Write average_ns(p) as the expected value (1 - p) * 100 + p * 10000000, then print the average for p = 0.001, 0.01 and 0.1. Then invert the question: solve for the largest p that keeps the average under 200 ns, print it as a 1-in-N fraction, and print how many faults per second that allows on a machine doing 100 million accesses per second. Print exactly:&#10;p=0.001 avg=10099.9 ns&#10;p=0.010 avg=100099.0 ns&#10;p=0.100 avg=1000090.0 ns&#10;budget 200 ns: fault rate below 1 in 99999&#10;at 100 million accesses per second: about 1000 faults per second&#10;Nothing else. Note how fast a 1-in-1000 rate turns a 100 ns machine into a 10 microsecond machine."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define ACCESS_NS 100.0&#10;#define FAULT_NS  10000000.0&#10;&#10;/* average = (1 - p) * ACCESS_NS + p * FAULT_NS */&#10;static double average_ns(double fault_rate) &#123;&#10;    return 0.0; /* TODO */&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: three rates, then solve for the 200 ns budget */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="p=0.001 avg=10099.9 ns&#10;p=0.010 avg=100099.0 ns&#10;p=0.100 avg=1000090.0 ns&#10;budget 200 ns: fault rate below 1 in 99999&#10;at 100 million accesses per second: about 1000 faults per second&#10;"
+	hints={[
+		'The fault term dominates as soon as p leaves zero: at p = 0.001 the 10 ms fault is ten times the answer, so rounding the small term away is safe.',
+		'Set 200 = 100 + p * (10000000 - 100) and solve; p is about 1.00001e-5, so 1 in 99999, and 1e8 accesses per second times that rate is 1000.01 faults per second.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* Average access time is an expected value: the hit cost paid by almost&#10; * every access plus the fault cost paid by the few. The inverse question&#10; * is the one that matters for a budget. */&#10;&#10;#define ACCESS_NS 100.0&#10;#define FAULT_NS 10000000.0&#10;#define BUDGET_NS 200.0&#10;#define ACCESSES_PER_SECOND 100000000.0&#10;&#10;static double average_ns(double fault_rate) &#123;&#10;    return (1.0 - fault_rate) * ACCESS_NS + fault_rate * FAULT_NS;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const double rates[] = &#123;0.001, 0.01, 0.1&#125;;&#10;&#10;    for (int i = 0; i &lt; 3; i++) &#123;&#10;        printf(&quot;p=%.3f avg=%.1f ns\n&quot;, rates[i], average_ns(rates[i]));&#10;    &#125;&#10;&#10;    /* 200 = 100 + p * (FAULT_NS - ACCESS_NS) */&#10;    double max_rate = (BUDGET_NS - ACCESS_NS) / (FAULT_NS - ACCESS_NS);&#10;    printf(&quot;budget %.0f ns: fault rate below 1 in %.0f\n&quot;, BUDGET_NS,&#10;           1.0 / max_rate);&#10;    printf(&quot;at %.0f million accesses per second: about %.0f faults per second\n&quot;,&#10;           ACCESSES_PER_SECOND / 1000000.0,&#10;           ACCESSES_PER_SECOND * max_rate);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Treating a page fault as an error
+
+A fault is the loading mechanism. Programs that log faults as failures,
+or that treat a high fault count as a bug, are misreading a normal
+operating cost as a malfunction. The number worth watching is not the
+fault count but faults per unit of work, and the count that matters is
+the one that does not fall on the second pass.
+
+### Forgetting that the instruction restarts
+
+The trap discards the instruction's partial progress; step 5 re-executes
+it from the beginning. Any code that assumes side effects before a fault
+happen once will be surprised. This is also why an instruction that
+touches two pages can fault twice, at the same address of the program,
+with the first fault already having updated the page table.
+
+### Assuming a fault always means a disk read
+
+If the page is in the file system's page cache, or is a copy-on-write
+duplicate of a page already in memory, or is a zero page being handed to
+a fresh `malloc`, the fault is resolved without touching the disk. A
+`calloc` of 100 MB followed by a write to one byte produces exactly one
+fault and no I/O, because the rest of the pages never materialise.
+
+### Modelling average access time with the wrong formula
+
+The average is `(1 - p) * hit + p * fault` where `p` is the fault *rate*
+per access, not the fault count divided by the run time. Substituting
+counts for rates gives an answer in the wrong units that is often within
+an order of magnitude of right, which is worse than being wrong by a lot.
+
+### Believing a large `VSZ` means memory is in use
+
+`top` and `ps` report virtual size separately from resident set size for
+a reason. A program can reserve gigabytes of address space and touch
+megabytes. Only the resident set is memory; the rest is page table
+entries and promises.
+
+<QuizCard
+	id="m17-quiz-fault"
+	question="A program reads one byte from every page of a 1 GB array on a machine with 4 KB pages and 512 MB of free memory. How many faults occur, roughly how much disk traffic is generated, and what would change if the array were read sequentially instead of striding by page?"
+	options={[
+		'About 262144 faults and 1 GB of disk reads: 1 GB divided by 4 KB is 262144 pages, and each fault reads a page. Reading sequentially does not change the bytes (every page is still needed once) but lets readahead fetch many pages per fault, so the fault count falls by the prefetch factor.',
+		'About 262144 faults and 512 MB of reads, since only 512 MB of frames are available; reading sequentially would halve the fault count to 131072.',
+		'About 131072 faults, because the second half of the array reuses the first half\'s frames without reading anything from disk.',
+		'About 262144 faults and no disk traffic at all, because pages are loaded lazily without I/O and the stride never causes eviction.'
+	]}
+	answer={0}
+	explanation="One fault per page is compulsory: 2^20 pages of 4 KB in 1 GB, and every fault brings in 4 KB, so the traffic is one full 4 KB per page, 1 GB in total. Striding by page defeats readahead, while a sequential read lets one fault bring in a whole run of pages — fewer faults, same bytes."
+/>
+
+<LectureReference lecture="Lecture 17 — Virtual Memory" slides="2–15" />

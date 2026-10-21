@@ -1,0 +1,217 @@
+---
+id: 09-02-arm
+title: ARM
+module: 9
+lecture: 'Lecture 09 — Architecture 2'
+slides: '20–35'
+estimatedMinutes: 16
+prerequisites: ['09-01-risc-vs-cisc']
+tags: ['arm', 'encoding', 'registers']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## A RISC design that took over the small machines
+
+ARM started in 1985 as a processor for a British computer that never sold
+well. It now runs in essentially every phone, most tablets, and an
+increasing number of laptops and servers. The reason is not that it was
+the fastest design — it was that it was the most *efficient* one, and
+efficiency mattered enormously once computers started running on
+batteries.
+
+The architecture has changed a lot since 1985: 32-bit, then 64-bit, then
+thumb encodings, then vector extensions. What survived is a small set of
+decisions made early.
+
+## What you'll be able to do
+
+- Decode the fields of a simple 32-bit ARM data-processing instruction.
+- Explain why a fixed instruction width helps the decoder.
+- Say why sixteen registers is a natural number for a four-bit field.
+- Name the trade-off that made ARM dominant in mobile.
+
+## Fixed width is the gift to the decoder
+
+Every ARM instruction in the classic 32-bit encoding is exactly four
+bytes. The processor always knows where the next instruction begins: at
+the current address plus four. It can fetch several at once and decode
+them in parallel.
+
+Variable-width instructions cannot do this. The decoder has to read the
+first bytes, work out the length, and only then find the next
+instruction — a serial process that caps how many can start per cycle.
+
+| Encoding | Width       | Finding the next instruction |
+| -------- | ----------- | ---------------------------- |
+| ARM      | 4 bytes     | always `pc + 4`              |
+| Thumb    | 2 or 4 bytes | read the first halfword first |
+| x86      | 1–15 bytes  | decode to discover the length |
+
+## Fields of a data-processing instruction
+
+A classic ARM data-processing instruction puts an opcode, two register
+numbers, and a 12-bit immediate into one 32-bit word.
+
+| Bits    | Field  | Meaning                        |
+| ------- | ------ | ------------------------------ |
+| 27–24   | opcode | which operation                |
+| 19–16   | Rn     | first source register          |
+| 15–12   | Rd     | destination register           |
+| 11–0    | imm12  | immediate value                |
+
+Four bits per register field is not an accident. It is the reason ARM has
+sixteen registers: r0 through r15, where r13 is the stack pointer, r14 is
+the link register, and r15 is the program counter.
+
+<TheoryBlock label="Why it matters for C" title="Register count is why ARM has no x86-style register pressure">
+
+	C compilers allocate variables to registers, and the number available
+	sets how much of a function can stay in them. x86-64 has sixteen
+	general-purpose registers; ARM64 has thirty-one. That difference is
+	visible in generated code: a complex function on x86 spills to the stack
+	earlier and reloads more often. If you have ever wondered why the same
+	C compiles to noticeably different code on a Mac with Apple silicon, this
+	is part of the answer.
+</TheoryBlock>
+
+<Eli5Block
+	topic="fixed-width"
+	football="Fixed-width instructions are a squad where every player is exactly the same height, so the manager can count heads from the touchline without looking closely. Variable-width is a squad of mixed heights: you can still count them, but you have to walk down the line."
+	money="Fixed-width is a coin sorter with identical slots — every coin takes one slot, and the machine never hesitates. Variable-width is a till that accepts notes and coins in any order: correct, and it must inspect each item before it knows where the next one goes."
+/>
+
+## Decoding words by hand
+
+The program below decodes three real ARM instruction words, extracting
+each field with shifts and masks. This is precisely what a disassembler
+does, minus the tables.
+
+```c
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
+/* Decode fixed-width 32-bit instruction words the way an ARM core must:
+ * every instruction is four bytes, so the decoder never has to guess a
+ * length. The field layout here is the data-processing form, simplified. */
+
+enum {
+    OP_SHIFT = 21, OP_MASK = 0x0fu,
+    RN_SHIFT = 16, RD_SHIFT = 12, IMM12_MASK = 0x0fffu
+};
+
+static const char *op_name(unsigned op) {
+    switch (op) {
+    case 0x0: return "AND";
+    case 0x2: return "SUB";
+    case 0x4: return "ADD";
+    default:  return "other";
+    }
+}
+
+int main(void) {
+    const uint32_t words[] = {
+        0xE2811001u, /* ADD r1, r1, #1    */
+        0xE2412004u, /* SUB r2, r1, #4    */
+        0xE20130FFu, /* AND r3, r1, #0xFF */
+    };
+
+    printf("%-11s %-6s %-4s %-4s %s\n", "word", "opcode", "Rn", "Rd", "imm12");
+    for (size_t i = 0; i < sizeof words / sizeof words[0]; i++) {
+        uint32_t w = words[i];
+        unsigned op  = (w >> OP_SHIFT) & OP_MASK;
+        unsigned rn  = (w >> RN_SHIFT) & 0x0fu;
+        unsigned rd  = (w >> RD_SHIFT) & 0x0fu;
+        unsigned imm = w & IMM12_MASK;
+
+        printf("0x%08X  %-6s r%-3u r%-3u 0x%03X\n", w, op_name(op), rn, rd, imm);
+    }
+
+    /* A four-bit register field is why the encoding stops at r15. */
+    printf("registers addressable by one field: %u\n", 1u << 4);
+    printf("instruction width in bytes: %zu\n", sizeof words[0]);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+word        opcode Rn   Rd   imm12
+0xE2811001  ADD    r1   r1   0x001
+0xE2412004  SUB    r1   r2   0x004
+0xE20130FF  AND    r1   r3   0x0FF
+registers addressable by one field: 16
+instruction width in bytes: 4
+```
+
+Check the first row by hand. `0xE2811001` shifted right by 21 and masked
+with `0x0f` gives 4, which the table maps to ADD. Bits 19–16 give 1, so
+`Rn` is r1. Bits 15–12 give 1, so `Rd` is also r1. The low twelve bits
+give 1, so the immediate is 1. The instruction is `ADD r1, r1, #1`, and
+the disassembly comment says exactly that.
+
+Nothing in that decoding needed to know how long the instruction was. It
+was four bytes because every ARM instruction is four bytes.
+
+<ExerciseCard
+	id="m09-disassemble"
+	concept="fixed-width instruction decoding"
+	prompt="Add a MOV opcode (0xD) to the decoder and extend the table with the word 0xE3A02005, which the comment says is MOV r2, #5. Print exactly this table, then the decoded form for the MOV word:&#10;&#10;word        opcode Rn   Rd   imm12&#10;0xE2811001  ADD    r1   r1   0x001&#10;0xE2412004  SUB    r1   r2   0x004&#10;0xE20130FF  AND    r1   r3   0x0FF&#10;0xE3A02005  MOV    r0   r2   0x005&#10;decoded MOV r2, #5&#10;&#10;The last line must be produced by pulling the destination and immediate out of the word, not by printing a hardcoded sentence. Keep the column widths and the uppercase hex digits exactly as shown."
+	starter="#include &lt;stddef.h&gt;&#10;#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum &#123;&#10;    OP_SHIFT = 21, OP_MASK = 0x0fu,&#10;    RN_SHIFT = 16, RD_SHIFT = 12, IMM12_MASK = 0x0fffu&#10;&#125;;&#10;&#10;static const char *op_name(unsigned op) &#123;&#10;    switch (op) &#123;&#10;    case 0x0: return &quot;AND&quot;;&#10;    case 0x2: return &quot;SUB&quot;;&#10;    case 0x4: return &quot;ADD&quot;;&#10;    /* TODO: MOV lives at 0xD */&#10;    default:  return &quot;other&quot;;&#10;    &#125;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const uint32_t words[] = &#123;&#10;        0xE2811001u,&#10;        0xE2412004u,&#10;        0xE20130FFu,&#10;        /* TODO: add 0xE3A02005 */&#10;    &#125;;&#10;    /* TODO: print the header, one row per word, and the decoded MOV */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="word        opcode Rn   Rd   imm12&#10;0xE2811001  ADD    r1   r1   0x001&#10;0xE2412004  SUB    r1   r2   0x004&#10;0xE20130FF  AND    r1   r3   0x0FF&#10;0xE3A02005  MOV    r0   r2   0x005&#10;decoded MOV r2, #5&#10;"
+	hints={[
+		'The opcode field is bits 24 down to 21, Rn is 19 to 16, Rd is 15 to 12, and the immediate is the low twelve bits. 0xE3A02005 shifted right by 21 and masked gives 0xD.',
+		'MOV r2, #5: Rd comes out as 2 and imm12 as 5, so the last line is a printf of the two extracted fields. Rn for MOV is r0 because bits 19 to 16 are zero, which is the ARM convention for an unused operand.'
+	]}
+	solution="#include &lt;stddef.h&gt;&#10;#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum &#123;&#10;    OP_SHIFT = 21, OP_MASK = 0x0fu,&#10;    RN_SHIFT = 16, RD_SHIFT = 12, IMM12_MASK = 0x0fffu&#10;&#125;;&#10;&#10;static const char *op_name(unsigned op) &#123;&#10;    switch (op) &#123;&#10;    case 0x0: return &quot;AND&quot;;&#10;    case 0x2: return &quot;SUB&quot;;&#10;    case 0x4: return &quot;ADD&quot;;&#10;    case 0xD: return &quot;MOV&quot;;&#10;    default:  return &quot;other&quot;;&#10;    &#125;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const uint32_t words[] = &#123;&#10;        0xE2811001u, /* ADD r1, r1, #1    */&#10;        0xE2412004u, /* SUB r2, r1, #4    */&#10;        0xE20130FFu, /* AND r3, r1, #0xFF */&#10;        0xE3A02005u, /* MOV r2, #5        */&#10;    &#125;;&#10;&#10;    printf(&quot;%-11s %-6s %-4s %-4s %s\n&quot;, &quot;word&quot;, &quot;opcode&quot;, &quot;Rn&quot;, &quot;Rd&quot;, &quot;imm12&quot;);&#10;    for (size_t i = 0; i &lt; sizeof words / sizeof words[0]; i++) &#123;&#10;        uint32_t w = words[i];&#10;        unsigned op  = (w &gt;&gt; OP_SHIFT) &amp; OP_MASK;&#10;        unsigned rn  = (w &gt;&gt; RN_SHIFT) &amp; 0x0fu;&#10;        unsigned rd  = (w &gt;&gt; RD_SHIFT) &amp; 0x0fu;&#10;        unsigned imm = w &amp; IMM12_MASK;&#10;&#10;        printf(&quot;0x%08X  %-6s r%-3u r%-3u 0x%03X\n&quot;, w, op_name(op), rn, rd, imm);&#10;        if (op == 0xDu) &#123;&#10;            printf(&quot;decoded MOV r%u, #%u\n&quot;, rd, imm);&#10;        &#125;&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Forgetting that the immediate is limited
+
+Twelve bits holds values up to 4095, and even that is optimistic — the
+real ARM encoding rotates an 8-bit value, so many twelve-bit patterns are
+not encodable. Loading `0x12345678` takes more than one instruction. This
+is a genuine cost of fixed-width encoding and the reason ARM has a
+separate literal-pool mechanism.
+
+### Assuming ARM and ARM64 are the same instruction set
+
+They are not. AArch64 has thirty-one general-purpose registers, fixed
+32-bit instructions with a different field layout, and no conditional
+execution on most instructions. Code written for 32-bit ARM will not run
+on a 64-bit core without recompiling, and in some cases will not run at
+all.
+
+### Thinking the program counter is a general register
+
+In 32-bit ARM, r15 is the program counter and can be read and written
+like any other register. That is convenient and dangerous: a misaligned
+write to r15 jumps somewhere arbitrary. In AArch64 the PC is no longer
+directly addressable, partly for this reason.
+
+<QuizCard
+	id="m09-quiz-fields"
+	question="An ARM data-processing instruction has four-bit fields for Rn and Rd. How many general-purpose registers can one instruction name, and what does that imply about the register file size in the 32-bit design?"
+	options={[
+		'16 registers per field, so the 32-bit design has a register file of 16 general-purpose registers (r0 to r15, with the stack pointer and program counter among them)',
+		'4 registers per field, because the field is four bits and each bit encodes one register',
+		'16 registers per field, so the register file can hold 32 registers because there are two fields per instruction',
+		'Any number: the four-bit field is a pointer into a table, so the register file size is independent of the encoding'
+	]}
+	answer={0}
+	explanation="A four-bit field has 2^4 = 16 encodings, so one instruction can name 16 distinct registers, which is why the 32-bit ARM design has 16 general-purpose registers and not 32."
+/>
+
+<LectureReference lecture="Lecture 09 — Architecture 2" slides="20–35" />

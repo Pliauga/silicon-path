@@ -1,0 +1,247 @@
+---
+id: 02-03-floating-point
+title: Floating Point
+module: 2
+lecture: 'Lecture 02 — Data Representation 2'
+slides: '33–48'
+estimatedMinutes: 18
+prerequisites: ['02-01-bases', '02-02-negative-numbers']
+tags: ['floats', 'ieee754', 'precision']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## A float is scientific notation in binary
+
+Self-check: `0.1 + 0.2 == 0.3` is false in almost every language, and the
+reason is not a language bug. A `double` holds a *binary* fraction, and
+one tenth has no finite binary expansion — just as one third has no finite
+decimal expansion. `0.1` is stored as the nearest `double`, `0.2` is
+stored as the nearest `double`, and their sum is the nearest `double` to
+something that was already slightly wrong.
+
+Every `float` and `double` on essentially every machine follows
+**IEEE 754**: a sign bit, a biased exponent, and a fraction. The layout is
+fixed, which is why the bit patterns below are the same on your laptop and
+on a phone.
+
+## What you'll be able to do
+
+- Break a 32-bit float into sign, exponent, and mantissa bits.
+- Explain why `0.1 + 0.2` is not `0.3`, in terms of binary fractions.
+- Compare floats using a tolerance instead of `==`, and say what the tolerance means.
+- Dump a float's bits with `memcpy` instead of a type-punning pointer cast.
+
+## The layout of a 32-bit float
+
+| Field    | Bits | Position | Meaning |
+| -------- | ---- | -------- | ------- |
+| Sign     | 1    | 31       | `0` positive, `1` negative |
+| Exponent | 8    | 30–23    | power of two, biased by 127 |
+| Fraction | 23   | 22–0     | bits after the leading `1.` |
+
+The value is `±1.fraction × 2^(exponent - 127)`. The leading `1` is not
+stored, because in normalised form it is always there — a free extra bit
+of precision.
+
+`24.5` is `11000.1` in binary, which normalises to `1.10001 × 2^4`. The
+exponent field is `4 + 127 = 131`, which is `10000011`. The fraction is
+`10001000…` padded to 23 bits. Assembled: `0 10000011 10001000000000000000000`,
+or `0x41C40000`.
+
+| Value  | Sign | Exponent | Fraction              | Hex          |
+| ------ | ---- | -------- | --------------------- | ------------ |
+| `1.0`  | `0`  | `01111111` | `00000000000000000000000` | `0x3F800000` |
+| `0.5`  | `0`  | `01111110` | `00000000000000000000000` | `0x3F000000` |
+| `24.5` | `0`  | `10000011` | `10001000000000000000000` | `0x41C40000` |
+| `-2.0` | `1`  | `10000000` | `00000000000000000000000` | `0xC0000000` |
+| `0.1`  | `0`  | `01111011` | `10011001100110011001101` | `0x3DCCCCCD` |
+
+Look at the last row. The fraction `10011001100110011001101` is the binary
+expansion of one tenth — `0.0001100110011…` repeating — truncated to 23
+bits and rounded. It never terminates, so it never fits, so it is never
+exactly one tenth.
+
+<Eli5Block
+	topic="float-precision"
+	football="A pitch is measured in metres, and a tape measure only has marks every centimetre. A pass of 10.005 metres gets recorded as 10.00 or 10.01. Add a hundred of those recordings and the total drifts, even though every individual measurement was as careful as the tape allows."
+	money="A till records pence, not fractions of a penny. Three items at 33.333 pence each must be written as 33, 33, and 34 pence, and the sum is a penny off. The error is not carelessness; the ledger simply has no finer unit to write in."
+/>
+
+<TheoryBlock label="Why it matters for C" title="Equality is the wrong question">
+
+	`if (a == b)` on two floats asks whether every bit matches. After any
+	arithmetic that is almost never what you mean. The idiom is to compare
+	the absolute difference against a tolerance scaled to the numbers
+	involved — and to remember that `FLT_EPSILON` is the gap at `1.0`, not a
+	universal constant. For a value near `1000.0` the representable gap is
+	about `0.0001`, a thousand times larger.
+</TheoryBlock>
+
+## Seeing the encoding
+
+The clearest demonstration of IEEE 754 is not arithmetic — it is copying
+the bits out and printing them. `memcpy` into a `uint32_t` does this
+without violating the strict aliasing rule, which a pointer cast would.
+
+```c
+#include <float.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+static void print_bits32(uint32_t bits) {
+    for (int bit = 31; bit >= 0; bit--) {
+        printf("%u", (unsigned)((bits >> bit) & 1u));
+        if (bit % 8 == 0 && bit != 0) {
+            printf(" ");
+        }
+    }
+}
+
+/* Copying the bytes out is the only portable way to see the encoding.
+ * Reinterpreting through a pointer would break the strict aliasing rule. */
+static void show(float value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof bits);
+    printf("  %-10.4f  0x%08X  ", (double)value, bits);
+    print_bits32(bits);
+    printf("\n");
+}
+
+int main(void) {
+    printf("0.1 + 0.2 = %.17f\n", 0.1 + 0.2);
+    printf("0.3       = %.17f\n", 0.3);
+    printf("equal?    %s\n\n", (0.1 + 0.2 == 0.3) ? "yes" : "no");
+
+    float a = 0.1f;
+    float b = 0.2f;
+    printf("in float: a + b == 0.3f ? %s\n", (a + b == 0.3f) ? "yes" : "no");
+    printf("FLT_EPSILON = %e\n\n", (double)FLT_EPSILON);
+
+    printf("sign exponent mantissa\n");
+    show(1.0f);
+    show(0.5f);
+    show(24.5f);
+    show(-2.0f);
+    show(0.1f);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+0.1 + 0.2 = 0.30000000000000004
+0.3       = 0.29999999999999999
+equal?    no
+
+in float: a + b == 0.3f ? yes
+FLT_EPSILON = 1.192093e-07
+
+sign exponent mantissa
+  1.0000      0x3F800000  00111111 10000000 00000000 00000000
+  0.5000      0x3F000000  00111111 00000000 00000000 00000000
+  24.5000     0x41C40000  01000001 11000100 00000000 00000000
+  -2.0000     0xC0000000  11000000 00000000 00000000 00000000
+  0.1000      0x3DCCCCCD  00111101 11001100 11001100 11001101
+```
+
+The first two lines are the whole argument in decimal. The `double`
+nearest to `0.1` plus the `double` nearest to `0.2` is not the `double`
+nearest to `0.3` — it is one unit in the last place above it.
+`%.17f` is used because seventeen significant digits is what it takes to
+round-trip a `double` exactly; printing fewer would hide the difference.
+
+The third line is the kind of result that makes people distrust floats
+entirely, and it deserves care. In `float`, `0.1f + 0.2f == 0.3f` prints
+`yes`. That is not a contradiction of the `double` result — it is the same
+rounding happening at a coarser width, where the error lands on the same
+representable value as `0.3f`. Fewer bits means fewer distinct values,
+which means a wider chance of coincidence.
+
+## Comparing floats
+
+There is no correct universal epsilon. The honest comparison is relative:
+
+```c
+#include <math.h>
+
+static int nearly_equal(double a, double b) {
+    double diff = fabs(a - b);
+    double scale = fmax(fabs(a), fabs(b));
+    return diff <= 1e-9 * (scale > 1.0 ? scale : 1.0);
+}
+```
+
+This says "equal to about nine significant digits", which is a claim you
+can defend. `fabs(a - b) < 1e-9` alone is wrong for values around `1e12`,
+where the representable gap is already larger than `1e-9` and the test
+never passes.
+
+`FLT_EPSILON` and `DBL_EPSILON` are the gaps at `1.0` specifically. They
+are useful for reasoning about precision, not as a magic tolerance.
+
+## Common pitfalls
+
+### Type-punning through a pointer
+
+`uint32_t bits = *(uint32_t *)&f;` is undefined behaviour under the strict
+aliasing rule, and optimisers do exploit it. `memcpy` is the standard
+sanctioned way to reinterpret bytes, and compilers turn it into a single
+register move.
+
+### Comparing with `==` after arithmetic
+
+`if (x == 0.1)` after computing `x` is a coin flip. Use a relative
+tolerance, or restructure so the comparison happens on integers — money in
+pence, time in milliseconds, angles in fixed-point steps.
+
+### Assuming `float` and `double` are interchangeable
+
+`float` has 24 bits of significand, `double` has 53. A `double` literal
+like `0.1` is not the same value as `0.1f`; assigning one to the other
+rounds. In a long accumulation the difference compounds, which is why
+numerical code often uses `double` even when memory looks tight.
+
+### Expecting exact decimal output from `%f`
+
+`printf("%.2f", 2.675)` may print `2.67` rather than `2.68`, because
+`2.675` is stored as slightly less than `2.675`. Rounding for display
+cannot recover digits that were never stored.
+
+<ExerciseCard
+	id="m02-float-bits"
+	concept="IEEE 754 exponent field"
+	prompt="Complete exponent_of so it returns the unbiased exponent of a float, then print one line per value in exactly the form `1.000000 exp=0 check=1` using %.6f, where check is 1 only when the value lies in the range that starts at 2^exp and ends below 2^(exp+1). Print 1.0f, 0.5f, 24.5f, and 0.1f in that order."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;static int exponent_of(float value) &#123;&#10;    uint32_t bits;&#10;    memcpy(&amp;bits, &amp;value, sizeof bits);&#10;    /* TODO: shift right 23, mask the low 8 bits, subtract the bias */&#10;    return 0;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    return 0;&#10;&#125;"
+	expectedStdout="1.000000 exp=0 check=1&#10;0.500000 exp=-1 check=1&#10;24.500000 exp=4 check=1&#10;0.100000 exp=-4 check=1&#10;"
+	hints={[
+		'Shift the 32 bits right by 23 and mask the low eight bits: that is the biased exponent. Subtract 127 to unbias it.',
+		'To test the power-of-two claim, compare the value against 2^exp and 2^(exp+1); build those powers with repeated multiplication so the program needs no libm.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* 2^exponent without touching libm, so the program links anywhere. */&#10;static double pow2(int exponent) &#123;&#10;    double result = 1.0;&#10;    for (int i = 0; i &lt; exponent; i++) &#123;&#10;        result *= 2.0;&#10;    &#125;&#10;    for (int i = 0; i &lt; -exponent; i++) &#123;&#10;        result /= 2.0;&#10;    &#125;&#10;    return result;&#10;&#125;&#10;&#10;/* The unbiased exponent: the value is mantissa * 2^exponent. */&#10;static int exponent_of(float value) &#123;&#10;    uint32_t bits;&#10;    memcpy(&amp;bits, &amp;value, sizeof bits);&#10;    return (int)((bits &gt;&gt; 23) &amp; 0xFFu) - 127;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    float values[] = &#123;1.0f, 0.5f, 24.5f, 0.1f&#125;;&#10;&#10;    for (int i = 0; i &lt; 4; i++) &#123;&#10;        int exponent = exponent_of(values[i]);&#10;        int in_range = (double)values[i] &gt;= pow2(exponent) &amp;&amp;&#10;                       (double)values[i] &lt; pow2(exponent + 1);&#10;        printf(&quot;%.6f exp=%d check=%d\n&quot;, (double)values[i], exponent, in_range);&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m02-quiz-float-hex"
+	question="A float's bits are 0x3F000000. What decimal value is that, and which field told you without any arithmetic?"
+	options={[
+		'0.5 — the exponent field is 126, one below the bias, and the mantissa is zero',
+		'0.5 — the sign bit is 0 and the mantissa field holds 0x800000',
+		'1.0 — 0x3F000000 is the encoding of the smallest normal positive number',
+		'0.25 — an exponent of 126 means 2 to the power -2'
+	]}
+	answer={0}
+	explanation="0x3F000000 splits into sign 0, exponent 0111 1110 = 126, and mantissa 0. Subtracting the bias 127 gives an exponent of -1, and a zero mantissa means exactly 1.0 x 2^-1, which is 0.5."
+/>
+
+<LectureReference lecture="Lecture 02 — Data Representation 2" slides="33–48" />

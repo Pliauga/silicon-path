@@ -1,0 +1,117 @@
+{
+  "source_file": "/Users/ep/Desktop/strip/CST1500_Week_4.pdf",
+  "sha256": "faa17ef5c7df9480ea39044790a21fcd77a527f23c8140f7e526fe9c28af06db",
+  "page_count": 9,
+  "parser_used": "pypdfium2 5.14.0 (PDFium)",
+  "ocr_used": false,
+  "ocr_pages": [],
+  "page_map": [
+    {
+      "page": 1,
+      "char_start": 0,
+      "char_end": 1648,
+      "ocr": false
+    },
+    {
+      "page": 2,
+      "char_start": 1648,
+      "char_end": 4318,
+      "ocr": false
+    },
+    {
+      "page": 3,
+      "char_start": 4318,
+      "char_end": 6285,
+      "ocr": false
+    },
+    {
+      "page": 4,
+      "char_start": 6285,
+      "char_end": 7320,
+      "ocr": false
+    },
+    {
+      "page": 5,
+      "char_start": 7320,
+      "char_end": 8364,
+      "ocr": false
+    },
+    {
+      "page": 6,
+      "char_start": 8364,
+      "char_end": 9793,
+      "ocr": false
+    },
+    {
+      "page": 7,
+      "char_start": 9793,
+      "char_end": 12294,
+      "ocr": false
+    },
+    {
+      "page": 8,
+      "char_start": 12294,
+      "char_end": 13799,
+      "ocr": false
+    },
+    {
+      "page": 9,
+      "char_start": 13799,
+      "char_end": 15818,
+      "ocr": false
+    }
+  ],
+  "tables": [],
+  "figures": [
+    {
+      "id": "fig-001",
+      "page": 4,
+      "path": "images/fig-001.png",
+      "caption_if_any": "Figure 1 (Page 4)",
+      "bounds": [
+        71.99999237060547,
+        389.80206298828125,
+        522.8558959960938,
+        645.73046875
+      ]
+    },
+    {
+      "id": "fig-002",
+      "page": 4,
+      "path": "images/fig-002.png",
+      "caption_if_any": "Figure 2 (Page 4)",
+      "bounds": [
+        72.0,
+        235.9335479736328,
+        523.4052734375,
+        480.7362976074219
+      ]
+    },
+    {
+      "id": "fig-003",
+      "page": 5,
+      "path": "images/fig-003.png",
+      "caption_if_any": "Figure 3 (Page 5)",
+      "bounds": [
+        72.00001525878906,
+        561.11328125,
+        522.8486938476562,
+        769.9200439453125
+      ]
+    },
+    {
+      "id": "fig-004",
+      "page": 5,
+      "path": "images/fig-004.png",
+      "caption_if_any": "Figure 4 (Page 5)",
+      "bounds": [
+        72.0,
+        255.17242431640625,
+        481.9222106933594,
+        464.5281677246094
+      ]
+    }
+  ],
+  "warnings": [],
+  "stripped_elements": []
+}

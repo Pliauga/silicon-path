@@ -1,0 +1,194 @@
+---
+id: 10-03-system-calls
+title: System Calls
+module: 10
+lecture: 'Lecture 10 — Operating Systems'
+slides: '30–44'
+estimatedMinutes: 16
+prerequisites: ['10-02-kernel-userland']
+tags: ['syscalls', 'errno', 'unistd']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The one gate into the kernel
+
+Userland cannot execute privileged instructions, but it does need files, memory,
+and other processes. The **system call** is the sanctioned crossing point: a
+userland program puts arguments in registers, executes a trap instruction, and
+the CPU switches to kernel mode at a fixed address. The kernel does the work,
+puts a result in a register, and returns.
+
+Everything you think of as "the OS" from inside a C program is one of these
+calls or a library function wrapping one. `open`, `read`, `write`, `close`,
+`fork`, `execve`, `wait4`, `mmap`, `brk` — all of them.
+
+## What you'll be able to do
+
+- Define a system call and name the trap that crosses the boundary.
+- Explain why `printf` is not a system call and `write` is.
+- Read a raw return value and `errno` together instead of trusting the printed text.
+- Turn a failing descriptor into a message with `perror`.
+
+<TheoryBlock label="Why it matters for C" title="printf is not a system call">
+
+	`printf` formats a string in user memory and appends it to a `FILE *` buffer. It crosses into the
+	kernel only when that buffer fills or you call `fflush`. This is why redirecting output to a file
+	can reorder lines that looked ordered on a terminal: a terminal flushes per line, a file does not.
+</TheoryBlock>
+
+## The cost is real
+
+A system call is not a function call. The trap itself is cheap on modern CPUs,
+but the transition flushes parts of the pipeline, may touch a different address
+space, and defeats branch prediction. The order of magnitude is hundreds of
+nanoseconds to a few microseconds, against a few nanoseconds for an in-process
+call.
+
+That gap is why `stdio` exists at all. A program that called `write` once per
+character would be correct and roughly a thousand times slower than one that
+buffers a line. The buffer is not an optimization detail; it is the layer that
+amortizes the crossing.
+
+<Eli5Block
+	topic="syscall"
+	football="You cannot walk onto the pitch mid-match, but there is one official gate with a steward. You queue, state your business, and the steward carries it to the referee. Every request goes through that gate, one at a time, and you wait for the answer to come back. That gate is the system call."
+	money="There is one teller window and one ledger behind it. You cannot walk behind the counter, but you can hand a slip through the window and wait for the balance to come back. The window is deliberately narrow: it is the only place the bank guards. That window is the boundary between your program and the operating system."
+/>
+
+## Calling `write` directly, and failing on purpose
+
+The next program uses the raw call, then deliberately calls it with a descriptor
+the process does not own, so you can see the error path.
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+int main(void) {
+    const char *greeting = "hello from a system call\n";
+
+    /* write() is the system call itself. It returns a byte count. */
+    ssize_t written = write(STDOUT_FILENO, greeting, strlen(greeting));
+    if (written < 0) {
+        perror("write");
+        return 1;
+    }
+    printf("write() returned  %zd\n", written);
+    printf("strlen() returned %zu\n", strlen(greeting));
+
+    /* Ask the kernel to write to a descriptor this process does not own. */
+    errno = 0;
+    ssize_t bad = write(99, "x", 1);
+    if (bad < 0) {
+        printf("\nwrite() to fd 99 failed\n");
+        printf("errno  = %d\n", errno);
+        printf("reason = %s\n", strerror(errno));
+    }
+
+    /* printf() is a library function, not a system call. It returns the
+       number of characters it buffered, or a negative value on failure. */
+    int printed = printf("\nthis line went through printf()\n");
+    printf("printf() returned %d\n", printed);
+    return 0;
+}
+```
+
+`ssize_t` is a signed size type, because a system call reports failure as `-1`
+and a plain `size_t` cannot hold that. `%zd` matches `ssize_t`; `%zu` matches
+`size_t`.
+
+`<unistd.h>`, `write`, and the `STDOUT_FILENO` constant are POSIX, not ISO C.
+Windows has a `_write` in `<io.h>` with a different signature, and no
+`STDOUT_FILENO`; portable code uses `<stdio.h>` and lives with the buffer.
+
+## Expected output
+
+```text
+hello from a system call
+write() returned  25
+strlen() returned 25
+
+write() to fd 99 failed
+errno  = 9
+reason = Bad file descriptor
+
+this line went through printf()
+printf() returned 33
+```
+
+Three things are worth pausing on.
+
+`write` and `strlen` agree on 25 because `write` was given exactly the string
+length, and it wrote all of it. A short write is legal — `write` may return fewer
+bytes than requested — which is why serious code loops until the count is
+satisfied.
+
+`errno` is 9, `EBADF`, because descriptor 99 was never opened. Compare against
+`EBADF`, not against 9.
+
+`printf` returned 33: the length of `"this line went through printf()\n"`. It is
+reporting characters *buffered*, not characters the kernel has accepted yet.
+
+## Common pitfalls
+
+### Checking only `exit(0)` and not the return value
+
+`printf` returns a negative value if the write eventually fails — a full disk, a
+closed pipe. Ignoring it is the difference between a program that detects a
+broken output and one that reports success while dropping data. This matters in
+module 18 when output goes to a file.
+
+### Mixing `write` and `printf` and expecting order
+
+They use different buffers. `printf` writes into the stdio buffer; `write` goes
+straight to the kernel. Interleave them and the order can differ from the source.
+Call `fflush(stdout)` before a raw `write` if the order matters — this lesson's
+program does not need to, because the raw write comes first, but the moment you
+reverse them you will see it.
+
+### Assuming a short read means end of file
+
+`read` returning 0 means end of file. Returning less than you asked for means
+"that is all that was available right now". A pipe with a writer still attached
+can do this indefinitely. Treat `0` as the terminator and loop on nonzero.
+
+<ExerciseCard
+	id="syscall-write-count"
+	concept="buffered I/O and syscall count"
+	prompt="Model the buffer instead of the terminal. printf does not call the kernel per character: it fills a 4096-byte buffer in your process and only makes a write system call when the buffer fills or the program flushes it. For a payload of 100000 characters, print exactly:&#10;&#10;payload: 100000 bytes&#10;buffer: 4096 bytes&#10;write syscalls: 25&#10;bytes written: 100000&#10;last write: 1696 bytes&#10;&#10;Compute the counts, do not type them: full buffers, the remainder, and the size of the final write. This sandbox cannot call the host, so the arithmetic model is the exercise."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define PAYLOAD 100000u&#10;#define BUFFER  4096u&#10;&#10;int main(void) &#123;&#10;    /* TODO: how many full buffers fit, what is left over, and how many&#10;       write calls does that make in total? */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="payload: 100000 bytes&#10;buffer: 4096 bytes&#10;write syscalls: 25&#10;bytes written: 100000&#10;last write: 1696 bytes&#10;"
+	hints={[
+		'Integer division gives the full buffers and the remainder gives the partial one. 100000 / 4096 is 24, and 24 * 4096 = 98304, so 1696 characters are left for a twenty-fifth call.',
+		'calls = PAYLOAD / BUFFER + (PAYLOAD % BUFFER != 0), and last = PAYLOAD % BUFFER. Print the counts with %zu and the constants with %u.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* Buffering is the difference between one system call per character and&#10; * one per buffer. Model the standard I/O buffer with arithmetic. */&#10;&#10;#define PAYLOAD 100000u&#10;#define BUFFER  4096u&#10;&#10;int main(void) &#123;&#10;    size_t full = PAYLOAD / BUFFER;&#10;    size_t rest = PAYLOAD % BUFFER;&#10;    size_t calls = full + (rest != 0u ? 1u : 0u);&#10;    size_t last = rest != 0u ? rest : BUFFER;&#10;    size_t written = full * BUFFER + rest;&#10;&#10;    printf(&quot;payload: %u bytes\n&quot;, PAYLOAD);&#10;    printf(&quot;buffer: %u bytes\n&quot;, BUFFER);&#10;    printf(&quot;write syscalls: %zu\n&quot;, calls);&#10;    printf(&quot;bytes written: %zu\n&quot;, written);&#10;    printf(&quot;last write: %zu bytes\n&quot;, last);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="os-syscall-quiz-1"
+	question="A program writes 100000 characters with printf and never calls fflush or fclose. Where do most of those characters live when main returns, and what happens to them?"
+	options={[
+		'They sit in the C library buffer in user memory. Returning from main calls exit, which flushes that buffer with write before the process finally ends, so they still reach the terminal',
+		'They sit in the terminal buffer, because printf makes a system call for every character it prints',
+		'They are lost, because nothing was flushed and the buffer disappears with the process',
+		'They sit in the kernel queue and are written after the process memory is reclaimed'
+	]}
+	answer={0}
+	explanation="printf copies into a user-space buffer, so a program that returns from main never loses that data: exit flushes stdio as part of normal termination, which is why omitting fflush only breaks you on crash, not on return."
+/>
+
+<LectureReference lecture="Lecture 10 — Operating Systems" slides="30–44" />

@@ -1,0 +1,192 @@
+---
+id: 11-01-process-concept
+title: The Process
+module: 11
+lecture: 'Lecture 11 — Processes'
+slides: '2–15'
+estimatedMinutes: 15
+prerequisites: ['10-03-system-calls']
+tags: ['processes', 'fork', 'address-space']
+hasExercise: false
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## A program is not a process
+
+A program is a file. A **process** is one running instance of that file, with
+its own memory, its own registers, and its own identity in the kernel's table.
+Run `ls` twice and you get two processes from one program.
+
+The kernel keeps a **process control block** (PCB) for each one. The lecture
+lists the fields; the ones that matter here are:
+
+| Field | What it holds |
+| --- | --- |
+| PID | the process's number, unique while it runs |
+| state | running, ready, blocked, or terminated |
+| program counter | where in the code it will resume |
+| registers | the values saved on the last context switch |
+| memory map | which virtual pages belong to it |
+| open files | the descriptor table |
+
+A **context switch** is the kernel saving one PCB's registers and loading
+another's. It is the only way two processes share one CPU, and it costs
+microseconds — enough that schedulers care how often they do it (Lecture 13).
+
+## What you'll be able to do
+
+- Explain the difference between a program and a process.
+- List the fields of a process control block that survive a context switch.
+- Predict what `fork()` returns in the parent and in the child.
+- Prove that a child's writes to a variable do not reach the parent.
+
+<TheoryBlock label="Why it matters for C" title="Every variable you declare has a home in one of these">
+
+	A local lives on the stack of the process that is running. A global lives in that process's data
+	segment. A pointer is only meaningful inside the address space that produced it — hand it to
+	another process and it points at nothing, because virtual addresses are per process. This is the
+	first place where the abstract memory model becomes something you can be wrong about.
+</TheoryBlock>
+
+## `fork()` duplicates the process
+
+POSIX provides exactly one call that creates a process: `fork()`. It returns
+once in the parent and once in the child, with different values, and that
+difference is how each knows which one it is.
+
+| Return value | Meaning | Who sees it |
+| --- | --- | --- |
+| `0` | you are the child | the new process |
+| positive number | you are the parent; the value is the child's PID | the original |
+| `-1` | failed, no child created | the original |
+
+The new process gets a **copy** of the address space. Not a share — a copy.
+Modifying a variable in the child leaves the parent's copy untouched. This is the
+single most surprising fact about `fork`, and it is the one the lecture's diagram
+is making.
+
+<Eli5Block
+	topic="fork-copy"
+	football="Two identical match programmes are printed before kick-off. The away team's manager scribbles a substitution on one. The home team's copy is untouched — same original, two independent pieces of paper. That split is how a process is duplicated: the child changes its own copy and the parent never sees the ink."
+	money="A joint account is split into two separate accounts, each funded with the same opening balance. Spending from one does not touch the other. They started identical and are now independent ledgers. That split is how a process is duplicated: copy the balance, then let each spend it alone."
+/>
+
+## Seeing the copy happen
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <stdio.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main(void) {
+    int counter = 100;
+
+    printf("before fork: counter = %d\n", counter);
+    fflush(stdout);          /* flush before the buffer gets copied */
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return 1;
+    }
+
+    if (pid == 0) {
+        /* The child. fork() returned 0 here, and only here. */
+        counter = 999;
+        printf("child:  counter = %d (changed its own copy)\n", counter);
+        return 0;
+    }
+
+    /* The parent. fork() returned the child's pid here. */
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid");
+        return 1;
+    }
+
+    printf("parent: counter = %d (its copy is untouched)\n", counter);
+    printf("parent: waitpid reported exit status %d\n", WEXITSTATUS(status));
+    return 0;
+}
+```
+
+`fork()`, `waitpid()`, and `WEXITSTATUS` are POSIX. **`fork()` does not exist on
+Windows.** On Windows the equivalent is `CreateProcess`, which starts a named
+executable rather than duplicating the caller — a genuinely different model, and
+one reason portable code uses threads or a process-spawning abstraction.
+
+Note the `fflush` before `fork`. The `printf` output was sitting in the stdio
+buffer; `fork` copies that buffer along with the rest of the address space. Both
+processes would later flush the same bytes, and you would see the first line
+twice. Flushing first is the fix, and forgetting it is the classic `fork` bug.
+
+## Expected output
+
+```text
+before fork: counter = 100
+child:  counter = 999 (changed its own copy)
+parent: counter = 100 (its copy is untouched)
+parent: waitpid reported exit status 0
+```
+
+No PID appears anywhere in that output, deliberately. A real PID is assigned by
+the kernel and changes every run; printing one would make the expected output
+wrong on your machine. The deterministic facts are the values of `counter` and
+the exit status, and those are what the lesson shows.
+
+The order of the child and parent lines is also not guaranteed. The parent blocks
+in `waitpid` until the child exits, but on a single-core machine either may run
+first after `fork` returns. The output above is a typical run, not a promise.
+
+## Common pitfalls
+
+### Expecting the child to change the parent's variable
+
+This is the whole lesson. `counter = 999` in the child modifies the child's
+copy. If you need a value shared across processes, you need shared memory
+(`mmap` with `MAP_SHARED`) or a pipe — module 11-03.
+
+### Forgetting to wait, and leaving a zombie
+
+When a child exits, the kernel keeps its exit status until the parent collects
+it with `wait` or `waitpid`. A child that has exited but not been collected is a
+**zombie**: it holds a PID and a table slot and does nothing. If the parent exits
+first, the child is reparented and cleaned up by `init`, but a long-running
+server that never calls `wait` accumulates zombies until it hits its process
+limit.
+
+### Calling `fork` in a loop by accident
+
+`fork` returns in both processes. A loop that forks without checking `pid == 0`
+and breaking or exiting creates an exponential number of processes. If a program
+starts printing the same line 2, 4, 8, 16 times, this is why.
+
+### Not checking the return value
+
+`fork` fails with `EAGAIN` when the process limit is reached. Treating `-1` as
+"parent" means the code falls through into the parent path a second time and does
+the child's work with no child. Always check for negative before comparing to 0.
+
+<QuizCard
+	id="proc-concept-quiz-1"
+	question="After fork(), the child sets a global int to 5. The parent then reads that global and prints it. What does the parent print, and what would have to change for the answer to be different?"
+	options={[
+		'The parent prints 0. fork gives the child a copy of the address space, so the assignment to the global happens in the child alone; the answer would change only if the two shared memory, through shared mapping, a thread, or shared-memory IPC',
+		'The parent prints 5. fork shares the address space so a write in the child is visible in the parent',
+		'The parent prints whatever its own copy was before the fork, which is 5 as well, because globals start from the value in the parent',
+		'The parent prints nothing, because after fork only one of the two processes continues past the call'
+	]}
+	answer={0}
+	explanation="fork copies the process, which includes copying the data segment, so the child modifies its own copy; sharing requires deliberate shared memory because the default is copy-on-write separation."
+/>
+
+<LectureReference lecture="Lecture 11 — Processes" slides="2–15" />

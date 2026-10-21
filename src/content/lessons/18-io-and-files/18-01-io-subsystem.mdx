@@ -1,0 +1,252 @@
+---
+id: 18-01-io-subsystem
+title: The I/O Subsystem
+module: 18
+lecture: 'Lecture 18 — I/O & File Systems'
+slides: '2–15'
+estimatedMinutes: 16
+prerequisites: ['17-03-thrashing']
+tags: ['io', 'buffering', 'latency']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The part of the machine that waits
+
+Every other lesson in this course has measured time in nanoseconds. A register
+read is a fraction of a cycle. A cache hit is about four cycles. Main memory is
+a couple of hundred. Then the I/O subsystem arrives and the numbers stop being
+comparable: a fast NVMe drive takes about 100 microseconds to answer, a spinning
+disk takes about 10 milliseconds, and a network round trip across an ocean takes
+about 150 ms.
+
+A CPU running at 3 GHz retires roughly 300 instructions in the time an NVMe
+read takes. It retires roughly 30 million in the time a disk seek takes. That
+gap is why the operating system goes to so much trouble around I/O, and why the
+shape of your C program — how many I/O operations it issues, not how much data
+it moves — usually decides whether it is fast.
+
+Two words carry most of this lesson. A **block device** is one that reads and
+writes fixed-size chunks, usually 4 KiB, and cannot address a single byte. A
+**character device** is one that streams bytes, like a keyboard or a serial
+port. File systems are built on block devices, and the block size is the reason
+you will see writes padded to 4096 bytes.
+
+## What you'll be able to do
+
+- Convert a device's quoted throughput into the time one 4 KiB block takes.
+- Explain why latency, not bandwidth, decides the cost of many small writes.
+- Describe what the buffer cache is doing between your `write()` and the disk.
+- Say which of buffered, unbuffered, and memory-mapped I/O suits which job.
+
+## Bandwidth is not latency
+
+Marketing quotes throughput in MB/s. That number answers exactly one question:
+how long does a large, sequential transfer take. It says nothing about the first
+byte, which is what your program spends its life waiting for.
+
+The arithmetic is simple enough to do on paper. A device that moves `R`
+megabytes per second moves `R × 10⁶` bytes per second, so one block of `B` bytes
+takes `B × 10⁶ / (R × 10⁶)` seconds — which is `B / R` microseconds. For 4096
+bytes at 3500 MB/s that is about 1.17 µs. Small enough that the transfer time
+disappears into the controller's own latency.
+
+| Device | Quoted rate | One 4 KiB block | Ticks on a 3 GHz core |
+| --- | --- | --- | --- |
+| Hard disk | 150 MB/s | 27.3 µs | 81,918 |
+| SATA SSD | 550 MB/s | 7.4 µs | 22,341 |
+| NVMe SSD | 3500 MB/s | 1.17 µs | 3,510 |
+| Gigabit Ethernet | 125 MB/s | 32.8 µs | 98,304 |
+
+Notice the ordering that surprises people: gigabit Ethernet, which sounds fast,
+moves a block more slowly than a 2010-era hard disk. The wire is not the
+bottleneck; the protocol and the software stack are.
+
+<TheoryBlock label="Why it matters for C" title="One write call is not one disk write">
+
+	`fwrite` copies your bytes into a `FILE` buffer in user memory and returns
+	immediately. The kernel sees nothing until that buffer fills or you call `fflush`.
+	Below that, the kernel's own page cache holds the data until a writeback thread
+	decides to push it to the device — typically a few seconds later. So a loop writing
+	4000 small records may issue four actual device writes, and `fflush` controls only
+	the first of those two buffers. That is why a program can look fast and still lose
+	data when the machine dies.
+
+</TheoryBlock>
+
+## Four ways to talk to a device
+
+The interfaces stack, and each layer trades control for convenience.
+
+| Interface | Call | Buffered by | Good for | Cost of a call |
+| --- | --- | --- | --- | --- |
+| stdio | `fwrite`, `fprintf` | your `FILE` + kernel | text, formatted output | ~100 ns |
+| POSIX | `write`, `read` | kernel only | binary data, exact control | ~1 µs |
+| Direct | `O_DIRECT`, `fsync` | neither | databases, journaling | milliseconds |
+| Memory-mapped | `mmap` | kernel pages | random access to a large file | page faults |
+
+Each step down that table gives you more control and costs more per operation.
+The mistake beginners make is jumping to the bottom for no reason: `write()` in
+a loop is slower than `fwrite()` in a loop, because you have thrown away a
+buffer and paid a system call for every handful of bytes.
+
+The opposite mistake is just as common. A program that writes a log line and
+then dies without `fflush` or `fclose` has handed the line to a buffer that will
+never be drained. There is nothing to recover, because the bytes were never
+anywhere else.
+
+<Eli5Block
+	topic="buffering"
+	football="A team bus does not leave for every single player. It waits until it is full, then drives everyone at once. That is a buffer: fewer, fuller trips. The risk is that a player who arrives after the last bus has left is still standing in the car park when the stadium closes."
+	money="A shop does not send a courier to the bank for every coin in the till. It accumulates a day's takings and makes one deposit. That is buffering: fewer, larger transfers, each far cheaper than the last. If the shop burns down before the deposit, the till's contents are simply gone."
+/>
+
+## Seeing the gap in numbers
+
+Timing a real disk from inside a program is unreliable: the file may already be
+cached, the drive may be busy, and a laptop's power management moves the number
+by more than the effect you are measuring. What is perfectly deterministic is
+the arithmetic that the subsystem forces on you.
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+
+/* One 4 KiB block, moved over four devices with very different rates.
+
+   A device quoted in MB/s moves `mb` million bytes every second, so one
+   block of `bytes` takes bytes * 1e9 / (mb * 1e6) nanoseconds, which is
+   bytes * 1000 / mb. Integer arithmetic keeps every digit exact. */
+
+struct device {
+    const char *name;
+    uint32_t mb_per_second;
+};
+
+int main(void) {
+    const uint64_t block_bytes = 4096;
+
+    const struct device devices[] = {
+        {"hard disk   150 MB/s",  150},
+        {"SATA SSD    550 MB/s",  550},
+        {"NVMe SSD   3500 MB/s", 3500},
+        {"ethernet   125 MB/s",  125}
+    };
+    const size_t count = sizeof devices / sizeof devices[0];
+
+    printf("%llu bytes in one block, %zu devices\n\n",
+           (unsigned long long)block_bytes, count);
+
+    for (size_t i = 0; i < count; i++) {
+        uint64_t ns = block_bytes * 1000 / devices[i].mb_per_second;
+        printf("%-22s %6llu ns  %3llu.%03llu us\n",
+               devices[i].name,
+               (unsigned long long)ns,
+               (unsigned long long)(ns / 1000),
+               (unsigned long long)(ns % 1000));
+    }
+
+    printf("\nblock time in ticks of a 3 GHz core:\n");
+    for (size_t i = 0; i < count; i++) {
+        uint64_t ns = block_bytes * 1000 / devices[i].mb_per_second;
+        printf("%-22s %6llu ticks\n",
+               devices[i].name,
+               (unsigned long long)(ns * 3));
+    }
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+4096 bytes in one block, 4 devices
+
+hard disk   150 MB/s    27306 ns   27.306 us
+SATA SSD    550 MB/s     7447 ns    7.447 us
+NVMe SSD   3500 MB/s     1170 ns    1.170 us
+ethernet   125 MB/s     32768 ns   32.768 us
+
+block time in ticks of a 3 GHz core:
+hard disk   150 MB/s    81918 ticks
+SATA SSD    550 MB/s    22341 ticks
+NVMe SSD   3500 MB/s     3510 ticks
+ethernet   125 MB/s     98304 ticks
+```
+
+The right-hand column is the one worth staring at. A single block from a hard
+disk is 82,000 cycles of nothing but waiting. If your program issues that read
+and then blocks, the CPU is idle for 27 microseconds — long enough to context
+switch to another process and back twice. This is the entire motivation for
+asynchronous I/O and for the kernel's readahead: do something else, or ask for
+the next block before you need it.
+
+<ExerciseCard
+	id="m18-block-time"
+	concept="transfer time, CPU cycles spent waiting"
+	prompt="Extend the block-time table with a fifth device, a USB 2.0 stick quoted at 30 MB/s, and add a 64 KiB column next to the 4 KiB one. Time is size divided by throughput, truncated to whole nanoseconds, and ticks are nanoseconds times three on a 3 GHz core. Then confirm in code that the 64 KiB transfer takes exactly sixteen times the 4 KiB one. Print exactly:&#10;device        MB/s   4096 ns  65536 ns   4096 ticks  65536 ticks&#10;hard disk      150     27306    436906        81918      1310718&#10;SATA SSD       550      7447    119156        22341       357468&#10;NVMe SSD      3500      1170     18724         3510        56172&#10;ethernet       125     32768    524288        98304      1572864&#10;USB 2.0         30    136533   2184533       409599      6553599&#10;16x the block, 16.000x the time: yes&#10;Nothing else. The last line is a comparison computed from the two values, not a literal."
+	starter="#include &lt;stdio.h&gt;&#10;#include &lt;stdint.h&gt;&#10;&#10;struct device &#123;&#10;    const char *name;&#10;    uint32_t mb_per_second;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: add the USB device and a 64 KiB column */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="device        MB/s   4096 ns  65536 ns   4096 ticks  65536 ticks&#10;hard disk      150     27306    436906        81918      1310718&#10;SATA SSD       550      7447    119156        22341       357468&#10;NVMe SSD      3500      1170     18724         3510        56172&#10;ethernet       125     32768    524288        98304      1572864&#10;USB 2.0         30    136533   2184533       409599      6553599&#10;16x the block, 16.000x the time: yes&#10;"
+	hints={[
+		'Nanoseconds are bytes times 1000 divided by MB per second, because a megabyte is 1000 kilobytes at these quoted speeds.',
+		'Truncation happens in integer arithmetic, so 4096 at 150 MB/s is 27306 ns and 65536 is 436906 ns; the ratio is exactly 16 before truncation, which is why the check uses doubles.'
+	]}
+	solution="#include &lt;math.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;/* Time per transfer is size divided by throughput. On a 3 GHz core the&#10; * same numbers in cycles show how long a blocking read idles the CPU. */&#10;&#10;#define BLOCK 4096u&#10;#define BIG_BLOCK 65536u&#10;#define TICKS_PER_NS 3u&#10;&#10;struct device &#123;&#10;    const char *name;&#10;    unsigned mb_per_second;&#10;&#125;;&#10;&#10;static unsigned long long ns_for(unsigned bytes, unsigned mb_per_second) &#123;&#10;    return (unsigned long long)bytes * 1000ull / mb_per_second;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const struct device devices[] = &#123;&#10;        &#123;&quot;hard disk&quot;, 150u&#125;,&#10;        &#123;&quot;SATA SSD&quot;, 550u&#125;,&#10;        &#123;&quot;NVMe SSD&quot;, 3500u&#125;,&#10;        &#123;&quot;ethernet&quot;, 125u&#125;,&#10;        &#123;&quot;USB 2.0&quot;, 30u&#125;,&#10;    &#125;;&#10;    const int count = (int)(sizeof devices / sizeof devices[0]);&#10;&#10;    printf(&quot;%-12s %5s %9s %9s %12s %12s\n&quot;, &quot;device&quot;, &quot;MB/s&quot;, &quot;4096 ns&quot;,&#10;           &quot;65536 ns&quot;, &quot;4096 ticks&quot;, &quot;65536 ticks&quot;);&#10;&#10;    for (int i = 0; i &lt; count; i++) &#123;&#10;        unsigned long long small = ns_for(BLOCK, devices[i].mb_per_second);&#10;        unsigned long long big = ns_for(BIG_BLOCK, devices[i].mb_per_second);&#10;&#10;        printf(&quot;%-12s %5u %9llu %9llu %12llu %12llu\n&quot;, devices[i].name,&#10;               devices[i].mb_per_second, small, big, small * TICKS_PER_NS,&#10;               big * TICKS_PER_NS);&#10;    &#125;&#10;&#10;    double ratio = (double)ns_for(BIG_BLOCK, 150u) / (double)ns_for(BLOCK, 150u);&#10;    printf(&quot;16x the block, %.3fx the time: %s\n&quot;, ratio,&#10;           fabs(ratio - 16.0) &lt; 0.001 ? &quot;yes&quot; : &quot;no&quot;);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Assuming `fwrite` reached the disk
+
+`fwrite` returns the number of elements it accepted into the `FILE` buffer.
+That is a statement about your process's memory, not about the device. Even
+`fflush` only pushes data to the kernel. Only `fsync(fileno(f))` — POSIX, not
+ISO C — asks the kernel to wait for the device. A program that writes a
+receipt and exits normally is fine because `exit` flushes; a program that
+`_exit`s or crashes loses everything still buffered.
+
+### Measuring I/O speed with a stopwatch
+
+The second run of a file read is often a hundred times faster than the first,
+because the page cache is holding the data. Benchmarks that skip a cache flush
+measure memory bandwidth and report it as disk speed. If you must measure,
+repeat the run and report the minimum and the median, never a single number.
+
+### Forgetting that `fopen` can fail
+
+`fopen` returns `NULL` for a missing directory, a permission problem, or an
+exhausted descriptor table. Dereferencing it is undefined behaviour and on
+most systems an immediate crash. Every `fopen` in this module is followed by a
+check, and every check closes what it opened on the error path.
+
+### Treating a partial write as an error
+
+`fwrite` can legally write fewer elements than you asked for when the
+destination is a pipe or a full disk. The correct response is to check the
+return value and either retry or report, not to assume the buffer is gone. The
+same is true of `read`/`write`, which return a byte count for exactly this
+reason.
+
+<QuizCard
+	id="m18-quiz-latency"
+	question="A program writes 10,000 records of 100 bytes each, one `fwrite` per record, to a buffered `FILE`. Roughly how many times does the kernel see a write, and what happens to that number if you set the buffer to 4096 bytes with `setvbuf`?"
+	options={[
+		'About 245 writes: the 4096-byte buffer holds 40 records of 100 bytes, so 10,000 records cost about 244 kernel writes plus the final flush. Setting 4096 with setvbuf changes almost nothing, because that is already the default; a 64 KiB buffer is what would cut it to about 16.',
+		'10,000 writes, one per fwrite call, because stdio passes every write straight through to the kernel.',
+		'About 245 writes, and setting the buffer to 4096 raises it to 10,000, because a smaller buffer forces a flush on every record.',
+		'About 1000 writes, because the buffer holds 4096 bytes, which is ten records.'
+	]}
+	answer={0}
+	explanation="The syscall count is total bytes divided by buffer size, not the number of fwrite calls: one megabyte through a 4 KiB buffer is about 244 flushes. Changing the buffer to the size it already has does nothing; making it 64 KiB divides the count by sixteen."
+/>
+
+<LectureReference lecture="Lecture 18 — I/O & File Systems" slides="2–15" />

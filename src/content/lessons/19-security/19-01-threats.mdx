@@ -1,0 +1,278 @@
+---
+id: 19-01-threats
+title: Threat Models
+module: 19
+lecture: 'Lecture 19 — Security'
+slides: '2–15'
+estimatedMinutes: 15
+prerequisites: ['18-03-protection']
+tags: ['threats', 'keyspace', 'brute-force']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## What you are defending, from whom, and at what cost
+
+A security discussion that starts with a technique — a cipher, a firewall rule,
+a library — has already skipped the only question that matters. A **threat
+model** is three sentences: what asset is being protected, who wants it, and
+what it costs them to get it. Without all three you cannot say whether a control
+is worth its price, because there is no price to compare against.
+
+The asset might be a file, a session cookie, a credit card number, or the
+ability to run code on a machine. The adversary might be a bored person on the
+same network, a criminal with a rented botnet, or a nation state. The cost is
+measured in guesses per second, in dollars, or in the risk of being caught.
+Different answers give completely different designs.
+
+This lesson is about the arithmetic that comes before any code. It is exactly
+the same arithmetic as the last module — exponents and rates — applied to an
+adversary instead of a disk.
+
+## What you'll be able to do
+
+- State a threat model in three sentences and identify which part is missing.
+- Compute the size of a keyspace from its alphabet and length.
+- Convert that keyspace into a time given a guessing rate.
+- Say why "use a strong password" is an engineering answer and not a moral one.
+
+## Three properties, and you rarely get all three
+
+Security people describe the goals with three words that are easy to confuse.
+
+| Property | Question it answers | Broken by |
+| --- | --- | --- |
+| **Confidentiality** | who may read this? | a cipher that leaks, a file with mode `0644` |
+| **Integrity** | who may change this? | a hash collision, an unsigned update |
+| **Availability** | can the reader get it at all? | a flood, a full disk, a single server |
+
+Every real incident breaks at least one, and many break a different one than
+the designers worried about. Ransomware is an availability attack that arrives
+through a confidentiality failure. A supply-chain compromise usually breaks
+integrity while leaving the other two untouched.
+
+## The keyspace is the whole argument
+
+Suppose a secret has `A` possible symbols per position and `L` positions. The
+number of candidate secrets is `A^L`. If an attacker can test `R` candidates
+per second, exhausting the space takes `A^L / R` seconds. That is the entire
+model.
+
+What makes it useful is how fast it grows. Adding one character to an
+eight-character lowercase password multiplies the work by 26. Going from
+lowercase-only to the printable ASCII set multiplies it by roughly 3.6 — the
+same as adding more than one character, for free.
+
+| Secret | Alphabet | Length | Keyspace |
+| --- | --- | --- | --- |
+| 4-digit PIN | 10 | 4 | 10,000 |
+| 6 lowercase | 26 | 6 | 308,915,776 |
+| 8 lowercase | 26 | 8 | 208,827,064,576 |
+| 8 lower + digit | 36 | 8 | 2,821,109,907,456 |
+| 8 mixed | 94 | 8 | 6,095,689,385,410,816 |
+| 12 mixed | 94 | 12 | 4.76 × 10²³ |
+
+Note what did *not* help: choosing an unusual word. The model above assumes the
+attacker must try every string, and a dictionary attack invalidates that
+assumption for human-chosen secrets. This is why the advice moved from
+"complexity" to "length", and why a four-word passphrase beats `P@ssw0rd1`.
+
+<TheoryBlock label="Why it matters for C" title="The rate is a property of your code">
+
+	`R` is not a constant of nature. If your program compares a password with
+	`strcmp`, an attacker learns where the first mismatch is from the timing, and the
+	effective `R` collapses. If you hash with a deliberately slow function, you choose
+	`R` and you can lower it by four orders of magnitude. Rate limiting, lockouts, and
+	slow hashes are all the same lever: make each guess expensive. They are cheaper to
+	implement than any cipher and they change the answer to the only equation that
+	matters.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="keyspace"
+	football="A stadium combination lock with three dials of ten digits has a thousand settings. If a steward can try one per second, a thief needs a thousand seconds — but if the steward only lets each visitor try three, the same lock takes days. The lock did not change; the rate did."
+	money="A safe with a four-digit code has ten thousand combinations. A locksmith who can try one a second is done in under three hours; a bank clerk who allows one attempt per customer is not done in a lifetime. Growing the code by one digit multiplies the work tenfold, which is why lengthening beats complicating."
+/>
+
+## Computing the answer
+
+The program below is the threat model as arithmetic. It does not try anything;
+it computes how long an attacker with a given rate would need, and prints the
+unit that makes the number readable.
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+
+/* Brute force arithmetic. An attacker who can try `rate` guesses per second
+   needs (keyspace / rate) seconds to exhaust a space of `keyspace` secrets.
+   Integers, not guesses: this is the whole threat model in three columns. */
+
+struct case_study {
+    const char *label;
+    unsigned alphabet;   /* how many distinct symbols a character can be */
+    unsigned length;     /* how many characters the secret has */
+    double   rate;       /* guesses per second the attacker can afford */
+};
+
+static void print_duration(double seconds) {
+    if (seconds < 1.0) {
+        printf("%12.3f ms", seconds * 1000.0);
+    } else if (seconds < 120.0) {
+        printf("%12.3f s", seconds);
+    } else if (seconds < 172800.0) {
+        printf("%12.3f h", seconds / 3600.0);
+    } else if (seconds < 3.0e9) {
+        printf("%12.3f y", seconds / 31536000.0);
+    } else {
+        printf("%12.3e y", seconds / 31536000.0);
+    }
+}
+
+int main(void) {
+    const struct case_study cases[] = {
+        {"4 digits, PIN",        10,    4, 1e9},
+        {"6 lowercase",          26,    6, 1e9},
+        {"8 lowercase",          26,    8, 1e9},
+        {"8 lower+digit",        36,    8, 1e9},
+        {"8 mixed",              94,    8, 1e9},
+        {"12 mixed",             94,   12, 1e9},
+        {"12 mixed, slow hash",  94,   12, 1e4}
+    };
+    const size_t count = sizeof cases / sizeof cases[0];
+
+    printf("%-22s %6s %20s   %s\n", "secret", "length", "keyspace", "time to exhaust");
+    printf("%-22s %6s %20s   %s\n", "----------------------",
+           "------", "--------------------", "----------------");
+
+    for (size_t i = 0; i < count; i++) {
+        double keyspace = 1.0;
+        for (unsigned k = 0; k < cases[i].length; k++) {
+            keyspace *= (double)cases[i].alphabet;
+        }
+        printf("%-22s %6u %20.0f   ", cases[i].label, cases[i].length, keyspace);
+        print_duration(keyspace / cases[i].rate);
+        printf("\n");
+    }
+
+    /* One more symbol multiplies the search space by the alphabet size. */
+    printf("\none extra character at 94 symbols:\n");
+    double keyspace = 1.0;
+    for (unsigned k = 0; k < 8; k++) {
+        keyspace *= 94.0;
+    }
+    for (unsigned extra = 0; extra <= 3; extra++) {
+        printf("length %2u: %20.0f keys   ", 8u + extra, keyspace);
+        print_duration(keyspace / 1e9);
+        printf("\n");
+        keyspace *= 94.0;
+    }
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+secret                 length             keyspace   time to exhaust
+---------------------- ------ --------------------   ----------------
+4 digits, PIN               4                10000          0.010 ms
+6 lowercase                 6            308915776        308.916 ms
+8 lowercase                 8         208827064576          0.058 h
+8 lower+digit               8        2821109907456          0.784 h
+8 mixed                     8     6095689385410816          0.193 y
+12 mixed                   12 475920314814253292847104      1.509e+07 y
+12 mixed, slow hash        12 475920314814253292847104      1.509e+12 y
+
+one extra character at 94 symbols:
+length  8:     6095689385410816 keys          0.193 y
+length  9:   572994802228616704 keys         18.170 y
+length 10: 53861511409489969152 keys      1.708e+03 y
+length 11: 5062982072492056641536 keys      1.605e+05 y
+```
+
+Read the first row against the last. A four-digit PIN falls in a hundredth of a
+millisecond at a billion guesses per second, which is roughly what one modern
+GPU does against a fast hash. Twelve characters drawn from the full printable
+set takes fifteen million years — until the last row, where the same secret at
+a deliberately slow hash rate takes fifteen trillion. The secret did not
+change. Only `R` moved.
+
+The second table shows the same multiplication at work: each extra character
+multiplies the work by 94, so length 8 to length 11 is a factor of 830,000. Four
+more characters bought more than any complexity rule ever written.
+
+The unit switch in `print_duration` is not decoration. A raw number like
+`1.509e+12` years means nothing to a reader; "longer than the age of the
+universe" lands. A good threat model always names the unit that makes the
+comparison obvious.
+
+<ExerciseCard
+	id="m19-rate"
+	concept="keyspace versus known-prefix guessing"
+	prompt="The table measures the work of guessing the whole secret. Add a column for a stolen database where the attacker knows everything except the last four characters, drawn from the same alphabet, so the work is alphabet to the fourth power. Rates: the PIN and the fast hash at one billion guesses per second, the slow hash a hundred thousand times slower. Then add a line for a rented budget of 10^14 guesses per second and count how many rows flip from years of work to under a minute. Print exactly:&#10;case             alphabet length   full years  partial seconds&#10;4-digit PIN            10      4    3.169e-13        1.000e-05&#10;12 mixed, fast         94     12    1.508e+07        7.807e-02&#10;12 mixed, slow         94     12    1.508e+12        7.807e+03&#10;8 mixed                94      8    1.932e-01        7.807e-02&#10;at 1e+14 guesses per second: 12-char 1.508e+02 years, four unknown 7.807e-07 seconds&#10;rows that flip from years to under a minute: 1&#10;Nothing else. A year is 31557600 seconds and the exponent is computed, not typed."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;struct case_study &#123;&#10;    const char *label;&#10;    unsigned alphabet;&#10;    unsigned length;&#10;    double rate;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: add a partial-knowledge column */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="case             alphabet length   full years  partial seconds&#10;4-digit PIN            10      4    3.169e-13        1.000e-05&#10;12 mixed, fast         94     12    1.508e+07        7.807e-02&#10;12 mixed, slow         94     12    1.508e+12        7.807e+03&#10;8 mixed                94      8    1.932e-01        7.807e-02&#10;at 1e+14 guesses per second: 12-char 1.508e+02 years, four unknown 7.807e-07 seconds&#10;rows that flip from years to under a minute: 1&#10;"
+	hints={[
+		'The partial column is the same formula with the length replaced by four: 94 to the fourth is 78074896, which at a billion guesses per second is a twelfth of a second.',
+		'Only the 12-character row on a fast hash flips from 1.5e7 years to 0.078 s; the slow hash still needs 7807 s and the PIN was never out of reach.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* The keyspace of the whole secret is not the work an attacker does when&#10; * they already know all but four characters. Add that column, then rent&#10; * more guesses per second and see which verdicts move. */&#10;&#10;#define SECONDS_PER_YEAR 31557600.0&#10;#define UNKNOWN_CHARS 4u&#10;#define BUDGET_RATE 1e14&#10;&#10;struct case_study &#123;&#10;    const char *label;&#10;    unsigned alphabet;&#10;    unsigned length;&#10;    double rate; /* guesses per second */&#10;&#125;;&#10;&#10;static double power(unsigned base, unsigned exponent) &#123;&#10;    double result = 1.0;&#10;&#10;    for (unsigned i = 0; i &lt; exponent; i++) &#123;&#10;        result *= (double)base;&#10;    &#125;&#10;    return result;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const struct case_study cases[] = &#123;&#10;        &#123;&quot;4-digit PIN&quot;, 10u, 4u, 1e9&#125;,&#10;        &#123;&quot;12 mixed, fast&quot;, 94u, 12u, 1e9&#125;,&#10;        &#123;&quot;12 mixed, slow&quot;, 94u, 12u, 1e4&#125;,&#10;        &#123;&quot;8 mixed&quot;, 94u, 8u, 1e9&#125;,&#10;    &#125;;&#10;    const int count = (int)(sizeof cases / sizeof cases[0]);&#10;    int flips = 0;&#10;&#10;    printf(&quot;%-16s %8s %6s %12s %16s\n&quot;, &quot;case&quot;, &quot;alphabet&quot;, &quot;length&quot;,&#10;           &quot;full years&quot;, &quot;partial seconds&quot;);&#10;    for (int i = 0; i &lt; count; i++) &#123;&#10;        double full = power(cases[i].alphabet, cases[i].length) /&#10;                      cases[i].rate / SECONDS_PER_YEAR;&#10;        double partial = power(cases[i].alphabet, UNKNOWN_CHARS) / cases[i].rate;&#10;&#10;        if (full &gt; 1.0 &amp;&amp; partial &lt; 60.0) &#123;&#10;            flips++;&#10;        &#125;&#10;        printf(&quot;%-16s %8u %6u %12.3e %16.3e\n&quot;, cases[i].label,&#10;               cases[i].alphabet, cases[i].length, full, partial);&#10;    &#125;&#10;&#10;    printf(&quot;at %.0e guesses per second: 12-char %.3e years, four unknown &quot;&#10;           &quot;%.3e seconds\n&quot;,&#10;           BUDGET_RATE, power(94u, 12u) / BUDGET_RATE / SECONDS_PER_YEAR,&#10;           power(94u, UNKNOWN_CHARS) / BUDGET_RATE);&#10;    printf(&quot;rows that flip from years to under a minute: %d\n&quot;, flips);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Choosing a control before writing the model
+
+"We should encrypt it" is not a threat model. Encrypting a file whose real
+problem is that the backups are world-readable moves the attacker's work from
+zero to zero. Write the three sentences first; half the controls you were
+about to add become obviously irrelevant, and one you had not considered
+becomes obvious.
+
+### Treating the keyspace as the only factor
+
+`A^L` assumes independent, uniformly random symbols and an attacker who has to
+enumerate. Human passwords violate both: they are drawn from a small set of
+patterns, and attackers use that set. A twelve-character password like
+`password1234` has a keyspace of about 10²⁴ by the formula and a few thousand
+by the dictionary.
+
+### Measuring security by the algorithm alone
+
+The same cipher is strong or useless depending on the key. AES-256 with a key
+derived from a four-digit PIN is a four-digit secret with extra steps. When you
+read that a system "uses AES-256", the next question is where the key came
+from, and it is usually the interesting one.
+
+### Believing a slow hash makes a weak password safe
+
+It multiplies the attacker's cost by a constant. That is worth having — the
+last row of the table shows a factor of 10⁵ — but it does not rescue a secret
+with a keyspace of 10,000. Slow hashing and long secrets are complementary,
+not substitutes.
+
+<QuizCard
+	id="m19-quiz-keyspace"
+	question="An attacker can make 10⁹ guesses per second. A service locks an account for 15 minutes after 5 failed attempts. Roughly what keyspace does that lockout give a 12-character secret, and what does the attacker do instead?"
+	options={[
+		'It gives about 20 guesses per hour for that one account, roughly 175,000 a year against a 94^12 keyspace of about 5e23, so guessing is hopeless. The attacker sprays one common password across thousands of accounts instead, or steals the hash database and attacks it offline where no lockout applies.',
+		'It gives a keyspace of five attempts per 15 minutes, about 480 a day, which makes a 12-character secret safe for good.',
+		'The lockout makes the keyspace irrelevant because 175,000 guesses a year is enough to exhaust a 12-character secret of 94 symbols.',
+		'It divides the attacker\'s one billion guesses per second by four lockout periods per hour, so the keyspace is exhausted in the same time as before.'
+	]}
+	answer={0}
+	explanation="The lockout bounds online attempts per account, not the keyspace: 5 attempts per 15 minutes is about 175,000 per year, which is nothing against 94^12. It pushes the attacker to horizontal guessing (one password, many accounts) or to an offline attack on a stolen hash database, where the lockout no longer exists."
+/>
+
+<LectureReference lecture="Lecture 19 — Security" slides="2–15" />

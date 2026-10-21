@@ -1,0 +1,251 @@
+---
+id: 06-02-ram-rom
+title: RAM & ROM
+module: 6
+lecture: 'Lecture 06 — Memory Systems'
+slides: '21–33'
+estimatedMinutes: 15
+prerequisites: ['06-01-hierarchy']
+tags: ['ram', 'rom', 'volatile']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Two behaviours, one address space
+
+RAM and ROM are not different wires. They are different *answers* to the
+question "what happens when the CPU writes here". RAM accepts the write
+and remembers it; ROM refuses, or accepts nothing. From the CPU's point
+of view both are addresses it can read, and the distinction lives in a
+permission attached to a region, not in a separate instruction.
+
+**RAM** — random-access memory — is read-write and loses its contents
+when power goes away. That last property is why a program starts from
+zeroes and not from the values the last program left behind.
+
+**ROM** — read-only memory — is written once, at manufacture or at
+firmware-flash time, and read thereafter. The boot code that runs before
+anything else is stored this way so it cannot be accidentally
+overwritten by the very software it is loading.
+
+## What you'll be able to do
+
+- Explain the difference between RAM and ROM in terms of a permission bit.
+- Describe why a boot ROM must be read-only.
+- Model an address space with mixed permissions in C.
+- Say what `volatile` does to a compiler's assumptions about a location.
+
+## The map, not the memory
+
+A real machine's address space is a table of regions, each with a purpose
+and a set of permissions. The program below models a deliberately tiny
+one: 64 bytes, four regions of 16, two writable and two read-only.
+
+| Region       | Kind | Writable | Why |
+| ------------ | ---- | -------- | --- |
+| boot ROM     | ROM  | no       | the code that loads everything else |
+| kernel RAM   | RAM  | yes      | the OS's own working memory |
+| data RAM     | RAM  | yes      | the program's heap and stack |
+| device space | ROM  | no       | registers belonging to hardware |
+
+The interesting row is the last one. Device registers are read-write in
+principle, but they are not *this program's* memory, so treating them as
+ordinary writable addresses is how a driver ends up corrupting a
+controller. The model marks the region read-only to make the point that
+permission is a property of the region, not of the bytes.
+
+<TheoryBlock label="Why it matters for C" title="A pointer does not know what it points at">
+
+	C's type system tells you the shape of the value at an address, never
+	whether writing there is legal. `*(volatile uint32_t *)0x40000000 = 1;`
+	compiles cleanly and does something entirely different on a machine
+	where that address is a ROM. On a desktop the operating system stops
+	you with a segmentation fault; on a microcontroller there may be no
+	such protection and the write simply does nothing, silently.
+</TheoryBlock>
+
+<Eli5Block
+	topic="permissions"
+	football="RAM is the tactics whiteboard: wipe it and write again, all match. ROM is the printed team sheet pinned to the dressing-room wall: you can read it as often as you like, but rubbing it out mid-match is not something the board will let you do."
+	money="RAM is a current account — money goes in and out all day. ROM is a fixed-term bond statement: it says what it says, you can read it whenever, and changing it is a different process entirely, not a transaction."
+/>
+
+## Modelling the regions
+
+The write function is the whole lesson: check the region, refuse or
+accept, and report which. Reads are unguarded because reading a ROM is
+exactly what it is for.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* A 64-byte toy address space split into four regions. The point is not
+ * that a PC works this way in detail, but that the two kinds of memory
+ * differ by a permission bit, not by a wire. */
+
+#define SPACE 64u
+#define REGION 16u
+
+enum kind { RAM, ROM };
+
+struct region {
+    const char *name;
+    enum kind kind;
+};
+
+static const struct region MAP[SPACE / REGION] = {
+    {"boot ROM", ROM},
+    {"kernel RAM", RAM},
+    {"data RAM", RAM},
+    {"device space", ROM},
+};
+
+static uint8_t bytes[SPACE];
+
+static int write_byte(uint8_t addr, uint8_t value) {
+    if (addr >= SPACE) {
+        printf("  write 0x%02X: out of range\n", (unsigned)addr);
+        return 0;
+    }
+    unsigned r = addr / REGION;
+    if (MAP[r].kind == ROM) {
+        printf("  write 0x%02X: refused, %s is read-only\n",
+               (unsigned)addr, MAP[r].name);
+        return 0;
+    }
+    bytes[addr] = value;
+    return 1;
+}
+
+static uint8_t read_byte(uint8_t addr) {
+    return (addr < SPACE) ? bytes[addr] : 0u;
+}
+
+int main(void) {
+    printf("address space: %u bytes in %u regions of %u\n\n",
+           SPACE, SPACE / REGION, REGION);
+
+    printf("region map:\n");
+    for (unsigned r = 0; r < SPACE / REGION; r++) {
+        printf("  0x%02X-0x%02X  %-13s %s\n",
+               r * REGION, r * REGION + REGION - 1,
+               MAP[r].name, MAP[r].kind == RAM ? "writable" : "read-only");
+    }
+
+    printf("\nprobing writes:\n");
+    unsigned accepted = 0;
+    for (unsigned a = 0; a < SPACE; a += REGION / 2u) {
+        accepted += (unsigned)write_byte((uint8_t)a, (uint8_t)(a + 1u));
+    }
+
+    printf("\naccepted %u of %u writes\n", accepted, SPACE / (REGION / 2u));
+
+    /* Volatile: the boot vector is not a variable, it is an address that
+     * something outside this program may change. */
+    volatile uint8_t *const boot_vector = &bytes[0];
+    printf("boot byte after all writes: 0x%02X\n", read_byte(0));
+    printf("boot vector still reads:    0x%02X\n", (unsigned)*boot_vector);
+
+    /* A ROM byte that was never written is whatever the manufacturer
+     * burned in. Here it is zero, because this array starts zeroed. */
+    size_t nonzero = 0;
+    for (unsigned a = 0; a < REGION; a++) {
+        if (read_byte((uint8_t)a) != 0u) {
+            nonzero++;
+        }
+    }
+    printf("boot ROM bytes that changed: %zu\n", nonzero);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+address space: 64 bytes in 4 regions of 16
+
+region map:
+  0x00-0x0F  boot ROM      read-only
+  0x10-0x1F  kernel RAM    writable
+  0x20-0x2F  data RAM      writable
+  0x30-0x3F  device space  read-only
+
+probing writes:
+  write 0x00: refused, boot ROM is read-only
+  write 0x08: refused, boot ROM is read-only
+  write 0x30: refused, device space is read-only
+  write 0x38: refused, device space is read-only
+
+accepted 4 of 8 writes
+boot byte after all writes: 0x00
+boot vector still reads:    0x00
+boot ROM bytes that changed: 0
+```
+
+Four writes were refused and four accepted, one pair per region, because
+the probe steps by eight through a 64-byte space. The last three lines
+are the point: after a full sweep of attempted writes, the boot ROM is
+byte-for-byte unchanged. A refused write leaves no trace — which is
+exactly the behaviour you want from firmware and exactly the behaviour
+that makes a driver bug so hard to see.
+
+<ExerciseCard
+	id="m06-region-map"
+	concept="memory region permissions"
+	prompt="Add a fifth region of 16 bytes that is write-once: the first write lands, every later write to that region is refused. Build the five-region map, then attempt these writes in order: region 0 gets 42, region 1 gets 42, region 2 gets 42 and then 43, region 3 gets 7, region 4 gets 9 and then 10. Print one line per attempt in exactly the form `2 WRITE_ONCE write 42 -&gt; ok` or `2 WRITE_ONCE write 43 -&gt; refused` — region index, kind padded to ten columns with %-10s, the value, and the outcome."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum kind &#123; RAM, ROM, WRITE_ONCE &#125;;&#10;&#10;struct region &#123;&#10;    enum kind kind;&#10;    uint8_t bytes[16];&#10;    int written;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    enum kind kinds[5] = &#123;RAM, ROM, WRITE_ONCE, WRITE_ONCE, RAM&#125;;&#10;    struct region map[5];&#10;    /* TODO: zero the map, then make the permission check honour write-once */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="0 RAM        write 42 -&gt; ok&#10;1 ROM        write 42 -&gt; refused&#10;2 WRITE_ONCE write 42 -&gt; ok&#10;2 WRITE_ONCE write 43 -&gt; refused&#10;3 WRITE_ONCE write 7 -&gt; ok&#10;4 RAM        write 9 -&gt; ok&#10;4 RAM        write 10 -&gt; ok&#10;"
+	hints={[
+		'RAM accepts every write, ROM refuses every write, and WRITE_ONCE accepts only while its written flag is still 0.',
+		'Check the permission before touching bytes and return 0 early; set written = 1 only on the write that actually lands.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum kind &#123; RAM, ROM, WRITE_ONCE &#125;;&#10;&#10;struct region &#123;&#10;    enum kind kind;&#10;    uint8_t bytes[16];&#10;    int written;&#10;&#125;;&#10;&#10;static const char *name_of(enum kind kind) &#123;&#10;    switch (kind) &#123;&#10;    case RAM: return &quot;RAM&quot;;&#10;    case ROM: return &quot;ROM&quot;;&#10;    case WRITE_ONCE: return &quot;WRITE_ONCE&quot;;&#10;    &#125;&#10;    return &quot;?&quot;;&#10;&#125;&#10;&#10;static int write_region(struct region *region, unsigned value) &#123;&#10;    if (region-&gt;kind == ROM) &#123;&#10;        return 0;&#10;    &#125;&#10;    if (region-&gt;kind == WRITE_ONCE &amp;&amp; region-&gt;written) &#123;&#10;        return 0;&#10;    &#125;&#10;    region-&gt;bytes[0] = (uint8_t)value;&#10;    region-&gt;written = 1;&#10;    return 1;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    enum kind kinds[5] = &#123;RAM, ROM, WRITE_ONCE, WRITE_ONCE, RAM&#125;;&#10;    struct region map[5];&#10;&#10;    for (int i = 0; i &lt; 5; i++) &#123;&#10;        map[i].kind = kinds[i];&#10;        map[i].written = 0;&#10;        for (int j = 0; j &lt; 16; j++) &#123;&#10;            map[i].bytes[j] = 0;&#10;        &#125;&#10;    &#125;&#10;&#10;    struct attempt &#123;&#10;        unsigned region;&#10;        unsigned value;&#10;    &#125;;&#10;    struct attempt tries[] = &#123;&#123;0, 42&#125;, &#123;1, 42&#125;, &#123;2, 42&#125;, &#123;2, 43&#125;,&#10;                              &#123;3, 7&#125;,  &#123;4, 9&#125;,  &#123;4, 10&#125;&#125;;&#10;&#10;    for (int i = 0; i &lt; 7; i++) &#123;&#10;        unsigned index = tries[i].region;&#10;        int ok = write_region(&amp;map[index], tries[i].value);&#10;        printf(&quot;%u %-10s write %u -&gt; %s\n&quot;, index, name_of(map[index].kind),&#10;               tries[i].value, ok ? &quot;ok&quot; : &quot;refused&quot;);&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Expecting `volatile` to make memory safe
+
+`volatile` tells the compiler "do not cache this value in a register;
+re-read it every time". It says nothing about whether the address is
+writable, and it does not make an operation atomic. It is the right tool
+for a device register and the wrong tool for a shared counter between
+threads.
+
+### Assuming uninitialised memory is zero
+
+Global and static arrays are zero-initialised by the C standard; local
+arrays are not. The `bytes` array in the program above is `static`, which
+is why it starts at zero and why "the boot ROM holds zeroes" is true here.
+A local `uint8_t buf[64];` holds whatever was on the stack.
+
+### Treating a ROM address as constant across machines
+
+The address of a boot vector is a property of the machine's memory map,
+not of C. Code that hardcodes `0xFFFF0000` is correct on one board and
+meaningless on another. Portable code gets these addresses from a header
+the platform provides.
+
+<QuizCard
+	id="m06-quiz-rom"
+	question="A device register at a fixed address must be re-read on every loop iteration. Which qualifier tells the compiler not to cache it in a register, and does that qualifier also make the address writable?"
+	options={[
+		'volatile — and no, it only forbids caching the value in a register; writability comes from the memory, not the qualifier',
+		'const — and yes, const makes the register read-only once the program starts',
+		'static — and no, static only gives the object a fixed address',
+		'register — and yes, register pins the value to the device'
+	]}
+	answer={0}
+	explanation="volatile tells the compiler to re-read the object on every use instead of keeping it in a register. Whether the address accepts a store depends on the memory map and page permissions, so a write to a ROM register can compile fine and still fail."
+/>
+
+<LectureReference lecture="Lecture 06 — Memory Systems" slides="21–33" />

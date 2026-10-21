@@ -1,0 +1,396 @@
+---
+id: 15-03-detection
+title: Detection
+module: 15
+lecture: 'Lecture 15 — Deadlocks'
+slides: '31–45'
+estimatedMinutes: 18
+prerequisites: ['15-02-prevention-avoidance']
+tags: ['deadlock', 'wait-for-graph', 'detection', 'recovery']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Letting it happen, then noticing
+
+Prevention and avoidance both pay a price up front: a coding discipline
+you must never violate, or a declared maximum demand you must never
+understate. There is a third strategy. Let deadlocks happen, watch for
+them, and break them when they do. It is the only strategy that requires
+no cooperation from the programs being watched.
+
+The change of assumption is worth noticing. Prevention assumes the
+system designer can restrict what programs do. Detection assumes the
+system will seize up eventually and asks a different question: how do I
+find out quickly, and what do I sacrifice when I do?
+
+That second question has no comfortable answer. Recovery from a deadlock
+means taking something away from a process, and a process that loses a
+lock, a buffer, or its life has to be able to cope with that. There is no
+way to break a deadlock without harming someone.
+
+## What you'll be able to do
+
+- Build a wait-for graph and read a cycle out of it.
+- Explain why a wait-for graph has at most one edge per process, and what
+  that buys.
+- Time the detector correctly against the cost of running it.
+- Choose between killing a process and rolling one back, and say what
+  each one breaks.
+
+## The wait-for graph
+
+The resource-allocation graph from the first lesson has both processes
+and resources as nodes. For detection that is more detail than you need,
+because a resource node only ever sits between two processes: one holds
+it, one wants it. Collapse every resource node into a direct edge from
+the waiter to the holder, and you get a **wait-for graph** — one node per
+process, and an edge `Pi -> Pj` when Pi is blocked waiting for a resource
+that Pj holds.
+
+The collapse is exact as long as every resource has a single instance.
+With multiple instances the edge would be ambiguous — Pi waits for *one
+copy* of a resource held by several processes — and the graph has to be
+replaced by the matrix methods. For single-instance systems, a cycle in
+the wait-for graph is a deadlock, and the graph is dramatically smaller.
+
+The useful property is the one that falls out of the collapse: each
+process can be waiting for at most one thing at a time. A blocked process
+is blocked on one lock, not two. So every node in the wait-for graph has
+**out-degree at most one**, which turns cycle-finding into a walk rather
+than a search. Start at a node, follow the single edge, and see whether
+you come back to where you began.
+
+| Property            | Wait-for graph         | Resource-allocation graph |
+| ------------------- | ---------------------- | ------------------------- |
+| Nodes               | processes only         | processes and resources   |
+| Edges per process   | at most one outgoing   | several                 |
+| Cycle check         | follow the chain, O(n) | DFS with colours, O(n+e)  |
+| Multiple instances  | not representable      | representable, cycle not sufficient |
+
+<TheoryBlock label="Why it matters for C" title="The kernel sees locks, not intentions">
+
+	On Linux the information for this graph lives in the kernel's mutex
+	bookkeeping, not in your program. `pthread_mutex_t` records an owner
+	internally, and the kernel's futex wait queues know who is sleeping on
+	what. A debugger can read that state with `gdb -p` or via
+	`/proc/<pid>/task/*/stack`. What you cannot do is ask `pthread` for a
+	graph — the standard has no such call, and the portable answer is the
+	one this lesson models: record the edge when you block, clear it when
+	you wake, and check for a cycle yourself.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="wait-for-graph"
+	football="Each player who is standing still is waiting on exactly one other player. To find a stalemate, pick anyone standing still and follow the chain of who they are waiting for. If the chain comes back to where you started, nobody in that ring will ever move. One outgoing arrow each is all it takes."
+	money="Each shop that has stopped serving is waiting on exactly one other shop to deliver. To find a deadlock, follow the deliveries: A waits on B, B on C. If the chain returns to A, none of them will ever open. The graph is small because a stalled shop is stalled on one supplier, not several."
+/>
+
+## Walking the chain
+
+The program below keeps one array where index `i` holds the process that
+`i` is waiting for, or minus one if `i` is running. That array *is* the
+wait-for graph, stored in the most compact form its out-degree-one
+property allows. Detection is then a loop: follow the pointers, marking
+nodes as you go, and check whether you land back on the start.
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+/* Deadlock detection as an operating system does it: keep a wait-for
+ * graph, and run a cycle check whenever the system looks stuck.
+ *
+ * Detection is a policy, not a fact. Running the check on every lock
+ * acquisition is correct and expensive; running it once a second is cheap
+ * and lets a deadlock sit there for up to a second. The graph and the
+ * algorithm are the same either way -- only the schedule changes. */
+
+enum { N = 5 };
+
+struct wait_graph {
+    int n;
+    int wants[N];      /* wants[i] = the process i is waiting for, or -1 */
+};
+
+static void graph_clear(struct wait_graph *g, int n)
+{
+    g->n = n;
+    for (int i = 0; i < N; i++) {
+        g->wants[i] = -1;
+    }
+}
+
+static void wait_on(struct wait_graph *g, int who, int on)
+{
+    g->wants[who] = on;
+}
+
+/* A wait-for graph gives every process at most one outgoing edge, so a
+ * cycle is found by walking the chain from one process and seeing
+ * whether we come back to where we started. O(n) memory, O(n) time. */
+static int find_cycle(const struct wait_graph *g, int start, int *cycle, int *len)
+{
+    int visited[N] = {0};
+    int cursor = start;
+    int count = 0;
+
+    while (cursor != -1 && !visited[cursor] && count < N) {
+        visited[cursor] = 1;
+        cycle[count++] = cursor;
+        cursor = g->wants[cursor];
+    }
+
+    if (cursor == start && count > 0) {
+        *len = count;
+        return 1;
+    }
+    return 0;
+}
+
+static void report(const struct wait_graph *g, const char *heading)
+{
+    int cycle[N];
+    int len = 0;
+
+    printf("%s\n", heading);
+    for (int i = 0; i < g->n; i++) {
+        if (g->wants[i] == -1) {
+            printf("  P%d: running\n", i);
+        } else {
+            printf("  P%d: waiting for P%d\n", i, g->wants[i]);
+        }
+    }
+
+    for (int i = 0; i < g->n; i++) {
+        if (find_cycle(g, i, cycle, &len)) {
+            printf("  DEADLOCK P%d", cycle[0]);
+            for (int k = 1; k < len; k++) {
+                printf(" -> P%d", cycle[k]);
+            }
+            printf(" -> P%d\n\n", cycle[0]);
+            return;
+        }
+    }
+    printf("  no deadlock\n\n");
+}
+
+int main(void)
+{
+    struct wait_graph g;
+
+    /* The textbook two-process case. Both are blocked, and neither can be
+     * woken: the only event that would wake P0 is P1 releasing the lock,
+     * and P1 is waiting on P0. */
+    graph_clear(&g, 4);
+    wait_on(&g, 0, 1);
+    wait_on(&g, 1, 0);
+    report(&g, "state 1: two processes, one lock each");
+
+    /* Three-way cycle. Adding a process does not make it harder; the
+     * chain still closes and still has to be broken from outside. */
+    graph_clear(&g, 4);
+    wait_on(&g, 0, 1);
+    wait_on(&g, 1, 2);
+    wait_on(&g, 2, 0);
+    report(&g, "state 2: a three-process cycle");
+
+    /* Same number of waiting processes, no cycle: P3 owns the lock
+     * everyone else wants and is not waiting for anything. */
+    graph_clear(&g, 5);
+    wait_on(&g, 0, 3);
+    wait_on(&g, 1, 3);
+    wait_on(&g, 2, 3);
+    report(&g, "state 3: three waiters, one owner");
+
+    /* Two unrelated deadlocks. The detector stops at the first cycle it
+     * finds, so recovery has to run until a sweep comes back clean --
+     * killing one participant fixes one deadlock, not the system. */
+    graph_clear(&g, 4);
+    wait_on(&g, 0, 1);
+    wait_on(&g, 1, 0);
+    wait_on(&g, 2, 3);
+    wait_on(&g, 3, 2);
+    report(&g, "state 4: two independent deadlocks");
+
+    /* Recovery: the kernel kills P0, which releases the lock P1 wanted.
+     * The first pair drains; the second is untouched. */
+    graph_clear(&g, 4);
+    wait_on(&g, 2, 3);
+    wait_on(&g, 3, 2);
+    report(&g, "state 5: P0 killed, the second deadlock remains");
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+state 1: two processes, one lock each
+  P0: waiting for P1
+  P1: waiting for P0
+  P2: running
+  P3: running
+  DEADLOCK P0 -> P1 -> P0
+
+state 2: a three-process cycle
+  P0: waiting for P1
+  P1: waiting for P2
+  P2: waiting for P0
+  P3: running
+  DEADLOCK P0 -> P1 -> P2 -> P0
+
+state 3: three waiters, one owner
+  P0: waiting for P3
+  P1: waiting for P3
+  P2: waiting for P3
+  P3: running
+  P4: running
+  no deadlock
+
+state 4: two independent deadlocks
+  P0: waiting for P1
+  P1: waiting for P0
+  P2: waiting for P3
+  P3: waiting for P2
+  DEADLOCK P0 -> P1 -> P0
+
+state 5: P0 killed, the second deadlock remains
+  P0: running
+  P1: running
+  P2: waiting for P3
+  P3: waiting for P2
+  DEADLOCK P2 -> P3 -> P2
+```
+
+Five states, and three of them are more interesting than the first.
+
+State 3 is the one that catches people. Three processes wait on P3, and
+the report says `no deadlock` — correctly, because P3 is running and will
+release what they want. A queue is not a deadlock. Note also that the
+detector's loop over starts never needed to visit P0 or P1 as a
+candidate: starting at P0 follows the chain to P3 and stops.
+
+State 4 has two deadlocks, and the output names only one. `report`
+returns as soon as `find_cycle` succeeds, because for a single check the
+first cycle is as good as any. For recovery this is a real trap: kill P0,
+and state 5 shows the second deadlock still sitting there. The kernel has
+to sweep again, and again, until a pass finds nothing.
+
+State 5 also shows why recovery is not free. P0 and P1 are now
+`running`, and P0 has lost whatever work it had done while holding the
+lock it no longer holds. The deadlock is gone; the money is not.
+
+## Choosing when to look
+
+The algorithm is the easy part. The policy is where the design lives,
+and every option is a trade:
+
+| Policy                        | Cost                          | Worst case for the user          |
+| ----------------------------- | ----------------------------- | -------------------------------- |
+| Check on every blocking call   | O(n) inside every lock acquisition | Throughput loss across the whole system |
+| Check on a timer (once a second) | Nearly free               | Up to one second of frozen work  |
+| Check when CPU utilisation drops | Cheap, targeted            | Misses a deadlock shielded by other work |
+| Check only when a user asks    | Zero until it matters      | Nothing happens automatically    |
+
+The utilisation trigger in the third row is the classic choice: a
+deadlock makes runnable work disappear, so a system sitting idle with
+non-empty run queues is suspicious. It is also the one that fails when
+the deadlocked processes are not the only work in the machine, which is
+most of the time on a busy server.
+
+### Recovery, and what it costs
+
+Once a cycle is found, something in it has to give. There are three
+options and each one damages a different guarantee.
+
+**Kill one process.** Immediate, simple, and loses all the work that
+process had done — not only the work inside the deadlock. The choice of
+victim can be by priority, by age, or by how much work it has done that
+would be lost.
+
+**Roll one process back.** Checkpoint it periodically, and restore an
+earlier state that did not hold the lock. Correct in principle, and
+depends entirely on the program having been written to be restartable,
+which in C means no unflushed buffers and no half-written files.
+
+**Preempt the resource.** Take the lock away and give it to the waiter.
+Sound only for resources whose state can be saved and restored — a
+printer, a tape drive, a page frame. Never for a mutex, because the owner
+has no idea it lost it and will keep writing as though it still holds it.
+
+<ExerciseCard
+	id="m15-find-all-cycles"
+	concept="cycle detection, all cycles"
+	prompt="Build a wait-for graph with two independent deadlocks: P0 waits for P1 and P1 waits for P0; P2 waits for P3, P3 waits for P4 and P4 waits for P2. Report every cycle, not just the first: after printing one, mark its members as claimed and sweep again from the next unclaimed process. Print exactly:&#10;cycle 1: P0 -&gt; P1 -&gt; P0&#10;cycle 2: P2 -&gt; P3 -&gt; P4 -&gt; P2&#10;deadlocks: 2&#10;blocked: 5 of 5&#10;Nothing else. Returning at the first cycle is what makes a detector under-report."
+	starter="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;#define N 5&#10;&#10;static int adjacent[N][N];&#10;static int degree[N];&#10;static int claimed[N];&#10;&#10;static void add_edge(int u, int v) &#123;&#10;    adjacent[u][degree[u]++] = v;&#10;&#125;&#10;&#10;/* TODO: depth-first search with three colours, recovering the cycle&#10;   from a parent chain when a back edge is found */&#10;&#10;int main(void) &#123;&#10;    /* TODO: add the five edges, then keep sweeping for cycles until&#10;       every unclaimed start has been tried */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="cycle 1: P0 -&gt; P1 -&gt; P0&#10;cycle 2: P2 -&gt; P3 -&gt; P4 -&gt; P2&#10;deadlocks: 2&#10;blocked: 5 of 5&#10;"
+	hints={[
+		'Returning as soon as a cycle is found hides the second deadlock; mark the members you already reported and start the sweep again from the next unclaimed process.',
+		'Two independent rings here: P0 and P1 close on each other, and P2, P3, P4 close a three-process ring, so the report has two cycles and five blocked processes.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* A wait-for graph with two independent deadlocks. Reporting every cycle&#10; * means not stopping at the first: mark the members already reported and&#10; * keep sweeping from the next unclaimed process. */&#10;&#10;#define N 5&#10;&#10;static int adjacent[N][N];&#10;static int degree[N];&#10;static int claimed[N];&#10;&#10;static void add_edge(int u, int v) &#123;&#10;    adjacent[u][degree[u]++] = v;&#10;&#125;&#10;&#10;/* Colours: 0 unvisited, 1 on the current stack, 2 finished. */&#10;static int dfs(int u, int state[N], int parent[N], int cycle[N], int *len) &#123;&#10;    state[u] = 1;&#10;&#10;    for (int i = 0; i &lt; degree[u]; i++) &#123;&#10;        int v = adjacent[u][i];&#10;&#10;        if (claimed[v]) &#123;&#10;            continue;&#10;        &#125;&#10;        if (state[v] == 0) &#123;&#10;            parent[v] = u;&#10;            if (dfs(v, state, parent, cycle, len)) &#123;&#10;                return 1;&#10;            &#125;&#10;        &#125; else if (state[v] == 1) &#123;&#10;            int tail[N];&#10;            int count = 0;&#10;            int cursor = u;&#10;&#10;            while (cursor != v &amp;&amp; count &lt; N) &#123;&#10;                tail[count++] = cursor;&#10;                cursor = parent[cursor];&#10;            &#125;&#10;            *len = 0;&#10;            cycle[(*len)++] = v;&#10;            for (int k = count - 1; k &gt;= 0; k--) &#123;&#10;                cycle[(*len)++] = tail[k];&#10;            &#125;&#10;            return 1;&#10;        &#125;&#10;    &#125;&#10;    state[u] = 2;&#10;    return 0;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    add_edge(0, 1);&#10;    add_edge(1, 0);&#10;    add_edge(2, 3);&#10;    add_edge(3, 4);&#10;    add_edge(4, 2);&#10;&#10;    int cycles = 0;&#10;&#10;    for (int start = 0; start &lt; N; start++) &#123;&#10;        int state[N];&#10;        int parent[N];&#10;        int cycle[N];&#10;        int len = 0;&#10;&#10;        if (claimed[start]) &#123;&#10;            continue;&#10;        &#125;&#10;        memset(state, 0, sizeof state);&#10;        memset(parent, 0, sizeof parent);&#10;        parent[start] = -1;&#10;        if (!dfs(start, state, parent, cycle, &amp;len)) &#123;&#10;            continue;&#10;        &#125;&#10;        cycles++;&#10;        printf(&quot;cycle %d:&quot;, cycles);&#10;        for (int k = 0; k &lt; len; k++) &#123;&#10;            printf(&quot; P%d -&gt;&quot;, cycle[k]);&#10;        &#125;&#10;        printf(&quot; P%d\n&quot;, cycle[0]);&#10;        for (int k = 0; k &lt; len; k++) &#123;&#10;            claimed[cycle[k]] = 1;&#10;        &#125;&#10;    &#125;&#10;&#10;    int blocked = 0;&#10;    for (int u = 0; u &lt; N; u++) &#123;&#10;        blocked += claimed[u];&#10;    &#125;&#10;    printf(&quot;deadlocks: %d\n&quot;, cycles);&#10;    printf(&quot;blocked: %d of %d\n&quot;, blocked, N);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Treating "blocked for a while" as a deadlock
+
+A slow disk or a long computation behind a lock looks identical to a
+deadlock from the outside for as long as it lasts. Detection must be
+based on the cycle, not on a clock — or on a timeout so generous that it
+is only a hint. Killing a process because its lock was held for 200 ms is
+a bug in the detector, not a fix in the system.
+
+### Missing that the graph is one instant in time
+
+A wait-for graph is a snapshot, and the system changes underneath the
+check. Reading `wants[i]` for every `i` without a consistent view can
+produce a cycle that never existed, or miss one that formed while you
+were reading. In a real kernel this is why the check runs under the
+scheduler's own lock.
+
+### Choosing a victim by convenience
+
+Killing the lowest-priority member of the cycle is easy, and it can
+destroy the one process holding a resource the other four need to
+continue. Victim selection that ignores what a process has already
+accomplished turns one deadlock into a cascading failure.
+
+### Forgetting the detector itself needs to be deadlock-free
+
+A detector that acquires the very locks it is inspecting can deadlock
+against the system it is trying to diagnose. This is not hypothetical:
+kernel debug tooling has caused exactly this class of hang. The check has
+to read state without blocking on it.
+
+### Assuming recovery finishes the job
+
+State 4 to state 5 is the demonstration. One kill removes one cycle. The
+sweep must repeat, and the system must tolerate a process disappearing
+mid-operation — which is a property of the code, not of the detector.
+
+<QuizCard
+	id="m15-quiz-detect"
+	question="A system runs its detector once every five seconds and kills one process per detected cycle. Two deadlocks form one millisecond apart. What is the minimum time until the system is deadlock-free, and what assumption about the rest of the system does that answer depend on?"
+	options={[
+		'Roughly 5 seconds if a pass reports every cycle it finds, roughly 10 if the pass returns after the first one. It assumes no new deadlocks form meanwhile and that the surviving processes can actually finish.',
+		'Exactly 5 seconds: the detector runs once per 5 seconds and kills one process per detected cycle, so a single pass clears the system.',
+		'Exactly 10 seconds: two deadlocks always cost two detection passes.',
+		'Unbounded: killing a process can create a new deadlock, so no time bound is possible.'
+	]}
+	answer={0}
+	explanation="Two whole deadlocks can form between passes, so one pass can see both; a detector that returns at the first cycle needs a second pass, which doubles the wait. The bound is only a bound if nothing new deadlocks and the survivors keep progressing, which is why real systems do not derive liveness guarantees from a kill-on-detect loop."
+/>
+
+<LectureReference lecture="Lecture 15 — Deadlocks" slides="31–45" />

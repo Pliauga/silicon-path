@@ -1,0 +1,309 @@
+{
+  "source_file": "/Users/ep/Desktop/strip/CST1500_Week_5.pdf",
+  "sha256": "55268c66d1762ddb17b8a421665a67da2a54c182f2381a99bd2d953b5675ee8d",
+  "page_count": 19,
+  "parser_used": "pypdfium2 5.14.0 (PDFium)",
+  "ocr_used": false,
+  "ocr_pages": [],
+  "page_map": [
+    {
+      "page": 1,
+      "char_start": 0,
+      "char_end": 2337,
+      "ocr": false
+    },
+    {
+      "page": 2,
+      "char_start": 2337,
+      "char_end": 3952,
+      "ocr": false
+    },
+    {
+      "page": 3,
+      "char_start": 3952,
+      "char_end": 5373,
+      "ocr": false
+    },
+    {
+      "page": 4,
+      "char_start": 5373,
+      "char_end": 6806,
+      "ocr": false
+    },
+    {
+      "page": 5,
+      "char_start": 6806,
+      "char_end": 7084,
+      "ocr": false
+    },
+    {
+      "page": 6,
+      "char_start": 7084,
+      "char_end": 8048,
+      "ocr": false
+    },
+    {
+      "page": 7,
+      "char_start": 8048,
+      "char_end": 9454,
+      "ocr": false
+    },
+    {
+      "page": 8,
+      "char_start": 9454,
+      "char_end": 10503,
+      "ocr": false
+    },
+    {
+      "page": 9,
+      "char_start": 10503,
+      "char_end": 12087,
+      "ocr": false
+    },
+    {
+      "page": 10,
+      "char_start": 12087,
+      "char_end": 13731,
+      "ocr": false
+    },
+    {
+      "page": 11,
+      "char_start": 13731,
+      "char_end": 15354,
+      "ocr": false
+    },
+    {
+      "page": 12,
+      "char_start": 15354,
+      "char_end": 17141,
+      "ocr": false
+    },
+    {
+      "page": 13,
+      "char_start": 17141,
+      "char_end": 18382,
+      "ocr": false
+    },
+    {
+      "page": 14,
+      "char_start": 18382,
+      "char_end": 20080,
+      "ocr": false
+    },
+    {
+      "page": 15,
+      "char_start": 20080,
+      "char_end": 21932,
+      "ocr": false
+    },
+    {
+      "page": 16,
+      "char_start": 21932,
+      "char_end": 23422,
+      "ocr": false
+    },
+    {
+      "page": 17,
+      "char_start": 23422,
+      "char_end": 25457,
+      "ocr": false
+    },
+    {
+      "page": 18,
+      "char_start": 25457,
+      "char_end": 26825,
+      "ocr": false
+    },
+    {
+      "page": 19,
+      "char_start": 26825,
+      "char_end": 28089,
+      "ocr": false
+    }
+  ],
+  "tables": [],
+  "figures": [
+    {
+      "id": "fig-001",
+      "page": 3,
+      "path": "images/fig-001.png",
+      "caption_if_any": "Figure 1 (Page 3)",
+      "bounds": [
+        109.94989776611328,
+        596.1615600585938,
+        483.29583740234375,
+        701.0108032226562
+      ]
+    },
+    {
+      "id": "fig-002",
+      "page": 4,
+      "path": "images/fig-002.png",
+      "caption_if_any": "Figure 2 (Page 4)",
+      "bounds": [
+        72.0,
+        526.138427734375,
+        522.778076171875,
+        769.800048828125
+      ]
+    },
+    {
+      "id": "fig-003",
+      "page": 5,
+      "path": "images/fig-003.png",
+      "caption_if_any": "Figure 3 (Page 5)",
+      "bounds": [
+        71.99999237060547,
+        532.8405151367188,
+        316.2147216796875,
+        756.3723754882812
+      ]
+    },
+    {
+      "id": "fig-004",
+      "page": 5,
+      "path": "images/fig-004.png",
+      "caption_if_any": "Figure 4 (Page 5)",
+      "bounds": [
+        71.99999237060547,
+        268.7850036621094,
+        315.5105285644531,
+        491.8468322753906
+      ]
+    },
+    {
+      "id": "fig-005",
+      "page": 6,
+      "path": "images/fig-005.png",
+      "caption_if_any": "Figure 5 (Page 6)",
+      "bounds": [
+        71.9999771118164,
+        546.7432250976562,
+        314.5721740722656,
+        769.800048828125
+      ]
+    },
+    {
+      "id": "fig-006",
+      "page": 6,
+      "path": "images/fig-006.png",
+      "caption_if_any": "Figure 6 (Page 6)",
+      "bounds": [
+        71.99998474121094,
+        307.3293151855469,
+        315.510498046875,
+        532.5011596679688
+      ]
+    },
+    {
+      "id": "fig-007",
+      "page": 8,
+      "path": "images/fig-007.png",
+      "caption_if_any": "Figure 7 (Page 8)",
+      "bounds": [
+        71.99998474121094,
+        452.1908264160156,
+        523.2542114257812,
+        769.7999877929688
+      ]
+    }
+  ],
+  "warnings": [],
+  "stripped_elements": [
+    {
+      "page": 1,
+      "type": "page_number",
+      "content": "1"
+    },
+    {
+      "page": 2,
+      "type": "page_number",
+      "content": "2"
+    },
+    {
+      "page": 3,
+      "type": "page_number",
+      "content": "3"
+    },
+    {
+      "page": 4,
+      "type": "page_number",
+      "content": "4"
+    },
+    {
+      "page": 5,
+      "type": "page_number",
+      "content": "5"
+    },
+    {
+      "page": 6,
+      "type": "page_number",
+      "content": "6"
+    },
+    {
+      "page": 7,
+      "type": "page_number",
+      "content": "7"
+    },
+    {
+      "page": 8,
+      "type": "page_number",
+      "content": "8"
+    },
+    {
+      "page": 9,
+      "type": "page_number",
+      "content": "9"
+    },
+    {
+      "page": 10,
+      "type": "page_number",
+      "content": "10"
+    },
+    {
+      "page": 11,
+      "type": "page_number",
+      "content": "11"
+    },
+    {
+      "page": 12,
+      "type": "page_number",
+      "content": "12"
+    },
+    {
+      "page": 13,
+      "type": "page_number",
+      "content": "13"
+    },
+    {
+      "page": 14,
+      "type": "page_number",
+      "content": "14"
+    },
+    {
+      "page": 15,
+      "type": "page_number",
+      "content": "15"
+    },
+    {
+      "page": 16,
+      "type": "page_number",
+      "content": "16"
+    },
+    {
+      "page": 17,
+      "type": "page_number",
+      "content": "17"
+    },
+    {
+      "page": 18,
+      "type": "page_number",
+      "content": "18"
+    },
+    {
+      "page": 19,
+      "type": "page_number",
+      "content": "19"
+    }
+  ]
+}

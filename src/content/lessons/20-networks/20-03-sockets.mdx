@@ -1,0 +1,389 @@
+---
+id: 20-03-sockets
+title: Sockets
+module: 20
+lecture: 'Lecture 20 — Networks'
+slides: '29–42'
+estimatedMinutes: 20
+prerequisites: ['20-02-tcp-ip']
+tags: ['sockets', 'byte-order', 'tcp']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## A file descriptor that happens to be a network
+
+The sockets API is the operating system's interface to the network stack, and
+its most important design decision is that a socket is a file descriptor. It
+appears in the same table as open files, it is closed with the same `close()`,
+and on Unix you can `read()` and `write()` to it as if it were a file. That
+unification is why `select()` can wait on files and sockets together and why
+`ssh` can pipe its output into anything.
+
+The differences appear as soon as you look closely. A file's reads return the
+bytes you asked for or end-of-file; a socket's reads return whatever has
+arrived, which might be half a message. A file's `write` either works or fails;
+a socket's `write` accepts bytes into a kernel buffer and promises nothing
+about delivery. Network code is the discipline of handling those differences
+without pretending they are not there.
+
+## What you'll be able to do
+
+- Name the calls a TCP server makes, in order, and what each one allocates.
+- Convert between host and network byte order and say why it is needed.
+- Write the address-parsing half of a client with `inet_pton` and `htons`.
+- Explain why `send()` returning the byte count is not a delivery receipt.
+
+## The call sequence
+
+The server calls are in a fixed order, and each one has a failure mode that
+produces a different errno.
+
+| Call | Purpose | Fails with |
+| --- | --- | --- |
+| `getaddrinfo` | resolve a name to a list of address candidates | `EAI_NONAME` |
+| `socket` | allocate an endpoint, get a descriptor | `EMFILE` (out of fds) |
+| `bind` | claim a local address and port | `EADDRINUSE` |
+| `listen` | mark it as accepting, set the backlog | `EOPNOTSUPP` |
+| `accept` | block until a peer connects, return a **new** fd | `EINTR` |
+| `read`/`write` | exchange bytes on the accepted fd | `EPIPE` |
+| `close` | release both descriptors | — |
+
+`accept` returning a new descriptor is the part people miss. The listening
+socket is not for data; it exists only to produce connected sockets, one per
+peer. A server with 1,000 clients has 1,001 descriptors open.
+
+Client side, `socket` then `connect`, with `bind` usually omitted because the
+kernel picks an ephemeral port. `getaddrinfo` is preferred over the older
+`gethostbyname` because it handles both IPv4 and IPv6 and returns a linked list
+you can try in order.
+
+<TheoryBlock label="Why it matters for C" title="This code will not run in a lesson, and that is not a limitation">
+
+	A complete client/server pair needs two processes, a listening port, and a
+	peer that is actually there. In a sandboxed page there is no port to bind, so
+	the sequence below is shown but not executed — claiming otherwise would be
+	the one thing this curriculum does not do. What *can* run offline is the half
+	that is pure computation and pure bug surface: turning text into a 32-bit
+	address and converting byte order. That half is compiled below and its output
+	is real.
+
+</TheoryBlock>
+
+## The sequence, not run
+
+This is a correct TCP server skeleton. It is a fenced block, not a compiled
+program, because there is no port to listen on here.
+
+```c
+/* Requires a live port and a client to connect. Not executed in this lesson. */
+#define _POSIX_C_SOURCE 200809L
+#include <netdb.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+int serve(const char *port) {
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;      /* v4 or v6 */
+    hints.ai_socktype = SOCK_STREAM;  /* TCP, not UDP */
+    hints.ai_flags = AI_PASSIVE;      /* bind to any local address */
+
+    int rc = getaddrinfo(NULL, port, &hints, &res);
+    if (rc != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rc));
+        return -1;
+    }
+
+    int listen_fd = -1;
+    for (struct addrinfo *p = res; p != NULL; p = p->ai_next) {
+        listen_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (listen_fd < 0) continue;
+
+        int yes = 1;
+        /* Without this, restarting the server fails with EADDRINUSE for
+           up to two minutes while old connections sit in TIME_WAIT. */
+        setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+
+        if (bind(listen_fd, p->ai_addr, p->ai_addrlen) == 0) break;
+
+        close(listen_fd);
+        listen_fd = -1;
+    }
+    freeaddrinfo(res);
+
+    if (listen_fd < 0) {
+        fprintf(stderr, "could not bind\n");
+        return -1;
+    }
+    if (listen(listen_fd, 16) != 0) {
+        perror("listen");
+        close(listen_fd);
+        return -1;
+    }
+
+    for (;;) {
+        struct sockaddr_storage peer;
+        socklen_t peer_len = sizeof peer;
+
+        int conn_fd = accept(listen_fd, (struct sockaddr *)&peer, &peer_len);
+        if (conn_fd < 0) continue;    /* EINTR is normal, just retry */
+
+        /* read() may return fewer bytes than requested. A TCP stream has
+           no message boundaries, so the application must frame its data. */
+        char buf[512];
+        ssize_t n = read(conn_fd, buf, sizeof buf);
+        if (n > 0) {
+            ssize_t sent = 0;
+            while (sent < n) {
+                ssize_t w = write(conn_fd, buf + sent, (size_t)(n - sent));
+                if (w <= 0) break;
+                sent += w;
+            }
+        }
+        close(conn_fd);               /* the connected socket, not the listener */
+    }
+}
+```
+
+Two lines in that skeleton are worth memorising. `SO_REUSEADDR` prevents the
+most common "my server won't restart" confusion, and the `while (sent < n)`
+loop exists because `write` on a socket may accept only part of what you gave
+it. A single un-looped `write` is a bug that appears under load and nowhere
+else.
+
+<Eli5Block
+	topic="sockets"
+	football="The club opens a ticket window and puts a sign on it (bind and listen). The window clerk never leaves; each time someone arrives he writes their order on a fresh slip and hands it to a runner (accept). The window itself never carries food — it only produces the slips that do."
+	money="A bank opens one service counter and hangs its number above it. Customers take a ticket; each ticket becomes a separate transaction on its own ledger page. The counter does not hold money and the ledger pages are many, which is why one branch can serve a thousand people with one door."
+/>
+
+## Byte order, which you can test offline
+
+The address you type is text. The address in a socket struct is a 32-bit
+integer in **network byte order** — big-endian, by convention. The integer your
+CPU does arithmetic on is in **host byte order**, which on x86 and ARM is
+little-endian. `htonl` and `ntohl` convert; forgetting them is the classic first
+networking bug, and it does not produce an error, it produces a connection to
+`1.0.168.192`.
+
+```c
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Offline half of socket programming: text address -> 32-bit address, and
+ * host order <-> network order. No socket is opened, no port is bound.
+ *
+ * The point is the byte order. A socket address in memory holds the address
+ * in network order (big-endian), while the integer you do arithmetic on is
+ * in host order (little-endian on x86 and ARM by default). htonl and ntohl
+ * are the conversion, and forgetting them is the classic first-network-bug. */
+
+union addr_view {
+    uint32_t word;
+    unsigned char bytes[4];
+};
+
+static void show_bitmap(const char *label, uint32_t network_order) {
+    const unsigned char *b = (const unsigned char *)&network_order;
+    printf("%-22s", label);
+    for (int i = 0; i < 4; i++) {
+        printf("%02x", b[i]);
+        if (i != 3) printf(":");
+    }
+    printf("\n");
+}
+
+int main(void) {
+    const char *texts[] = {"192.168.0.1", "10.0.0.255", "127.0.0.1", "0.0.0.0"};
+    const size_t count = sizeof texts / sizeof texts[0];
+
+    printf("%-14s %-12s %-12s %s\n", "dotted quad", "host order", "net order",
+           "as 4 bytes in memory");
+    printf("%-14s %-12s %-12s %s\n", "-----------", "----------", "---------",
+           "-------------------");
+
+    union addr_view v;
+    for (size_t i = 0; i < count; i++) {
+        struct in_addr a;
+        if (inet_pton(AF_INET, texts[i], &a) != 1) {
+            printf("%-14s rejected by inet_pton\n", texts[i]);
+            continue;
+        }
+        uint32_t net = a.s_addr;              /* already network order */
+        uint32_t host = ntohl(net);           /* network -> host */
+
+        v.word = host;
+        printf("%-14s 0x%08x   0x%08x   %02x.%02x.%02x.%02x\n",
+               texts[i], host, net,
+               v.bytes[0], v.bytes[1], v.bytes[2], v.bytes[3]);
+    }
+
+    /* Why htonl matters: the same integer, two orders, two different byte
+     * sequences. A socket address field expects the right one. */
+    uint32_t value = 0xc0a80001u;             /* 192.168.0.1, host order */
+    printf("\nsame integer 0x%08x written two ways:\n", value);
+    show_bitmap("host order bytes:", value);
+    show_bitmap("network (htonl):", htonl(value));
+
+    /* Round trip: a client fills sin_addr with htonl, a server reads it
+     * back with ntohl. These must agree or the connection goes nowhere. */
+    uint32_t sent = htonl(value);
+    uint32_t received = ntohl(sent);
+    printf("\nsent 0x%08x -> on the wire 0x%08x -> read back 0x%08x\n",
+           value, sent, received);
+    printf("round trip intact: %s\n", received == value ? "yes" : "no");
+
+    /* The port lives in the same struct and needs the same treatment. */
+    uint16_t port = 8080;
+    uint16_t port_net = htons(port);
+    printf("\nport %u -> network 0x%04x -> back %u\n",
+           (unsigned)port, (unsigned)port_net, (unsigned)ntohs(port_net));
+
+    /* A struct sockaddr_in is 16 bytes: family, port, address, padding. */
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(443);
+    sa.sin_addr.s_addr = htonl(value);
+
+    /* Only sin_addr's offset is portable here: macOS puts a one-byte
+       sin_len before sin_family, Linux does not, so the earlier fields
+       shift by one between the two. sin_addr lands at 4 either way. */
+    printf("\nstruct sockaddr_in is %zu bytes\n", sizeof sa);
+    printf("  sin_addr at offset %zu on this platform\n",
+           offsetof(struct sockaddr_in, sin_addr));
+
+    /* Inet_ntop is the inverse of inet_pton: bytes back to text. */
+    char back[INET_ADDRSTRLEN];
+    if (inet_ntop(AF_INET, &sa.sin_addr, back, sizeof back) != NULL) {
+        printf("\ninet_ntop of the struct: %s\n", back);
+    }
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+dotted quad    host order   net order    as 4 bytes in memory
+-----------    ----------   ---------    -------------------
+192.168.0.1    0xc0a80001   0x0100a8c0   01.00.a8.c0
+10.0.0.255     0x0a0000ff   0xff00000a   ff.00.00.0a
+127.0.0.1      0x7f000001   0x0100007f   01.00.00.7f
+0.0.0.0        0x00000000   0x00000000   00.00.00.00
+
+same integer 0xc0a80001 written two ways:
+host order bytes:     01:00:a8:c0
+network (htonl):      c0:a8:00:01
+
+sent 0xc0a80001 -> on the wire 0x0100a8c0 -> read back 0xc0a80001
+round trip intact: yes
+
+port 8080 -> network 0x901f -> back 8080
+
+struct sockaddr_in is 16 bytes
+  sin_addr at offset 4 on this platform
+
+inet_ntop of the struct: 192.168.0.1
+```
+
+Read the first table's last two columns against each other. The host-order
+value of `192.168.0.1` is `0xc0a80001` — readable as four decimal bytes. The
+network-order value is `0x0100a8c0`, which looks like nonsense until you
+realise it is the same four bytes in the other order, and that the memory
+dump `01.00.a8.c0` is exactly the byte sequence that goes on the wire.
+
+The final line is the round trip that matters: `inet_pton` writes network
+order, `inet_ntop` reads it back, and the text survives. A server that skipped
+`ntohl` would build a `sockaddr_in` whose bytes are reversed, and `connect`
+would fail or, worse, reach a different machine.
+
+## Common pitfalls
+
+### Assuming one `read` is one message
+
+TCP is a byte stream. Two `write`s of 100 bytes can arrive as one 200-byte
+`read`, or as three reads of 60, 60, and 80. Boundaries are the application's
+job — length prefixes, delimiters, or a fixed-size header. Code that assumes
+otherwise works on localhost and fails on the first real network.
+
+### Ignoring short writes
+
+`sent = write(fd, buf, n)` returning less than `n` is legal and common when the
+socket buffer is full. Loop until every byte is accepted, as the skeleton does.
+The same applies to `send` with `MSG_NOSIGNAL` to avoid `SIGPIPE` killing the
+process when the peer has gone.
+
+### Leaving `SIGPIPE` at its default
+
+Writing to a socket whose peer closed raises `SIGPIPE`, and the default action
+is to terminate the process. A server that survives client disconnects sets
+`SIG_IGN` or uses `MSG_NOSIGNAL`. Discovering this in production is a rite of
+passage best skipped.
+
+### Using `inet_addr` instead of `inet_pton`
+
+`inet_addr` returns `INADDR_NONE` (`0xffffffff`) both for errors and for the
+valid broadcast address `255.255.255.255`, so the two are indistinguishable.
+`inet_pton` returns 1, 0, or -1 and has no ambiguity. It also has an IPv6
+sibling with the same signature.
+
+## Ports and descriptors, briefly
+
+| Range | Use |
+| --- | --- |
+| 0–1023 | well-known; binding needs privilege on Unix |
+| 1024–49151 | registered; servers usually live here |
+| 49152–65535 | ephemeral; the kernel picks these for clients |
+
+A client that connects without calling `bind` gets an ephemeral port chosen by
+the kernel, and that port stays associated with the connection until it closes.
+This is why a machine making many short-lived connections can exhaust its
+ephemeral range — the connections sit in `TIME_WAIT` for twice the maximum
+segment lifetime after closing.
+
+<ExerciseCard
+	id="m20-parse-address"
+	concept="hand-rolled IPv4 validation"
+	prompt="Write parse_ipv4(text, out) that validates a dotted quad by hand: exactly four decimal fields, each 0 to 255, no leading zeros unless the field is exactly 0, exactly three dots, and nothing after the last field. Build the result in network order byte by byte without calling inet_pton. Test it on the five strings below and print accepted with the 32-bit value in hex, or rejected. Print exactly:&#10;192.168.0.1      accepted 0xc0a80001&#10;255.255.255.255  accepted 0xffffffff&#10;256.1.1.1        rejected&#10;1.2.3            rejected&#10;01.2.3.4         rejected&#10;Nothing else. Each line uses the test string left-aligned in sixteen columns."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;int parse_ipv4(const char *text, uint32_t *out_network_order) &#123;&#10;    /* TODO: validate four fields, 0-255, then pack big-endian */&#10;    return 0;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: test the five cases */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="192.168.0.1      accepted 0xc0a80001&#10;255.255.255.255  accepted 0xffffffff&#10;256.1.1.1        rejected&#10;1.2.3            rejected&#10;01.2.3.4         rejected&#10;"
+	hints={[
+		'Parse one field at a time: up to three digits, reject a leading zero when more than one digit follows, reject a value above 255, then require a dot except after the fourth field.',
+		'After the loop the cursor must sit on the terminator; that single check rejects 1.2.3, and the leading-zero rule rejects 01.2.3.4 before any arithmetic.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* Four decimal fields, each 0 to 255, no leading zeros unless the field is&#10; * exactly 0, exactly three dots, and nothing else. The value is built in&#10; * network order byte by byte. */&#10;&#10;static int parse_field(const char **cursor, uint32_t *value) &#123;&#10;    const char *p = *cursor;&#10;    unsigned digits = 0;&#10;    uint32_t result = 0;&#10;&#10;    while (*p &gt;= '0' &amp;&amp; *p &lt;= '9' &amp;&amp; digits &lt; 3u) &#123;&#10;        result = result * 10u + (uint32_t)(*p - '0');&#10;        p++;&#10;        digits++;&#10;    &#125;&#10;    if (digits == 0u || digits &gt; 3u) &#123;&#10;        return 0;&#10;    &#125;&#10;    if (digits &gt; 1u &amp;&amp; *(*cursor) == '0') &#123;&#10;        return 0; /* no leading zeros */&#10;    &#125;&#10;    if (result &gt; 255u) &#123;&#10;        return 0;&#10;    &#125;&#10;    *value = result;&#10;    *cursor = p;&#10;    return 1;&#10;&#125;&#10;&#10;static int parse_ipv4(const char *text, uint32_t *out_network_order) &#123;&#10;    uint32_t fields[4] = &#123;0, 0, 0, 0&#125;;&#10;    const char *p = text;&#10;&#10;    for (int i = 0; i &lt; 4; i++) &#123;&#10;        if (!parse_field(&amp;p, &amp;fields[i])) &#123;&#10;            return 0;&#10;        &#125;&#10;        if (i &lt; 3) &#123;&#10;            if (*p != '.') &#123;&#10;                return 0;&#10;            &#125;&#10;            p++;&#10;        &#125;&#10;    &#125;&#10;    if (*p != '\0') &#123;&#10;        return 0;&#10;    &#125;&#10;    *out_network_order = (fields[0] &lt;&lt; 24) | (fields[1] &lt;&lt; 16) |&#10;                         (fields[2] &lt;&lt; 8) | fields[3];&#10;    return 1;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const char *tests[] = &#123;&quot;192.168.0.1&quot;, &quot;255.255.255.255&quot;, &quot;256.1.1.1&quot;,&#10;                           &quot;1.2.3&quot;, &quot;01.2.3.4&quot;&#125;;&#10;&#10;    for (int i = 0; i &lt; 5; i++) &#123;&#10;        uint32_t value = 0;&#10;&#10;        if (parse_ipv4(tests[i], &amp;value)) &#123;&#10;            printf(&quot;%-16s accepted 0x%08x\n&quot;, tests[i], value);&#10;        &#125; else &#123;&#10;            printf(&quot;%-16s rejected\n&quot;, tests[i]);&#10;        &#125;&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m20-quiz-accept-fd"
+	question="A server calls `accept()` once per connection and `close()`s the returned descriptor after handling each request, but never closes the listening socket. After 10,000 connections, how many descriptors are open, and what would the count be if the accepted descriptor were never closed?"
+	options={[
+		'One descriptor — the listening socket — because every accepted descriptor was closed; leaking them would leave 10,001. Sockets lingering in TIME_WAIT are not descriptors in the process, so they do not add to the count.',
+		'Zero descriptors, because closing the listening socket happens automatically once the last client disconnects; a leak would leave 10,000.',
+		'One descriptor in the first case and 20,001 in the second, because each connection consumes a descriptor on both ends.',
+		'10,000 descriptors in the first case, because TIME_WAIT keeps each connection alive for twice the maximum segment lifetime.'
+	]}
+	answer={0}
+	explanation="accept returns a new descriptor for each connection, and closing it returns the number to the table; only the listener persists. If the accepted descriptors are never closed the process hits its descriptor limit long before 10,000 connections, which is why the leak shows up as an accept failure rather than a large number."
+/>
+
+<LectureReference lecture="Lecture 20 — Networks" slides="29–42" />

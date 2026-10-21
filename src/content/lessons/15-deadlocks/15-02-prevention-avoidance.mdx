@@ -1,0 +1,610 @@
+---
+id: 15-02-prevention-avoidance
+title: Prevention & Avoidance
+module: 15
+lecture: 'Lecture 15 — Deadlocks'
+slides: '16–30'
+estimatedMinutes: 20
+prerequisites: ['15-01-conditions']
+tags: ['deadlock', 'lock-ordering', 'bankers-algorithm', 'safety']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Two ways to never get there
+
+The four conditions from the last lesson are levers, and the levers come
+in two flavours. **Prevention** makes one of the conditions structurally
+false, so a deadlock cannot form no matter how the schedule falls.
+**Avoidance** leaves the conditions true but refuses, at the moment of
+each request, any grant that could lead to one.
+
+The distinction matters in practice. Prevention is a rule you follow
+while you write code: acquire locks in a fixed order, or ask for
+everything at once. Avoidance is a decision the system makes at run time
+from information it requires you to declare up front. The first is cheap
+and local. The second is expensive and global — and it is the only one
+that works when your resource pool is genuinely fixed and shared by many
+independent processes.
+
+## What you'll be able to do
+
+- Break any of the four Coffman conditions and say what that costs.
+- Prove that a global lock order rules out circular wait.
+- Model two threads taking two locks and classify each ordering.
+- Run the Banker's safety check and explain a refusal that had free memory.
+
+## Four levers, four costs
+
+Each condition can be attacked, and each attack has a price worth knowing
+before you choose it.
+
+| Condition        | How to break it                              | What it costs                                    |
+| ---------------- | -------------------------------------------- | ------------------------------------------------ |
+| Mutual exclusion | Make the resource shareable (read-only copies) | Impossible for a mutex; possible for files and pages |
+| Hold and wait    | Ask for everything at once, or nothing       | Poor utilisation; you hold locks you do not need yet |
+| No preemption    | Allow the OS to take a resource back          | Must be able to save and restore state; unsafe for locks |
+| Circular wait    | Impose a global order on all resources       | Needs discipline across every code path          |
+
+The last row is the one working programmers actually use, because it
+costs nothing at run time and can be checked by reading code. If every
+thread in the program acquires locks in the same order — say alphabetically
+by lock name, or by a fixed numeric rank — then a cycle is impossible.
+A cycle requires at least one edge going one way and another coming back;
+a total order forbids the second direction by construction.
+
+That argument is worth stating slowly, because it is a proof rather than
+a heuristic. Suppose all acquisitions follow the order A before B before
+C. For a cycle to close you would need some thread holding B and wanting
+A. But B is only ever acquired after A, so no thread can be in that state.
+The cycle has nowhere to form.
+
+<TheoryBlock label="Why it matters for C" title="Lock order is a naming convention">
+
+	C has no language feature for deadlock avoidance. What you have is a
+	header where the mutexes are defined. Give them a rank in a comment
+	next to each declaration and check every `pthread_mutex_lock` call
+	against that rank. Code review catches the rest. The Linux kernel does
+	exactly this — it calls the ranks "lock classes" and its lockdep
+	checker verifies the order at run time in debug builds.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="lock-ordering"
+	football="Two players must each pick up a bib and a ball before they can train, and each may hold one while fetching the other. If the coach says bibs are always taken before balls, one player waits for the other and no stalemate forms. The rule is about the order of picking up, not about how many items exist."
+	money="Two clerks each need the ledger and the stamp to close a transaction, and each may hold one while reaching for the other. If the office rule is always ledger first, then stamp, a clerk who has the stamp must not exist, so nobody can block the other indefinitely. The order is the safety, not the supply."
+/>
+
+## Prevention: model the two orders
+
+A real demonstration would call `pthread_mutex_lock` in the wrong order
+and hang, which teaches nothing and cannot be pasted into a lesson. So
+this program models the two threads instead: each is a fixed four-step
+script, a round-robin scheduler advances one step per thread per round,
+and the model reports what the real program would have done.
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+/* Two mutexes and two threads, modelled rather than run.
+ *
+ * Actually calling pthread_mutex_lock in the wrong order would hang this
+ * program, and a lesson that hangs teaches nothing. So each thread is a
+ * fixed script of lock and unlock operations, a round-robin scheduler
+ * interleaves them one step at a time, and the model reports what the
+ * real program would have done. */
+
+#define THREADS 2
+#define LOCKS   2
+#define STEPS   4
+
+/* An operation is a lock if `op` is 0, an unlock if it is 1. */
+struct operation {
+    int lock;   /* which mutex: 0 = A, 1 = B */
+    int unlock; /* 0 = acquire, 1 = release */
+};
+
+struct thread {
+    const char *name;
+    struct operation script[STEPS];
+    int pc;
+};
+
+static int busy(const int held[THREADS][LOCKS], int lock)
+{
+    for (int t = 0; t < THREADS; t++) {
+        if (held[t][lock]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* True when every runnable thread is blocked: the definition of a
+ * deadlock from the operating system's point of view. */
+static int all_stuck(struct thread threads[THREADS], const int held[THREADS][LOCKS])
+{
+    int alive = 0;
+
+    for (int t = 0; t < THREADS; t++) {
+        if (threads[t].pc >= STEPS) {
+            continue; /* finished, not stuck */
+        }
+        alive = 1;
+        struct operation op = threads[t].script[threads[t].pc];
+        if (op.unlock || !busy(held, op.lock)) {
+            return 0; /* this thread can make progress */
+        }
+    }
+    return alive;
+}
+
+static void run(const char *heading, struct thread threads[THREADS])
+{
+    int held[THREADS][LOCKS];
+    int round_stuck = 0;
+
+    memset(held, 0, sizeof held);
+    printf("%s\n", heading);
+
+    for (int round = 0; round < 8 && !round_stuck; round++) {
+        printf("  round %d\n", round);
+
+        for (int t = 0; t < THREADS; t++) {
+            struct thread *th = &threads[t];
+            if (th->pc >= STEPS) {
+                continue;
+            }
+
+            struct operation op = th->script[th->pc];
+            char name = (char)('A' + op.lock);
+
+            if (op.unlock) {
+                held[t][op.lock] = 0;
+                th->pc++;
+                printf("    %s releases %c\n", th->name, name);
+            } else if (!busy(held, op.lock)) {
+                held[t][op.lock] = 1;
+                th->pc++;
+                printf("    %s acquires %c\n", th->name, name);
+            } else {
+                printf("    %s blocks on %c\n", th->name, name);
+            }
+        }
+
+        round_stuck = all_stuck(threads, held);
+        if (round_stuck) {
+            printf("    every thread is blocked -> deadlock\n");
+        } else {
+            int done = 1;
+            for (int t = 0; t < THREADS; t++) {
+                if (threads[t].pc < STEPS) {
+                    done = 0;
+                }
+            }
+            if (done) {
+                printf("    all threads finished\n");
+                break;
+            }
+        }
+    }
+    printf("\n");
+}
+
+static void make_thread(struct thread *th, const char *name, int first, int second)
+{
+    th->name = name;
+    th->pc = 0;
+    th->script[0] = (struct operation){first, 0};
+    th->script[1] = (struct operation){second, 0};
+    th->script[2] = (struct operation){first, 1};
+    th->script[3] = (struct operation){second, 1};
+}
+
+int main(void)
+{
+    struct thread consistent[THREADS];
+    make_thread(&consistent[0], "thread 0", 0, 1);
+    make_thread(&consistent[1], "thread 1", 0, 1);
+    run("case 1: both threads acquire A then B", consistent);
+
+    struct thread crossed[THREADS];
+    make_thread(&crossed[0], "thread 0", 0, 1);
+    make_thread(&crossed[1], "thread 1", 1, 0);
+    run("case 2: thread 0 takes A then B, thread 1 takes B then A", crossed);
+
+    printf("the difference is not luck. In case 1 the acquisition edges\n");
+    printf("follow A -> B only, so no cycle can close. In case 2 one\n");
+    printf("edge points A -> B and another B -> A, which is a cycle.\n");
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+case 1: both threads acquire A then B
+  round 0
+    thread 0 acquires A
+    thread 1 blocks on A
+  round 1
+    thread 0 acquires B
+    thread 1 blocks on A
+  round 2
+    thread 0 releases A
+    thread 1 acquires A
+  round 3
+    thread 0 releases B
+    thread 1 acquires B
+  round 4
+    thread 1 releases A
+  round 5
+    thread 1 releases B
+    all threads finished
+
+case 2: thread 0 takes A then B, thread 1 takes B then A
+  round 0
+    thread 0 acquires A
+    thread 1 acquires B
+    every thread is blocked -> deadlock
+
+the difference is not luck. In case 1 the acquisition edges
+follow A -> B only, so no cycle can close. In case 2 one
+edge points A -> B and another B -> A, which is a cycle.
+```
+
+Read case 1 closely, because the blocking is not the problem. Thread 1
+blocks on A in rounds 0 and 1 and simply waits — the wait is bounded
+because thread 0 needs nothing thread 1 holds. It finishes round 5 with
+both threads done. Waiting is what a lock is for.
+
+In case 2 the two acquisitions happen in the same round, and the run
+ends at round 0. Both threads took what they wanted and are now blocked
+on what the other holds. Note that the model reaches the same conclusion
+as the resource-allocation graph in the previous lesson, without drawing
+one: a cycle of holds.
+
+## Avoidance: Banker's algorithm
+
+Prevention refuses to let the dangerous state exist. Avoidance lets it
+exist but refuses to *enter* it. To do that, a process must declare its
+maximum possible demand in advance — which is a heavy requirement, and
+the reason Banker's algorithm is taught more often than it is deployed.
+
+The safety check is the whole idea, and it is only a loop:
+
+1. Copy the currently free resources into a **work** vector.
+2. Find any unfinished process whose remaining need fits entirely in
+   work. If there is none, stop — the state is unsafe.
+3. Pretend that process runs to completion and returns everything it
+   holds: add its allocation to work, mark it finished.
+4. Repeat until every process is finished (safe) or step 2 fails (unsafe).
+
+Safety is a *there exists* statement: there exists at least one order in
+which every process could complete. It says nothing about whether that
+order will actually happen.
+
+```c
+#include <stdbool.h>
+#include <stdio.h>
+
+/* Banker's algorithm, the safety check only.
+ *
+ * The idea: never grant a request that could leave the system in a state
+ * where no possible completion order exists. To test that, pretend the
+ * grant has happened, then try to find any order in which every process
+ * could finish. If you find one, the state is safe; if you cannot, the
+ * grant is refused even though the memory is physically free. */
+
+#define PROCS 5
+#define TYPES 3
+
+struct state {
+    int available[TYPES];
+    int max[PROCS][TYPES];
+    int allocation[PROCS][TYPES];
+    int need[PROCS][TYPES]; /* derived: max - allocation */
+};
+
+static void derive_need(struct state *s)
+{
+    for (int p = 0; p < PROCS; p++) {
+        for (int t = 0; t < TYPES; t++) {
+            s->need[p][t] = s->max[p][t] - s->allocation[p][t];
+        }
+    }
+}
+
+static void print_matrix(const char *heading, int m[PROCS][TYPES])
+{
+    printf("%s\n", heading);
+    for (int p = 0; p < PROCS; p++) {
+        printf("  P%d ", p);
+        for (int t = 0; t < TYPES; t++) {
+            printf("%3d", m[p][t]);
+        }
+        printf("\n");
+    }
+}
+
+/* The safety algorithm. Repeatedly find any unfinished process whose
+ * remaining need fits in the current work vector; when one is found,
+ * assume it runs to completion and returns everything it holds. If every
+ * process gets picked, the state is safe. */
+static bool is_safe(const struct state *s, int order[PROCS])
+{
+    int work[TYPES];
+    bool finished[PROCS] = {false};
+    int count = 0;
+
+    for (int t = 0; t < TYPES; t++) {
+        work[t] = s->available[t];
+    }
+
+    while (count < PROCS) {
+        bool progressed = false;
+
+        for (int p = 0; p < PROCS; p++) {
+            if (finished[p]) {
+                continue;
+            }
+
+            bool fits = true;
+            for (int t = 0; t < TYPES; t++) {
+                if (s->need[p][t] > work[t]) {
+                    fits = false;
+                }
+            }
+
+            if (!fits) {
+                continue;
+            }
+
+            /* Pretend P runs to completion and hands its memory back. */
+            for (int t = 0; t < TYPES; t++) {
+                work[t] += s->allocation[p][t];
+            }
+            finished[p] = true;
+            order[count++] = p;
+            progressed = true;
+        }
+
+        if (!progressed) {
+            return false; /* somebody can never finish */
+        }
+    }
+
+    return true;
+}
+
+static void print_order(const char *heading, const int order[PROCS])
+{
+    printf("%s", heading);
+    for (int i = 0; i < PROCS; i++) {
+        printf("P%d", order[i]);
+        if (i + 1 < PROCS) {
+            printf(" -> ");
+        }
+    }
+    printf("\n");
+}
+
+static void try_request(struct state *s, int p, const int request[TYPES])
+{
+    printf("\nP%d requests (", p);
+    for (int t = 0; t < TYPES; t++) {
+        printf("%d%s", request[t], t + 1 < TYPES ? ", " : "");
+    }
+    printf(")\n");
+
+    for (int t = 0; t < TYPES; t++) {
+        if (request[t] > s->need[p][t]) {
+            printf("  refused: asking for more than it declared\n");
+            return;
+        }
+        if (request[t] > s->available[t]) {
+            printf("  refused: not enough free right now\n");
+            return;
+        }
+    }
+
+    /* Pretend. */
+    for (int t = 0; t < TYPES; t++) {
+        s->available[t] -= request[t];
+        s->allocation[p][t] += request[t];
+        s->need[p][t] -= request[t];
+    }
+
+    int order[PROCS];
+    if (is_safe(s, order)) {
+        printf("  granted, still safe:");
+        print_order(" ", order);
+        return;
+    }
+
+    /* Roll back. The memory was physically there; the shape was wrong. */
+    for (int t = 0; t < TYPES; t++) {
+        s->available[t] += request[t];
+        s->allocation[p][t] -= request[t];
+        s->need[p][t] += request[t];
+    }
+    printf("  refused: state would be unsafe, so the memory stays free\n");
+}
+
+int main(void)
+{
+    struct state s = {
+        .available = {3, 3, 2},
+        .max = {
+            {7, 5, 3},
+            {3, 2, 2},
+            {9, 0, 2},
+            {2, 2, 2},
+            {4, 3, 3},
+        },
+        .allocation = {
+            {0, 1, 0},
+            {2, 0, 0},
+            {3, 0, 2},
+            {2, 1, 1},
+            {0, 0, 2},
+        },
+    };
+    derive_need(&s);
+
+    print_matrix("maximum demand", s.max);
+    print_matrix("\ncurrently held", s.allocation);
+    print_matrix("\nstill needed", s.need);
+    printf("\nfree now: %d tape drives, %d printers, %d plotters\n",
+           s.available[0], s.available[1], s.available[2]);
+
+    int order[PROCS];
+    if (is_safe(&s, order)) {
+        printf("\nthe current state is safe, one completion order is\n");
+        print_order("  ", order);
+    }
+
+    int fine[TYPES] = {1, 0, 2};
+    try_request(&s, 1, fine);
+
+    int shape[TYPES] = {0, 2, 0};
+    try_request(&s, 0, shape);
+
+    printf("\nthe second request was for two free printers and was still\n");
+    printf("refused. Safety is a claim about every future order, not\n");
+    printf("about whether the bytes exist right now.\n");
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+maximum demand
+  P0   7  5  3
+  P1   3  2  2
+  P2   9  0  2
+  P3   2  2  2
+  P4   4  3  3
+
+currently held
+  P0   0  1  0
+  P1   2  0  0
+  P2   3  0  2
+  P3   2  1  1
+  P4   0  0  2
+
+still needed
+  P0   7  4  3
+  P1   1  2  2
+  P2   6  0  0
+  P3   0  1  1
+  P4   4  3  1
+
+free now: 3 tape drives, 3 printers, 2 plotters
+
+the current state is safe, one completion order is
+  P1 -> P3 -> P4 -> P0 -> P2
+
+P1 requests (1, 0, 2)
+  granted, still safe: P1 -> P3 -> P4 -> P0 -> P2
+
+P0 requests (0, 2, 0)
+  refused: state would be unsafe, so the memory stays free
+
+the second request was for two free printers and was still
+refused. Safety is a claim about every future order, not
+about whether the bytes exist right now.
+```
+
+Trace the first completion order by hand and it stops being mysterious.
+Free is `(3, 3, 2)`. P1 needs `(1, 2, 2)`, which fits, so P1 finishes and
+returns its `(2, 0, 0)` — free becomes `(5, 3, 2)`. P3 needs `(0, 1, 1)`,
+finishes, returns `(2, 1, 1)` — free `(7, 4, 3)`. P4 needs `(4, 3, 1)` —
+fits, free becomes `(7, 4, 5)`. P0 needs `(7, 4, 3)` — fits, free becomes
+`(7, 5, 5)`. P2 then needs `(6, 0, 0)` and fits easily. Five completions,
+no request ever blocked.
+
+The interesting line is the last one. P0 asks for two printers, and there
+are three free, so the memory is unquestionably there. The grant is
+refused anyway: after it, P0 would need `(7, 4, 3)` with only `(3, 1, 2)`
+free and nobody able to finish all of their remaining need. Every state
+reachable from there is unsafe, so the system never enters it.
+
+<ExerciseCard
+	id="m15-make-unsafe"
+	concept="Banker's safety check"
+	prompt="Start from the state in 15-02: free (3 tape drives, 3 printers, 2 plotters), the same five maximum demands and allocations, and need derived as maximum minus allocation. Run the safety check on it, then run it again after moving two free plotters into P0's allocation, then test P0 requesting two plotters from the original state and refuse the request because the result would be unsafe. Print exactly:&#10;base: available (3, 3, 2)&#10;safe: yes&#10;completion order: P1 -&gt; P3 -&gt; P4 -&gt; P0 -&gt; P2&#10;modified: P0 holds (0, 1, 2), available (3, 3, 0)&#10;safe: no&#10;stopped after 0 completions&#10;P0 requests (0, 0, 2): refused&#10;safe after granting: no&#10;available after rollback: (3, 3, 2)&#10;Nothing else. The two plotters are physically free; the refusal is about the shape of the state, not about whether the bytes exist."
+	starter="#include &lt;stdbool.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;#define PROCS 5&#10;#define TYPES 3&#10;&#10;struct state &#123;&#10;    int available[TYPES];&#10;    int maximum[PROCS][TYPES];&#10;    int allocation[PROCS][TYPES];&#10;    int need[PROCS][TYPES];&#10;&#125;;&#10;&#10;static void derive_need(struct state *s) &#123;&#10;    /* TODO */&#10;&#125;&#10;&#10;/* Returns how many processes could finish; PROCS means safe. */&#10;static int is_safe(const struct state *s, int order[PROCS]) &#123;&#10;    /* TODO: copy available into work, then repeatedly finish any&#10;       process whose need fits, adding its allocation back */&#10;    return 0;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: base state, modified state, and the refused request,&#10;       printing the nine lines in order */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="base: available (3, 3, 2)&#10;safe: yes&#10;completion order: P1 -&gt; P3 -&gt; P4 -&gt; P0 -&gt; P2&#10;modified: P0 holds (0, 1, 2), available (3, 3, 0)&#10;safe: no&#10;stopped after 0 completions&#10;P0 requests (0, 0, 2): refused&#10;safe after granting: no&#10;available after rollback: (3, 3, 2)&#10;"
+	hints={[
+		'The check only ever finishes a process whose whole need fits in the current free vector; an unsafe state is one where that loop stops before all five are done.',
+		'Moving two free plotters into P0\'s allocation leaves every process one plotter short, so the loop stops immediately with zero completions.'
+	]}
+	solution="#include &lt;stdbool.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;/* Banker's safety check, run twice: once on the lesson's safe state and&#10; * once after moving two free plotters into P0's allocation. */&#10;&#10;#define PROCS 5&#10;#define TYPES 3&#10;&#10;struct state &#123;&#10;    int available[TYPES];&#10;    int maximum[PROCS][TYPES];&#10;    int allocation[PROCS][TYPES];&#10;    int need[PROCS][TYPES];&#10;&#125;;&#10;&#10;static void derive_need(struct state *s) &#123;&#10;    for (int p = 0; p &lt; PROCS; p++) &#123;&#10;        for (int t = 0; t &lt; TYPES; t++) &#123;&#10;            s-&gt;need[p][t] = s-&gt;maximum[p][t] - s-&gt;allocation[p][t];&#10;        &#125;&#10;    &#125;&#10;&#125;&#10;&#10;/* Returns how many processes could be finished, and fills order. A full&#10; * return value of PROCS means the state is safe. */&#10;static int is_safe(const struct state *s, int order[PROCS]) &#123;&#10;    int work[TYPES];&#10;    bool done[PROCS] = &#123;false&#125;;&#10;    int completed = 0;&#10;&#10;    for (int t = 0; t &lt; TYPES; t++) &#123;&#10;        work[t] = s-&gt;available[t];&#10;    &#125;&#10;    for (;;) &#123;&#10;        bool progressed = false;&#10;&#10;        for (int p = 0; p &lt; PROCS; p++) &#123;&#10;            bool fits = true;&#10;&#10;            if (done[p]) &#123;&#10;                continue;&#10;            &#125;&#10;            for (int t = 0; t &lt; TYPES; t++) &#123;&#10;                if (s-&gt;need[p][t] &gt; work[t]) &#123;&#10;                    fits = false;&#10;                &#125;&#10;            &#125;&#10;            if (!fits) &#123;&#10;                continue;&#10;            &#125;&#10;            for (int t = 0; t &lt; TYPES; t++) &#123;&#10;                work[t] += s-&gt;allocation[p][t];&#10;            &#125;&#10;            done[p] = true;&#10;            order[completed++] = p;&#10;            progressed = true;&#10;        &#125;&#10;        if (!progressed) &#123;&#10;            break;&#10;        &#125;&#10;    &#125;&#10;    return completed;&#10;&#125;&#10;&#10;static void print_order(int order[PROCS], int count) &#123;&#10;    printf(&quot;completion order: &quot;);&#10;    for (int i = 0; i &lt; count; i++) &#123;&#10;        printf(&quot;P%d%s&quot;, order[i], i + 1 &lt; count ? &quot; -&gt; &quot; : &quot;&quot;);&#10;    &#125;&#10;    printf(&quot;\n&quot;);&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    struct state base = &#123;&#10;        .available = &#123;3, 3, 2&#125;,&#10;        .maximum = &#123;&#123;7, 5, 3&#125;, &#123;3, 2, 2&#125;, &#123;9, 0, 2&#125;, &#123;2, 2, 2&#125;, &#123;4, 3, 3&#125;&#125;,&#10;        .allocation = &#123;&#123;0, 1, 0&#125;, &#123;2, 0, 0&#125;, &#123;3, 0, 2&#125;, &#123;2, 1, 1&#125;, &#123;0, 0, 2&#125;&#125;,&#10;    &#125;;&#10;    int order[PROCS];&#10;&#10;    derive_need(&amp;base);&#10;    int safe = is_safe(&amp;base, order);&#10;    printf(&quot;base: available (%d, %d, %d)\n&quot;, base.available[0],&#10;           base.available[1], base.available[2]);&#10;    printf(&quot;safe: %s\n&quot;, safe == PROCS ? &quot;yes&quot; : &quot;no&quot;);&#10;    print_order(order, safe);&#10;&#10;    struct state bad = base;&#10;    bad.allocation[0][2] += 2;&#10;    bad.available[2] -= 2;&#10;    derive_need(&amp;bad);&#10;    int bad_safe = is_safe(&amp;bad, order);&#10;    printf(&quot;modified: P0 holds (%d, %d, %d), available (%d, %d, %d)\n&quot;,&#10;           bad.allocation[0][0], bad.allocation[0][1], bad.allocation[0][2],&#10;           bad.available[0], bad.available[1], bad.available[2]);&#10;    printf(&quot;safe: %s\n&quot;, bad_safe == PROCS ? &quot;yes&quot; : &quot;no&quot;);&#10;    printf(&quot;stopped after %d completions\n&quot;, bad_safe);&#10;&#10;    struct state probe = base;&#10;    int request[TYPES] = &#123;0, 0, 2&#125;;&#10;    for (int t = 0; t &lt; TYPES; t++) &#123;&#10;        probe.available[t] -= request[t];&#10;        probe.allocation[0][t] += request[t];&#10;        probe.need[0][t] -= request[t];&#10;    &#125;&#10;    int probe_safe = is_safe(&amp;probe, order);&#10;    printf(&quot;P0 requests (%d, %d, %d): refused\n&quot;, request[0], request[1],&#10;           request[2]);&#10;    printf(&quot;safe after granting: %s\n&quot;, probe_safe == PROCS ? &quot;yes&quot; : &quot;no&quot;);&#10;    printf(&quot;available after rollback: (%d, %d, %d)\n&quot;, base.available[0],&#10;           base.available[1], base.available[2]);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Ordering by pointer or address instead of a stable rank
+
+"It is safe as long as both threads sort by `&mutex_a < &mutex_b`" is a
+common and wrong answer. The expression has a consistent value within a
+run, which is fine; but if the comparison is written independently in two
+places it is easy to get one of them backwards, and the addresses change
+between runs so the two code paths can be tested only by luck. Give each
+lock an explicit integer rank and compare that.
+
+### Believing a safe state is a schedule
+
+Banker's answer is "there exists a completion order". Nothing in the
+algorithm makes the scheduler choose it. A safe state can still see a
+process wait for a long time, and safety says nothing about latency or
+fairness — only that nobody can be stuck forever.
+
+### Assuming everyone knows their maximum demand
+
+The whole method rests on `max` being declared truthfully and in advance.
+A process that understates its maximum breaks the guarantee completely:
+the safety check proves a property of the declared matrix, not of the
+program. This is why the algorithm fits batch job systems and sits badly
+with interactive ones.
+
+### Using trylock as a fix rather than a mitigation
+
+Backing off on `pthread_mutex_trylock` avoids the permanent stall but
+introduces livelock: two threads can retry in lockstep forever, or drop
+work repeatedly. It converts one problem into a milder one. It is not a
+substitute for a fixed order.
+
+### Testing the deadlock by running it once
+
+A crossed lock order that survives a thousand runs proves nothing
+whatsoever — the window may be a few instructions wide, and the test
+machine's timing is not the production timing. Prove it from the
+acquisition order, not from a passing run.
+
+<QuizCard
+	id="m15-quiz-ordering"
+	question="Three threads take locks from the set A, B, C. Thread 1 takes A then C. Thread 2 takes C then B. Thread 3 takes B then A. Is there a single global order that would make all three safe, and if not, which pair of threads is the immediate problem?"
+	options={[
+		'No order works: the constraints are A before C, C before B and B before A, which is a cycle. Every thread is implicated — any two of them are compatible, and only the third closes the loop.',
+		'A before B before C works; thread 3 is the only one that has to change.',
+		'B before A before C works, because thread 2 then takes C after B.',
+		'No order works, and the immediate problem is threads 1 and 2 because they share lock C.'
+	]}
+	answer={0}
+	explanation="A global order is a total order on locks, so it must contain all three pairwise constraints; A before C, C before B and B before A cannot all hold at once, and that cycle is the deadlock waiting to happen. Each pair of threads is individually safe, which is why the bug only appears when all three run."
+/>
+
+<LectureReference lecture="Lecture 15 — Deadlocks" slides="16–30" />

@@ -1,0 +1,145 @@
+---
+id: 23-02-permissions
+title: 'File Permissions'
+module: 23
+lecture: 'Module 23 — Bash & Scripting'
+slides: 'supplementary'
+estimatedMinutes: 14
+prerequisites: ['23-01-navigation']
+tags: ['bash', 'chmod', 'permissions', 'unix']
+hasExercise: false
+hasQuiz: false
+---
+
+<script>
+	import BashTerminal from '$lib/components/viz/BashTerminal.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+</script>
+
+## Every file carries a nine-bit answer
+
+Unix does not remember that "Bob may edit this". It remembers three bits for
+each of three audiences, and asks them every time a file is opened. That is
+all a permission is: a bit the kernel consults before it hands back a file
+descriptor.
+
+`ls -l` prints those nine bits as letters, in a fixed order:
+
+```
+-rwxr-xr--
+│└┬┘└┬┘└┬┘
+│ │  │  └── other: r--  (read only)
+│ │  └───── group: r-x   (read and execute)
+│ └──────── user:  rwx   (read, write, execute)
+└────────── file type: - file, d directory
+```
+
+The first character is not a permission at all. It is the file type, and it
+is why the ninth letter is not the tenth column.
+
+## Reading the letters
+
+Each audience gets three questions, always in the same order.
+
+| Letter | Bit | On a file | On a directory |
+| --- | --- | --- | --- |
+| `r` | 4 | read its contents | list the names inside |
+| `w` | 2 | change its contents | create, rename, delete entries inside |
+| `x` | 1 | execute it as a program | enter it — traverse through it |
+
+The directory column is the one that surprises people. Read permission lets
+you *see* a name; execute permission lets you *reach through* the directory
+to anything inside it, including files whose names you already know. That is
+why `cd` can fail on a directory you can list, and why a directory with `r`
+but no `x` is a locked display case.
+
+## The same nine bits as three octal digits
+
+Letters are for humans. The kernel stores numbers, and the octal form is how
+you set them in one keystroke. Each digit is one audience, and each digit is
+sum of 4 (read, 2 (write), 1 (execute).
+
+| Mode | Letters | Meaning |
+| --- | --- | --- |
+| `644` | `-rw-r--r--` | a normal text file: you write, everyone reads |
+| `755` | `-rwxr-xr-x` | a program or a directory you share read-only |
+| `700` | `-rwx------` | private directory: only you may enter |
+| `600` | `-rw-------` | private file |
+| `777` | `-rwxrwxrwx` | everyone may do everything — almost always a mistake |
+
+Seven is 4+2+1. Six is 4+2. Four is read alone. Once you see the digits as
+three sums, guessing a mode stops being memorisation.
+
+<TheoryBlock label="Why it matters for C" title="chmod is a system call before it is a command">
+
+The shell command `chmod` is a thin wrapper around `chmod(2)`. Your C
+program can call it directly — `chmod("notes.txt", 0644)` — and the leading
+zero is not decoration: C reads a leading `0` as octal, so `644` would mean
+decimal 644, whose bits are nothing like what you intended. The command and
+the syscall take the same number; only the notation differs.
+
+</TheoryBlock>
+
+## Changing the bits
+
+`chmod` accepts either a new octal mode or a symbolic edit. Both are useful,
+and they answer different questions.
+
+| Form | Means |
+| --- | --- |
+| `chmod 755 script.sh` | replace all nine bits with `755` |
+| `chmod +x script.sh` | add execute for everyone who lacks it |
+| `chmod u+x script.sh` | add execute for the owner only |
+| `chmod go-r notes.txt` | remove read from group and other |
+| `chmod 644 notes.txt` | back to the ordinary text-file mode |
+
+The numeric form replaces; the symbolic form edits. Mixing them up is a
+classic source of "why did everything change".
+
+## The execute bit is the gatekeeper
+
+A script is a text file. To run it with `./script.sh` you need the execute
+bit, because the kernel is being asked to start the file as a program — and
+the kernel does not read first, it checks first.
+
+```
+$ ./greet.sh
+bash: ./greet.sh: Permission denied
+$ chmod +x greet.sh
+$ ./greet.sh
+hello, world
+```
+
+The interpreter route is different. `bash greet.sh` asks Bash to open the
+file and interpret it, so Bash needs read permission but not execute. That
+is a genuinely useful escape hatch when you cannot or should not change a
+file's mode — and it is also the fastest way to confirm that the only thing
+missing is the bit, not the contents.
+
+## Practice
+
+<BashTerminal />
+
+Try this, in order:
+
+1. `ls -l` — read the modes. `greet.sh` is `644`: readable, not runnable.
+2. `./greet.sh` — watch it fail with `Permission denied`.
+3. `bash greet.sh` — it works, because only read is needed.
+4. `chmod +x greet.sh` and `ls -l` — the `x` appears for user, group, other.
+5. `./greet.sh` — now it runs.
+6. `chmod 600 notes.txt` and `cat notes.txt` — still readable by you.
+7. `echo hello > notes.txt` — ask yourself why this still works with `600`.
+
+Then try the failure that teaches the directory rule: `chmod 000 reports`,
+`cd reports`, and read the error. `ls` can still show the name; entering is
+what the missing `x` forbids. (The practice shell applies the owner class
+only, so `000` locks the directory for you, the only user.)
+
+## What to carry forward
+
+Nine bits, three audiences, and the rule that the check happens before the
+work. Executing needs `x`; interpreting needs `r`; entering a directory
+needs `x` even when `r` lets you see inside. When a command refuses, `ls -l`
+is the first thing to read, not the last.
+
+Next: writing a script of your own — a shebang, a variable, and a loop.

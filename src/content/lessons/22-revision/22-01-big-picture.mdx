@@ -1,0 +1,293 @@
+---
+id: 22-01-big-picture
+title: The Big Picture
+module: 22
+lecture: 'Lecture 22 — Revision'
+slides: '1–15'
+estimatedMinutes: 16
+prerequisites: ['21-02-deployment-models']
+tags: ['revision', 'synthesis', 'mapping']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Twenty-one lectures, one sentence
+
+If the whole course compresses to a single claim, it is this: **C exposes the
+machine, and the machine explains C.** Every awkward corner of the language —
+why `int` overflow is undefined, why a struct has padding, why `volatile`
+exists, why `malloc` does not return memory to the OS — stops being arbitrary
+when you know what the hardware underneath is doing.
+
+This lesson is not new material. It is the map, drawn at the end, so that the
+individual lessons stop being a list and become a structure. Read it as a
+revision aid: for each row of the table below, ask whether you could explain
+the link without notes. The ones you cannot are the ones to reread.
+
+## What you'll be able to do
+
+- State the C construct → hardware concept link for each major topic.
+- Explain why the link is causal, not a coincidence of curriculum design.
+- Place any new C feature you meet onto this map.
+- Identify which lectures you have not actually absorbed.
+
+<TheoryBlock label="Why it matters for C" title="The map is the debugging method">
+
+	When a C program misbehaves, the question "what does the machine think is
+	happening" is almost always more productive than "what did I mean to write."
+	A corrupted struct suggests alignment; a loop that never exits suggests a
+	missing `volatile` or an overflow; a crash after `free` suggests a page
+	mapping. The table below is that question, indexed.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="big-picture"
+	football="A season is thirty-eight matches, and no one remembers them as thirty-eight separate events. They remember the shape: the early losses, the mid-season run, the injury that changed the formation. Knowing the shape is what lets you predict the next match."
+	money="A year of accounts is twelve statements, but the accountant reads one story: the quarter where costs ran ahead of revenue, and the month the margin recovered. The individual entries matter; the shape is what you act on. Revision is drawing the shape."
+/>
+
+## The map
+
+| C construct | Hardware / OS concept | Lecture |
+| --- | --- | --- |
+| `char`, strings | ASCII and Unicode code points | 1 |
+| `INT_MAX + 1` | two's complement, the sign bit | 2 |
+| `struct` layout | byte alignment and machine words | 1, 3 |
+| `&`, `|`, `^`, `~` | boolean algebra and gates | 4 |
+| `++`, loops as state | latches, flip-flops, counters | 5 |
+| pointers | the address space | 3 |
+| `volatile` | caches, coherence, memory hierarchy | 6 |
+| `malloc` / `free` | heap, virtual memory, page tables | 16, 17 |
+| `fork()` | process = address space + PID | 11 |
+| `pthread_create()` | threads share one address space | 12 |
+| `pthread_mutex_lock()` | atomic instructions and wait queues | 14 |
+| `fopen` / `fread` | I/O subsystem and buffering | 18 |
+| `strcpy` into a small buffer | stack frame layout | 19 |
+| `socket` / `htonl` | network byte order and the stack | 20 |
+
+Three rows deserve the extra lecture numbers, because the same construct is
+explained by two different levels. A struct's layout is decided by the word
+size of the machine (lecture 1) *and* by the compiler's alignment rules for
+that architecture (lecture 3). `malloc` asks the kernel for pages (lecture 16)
+but what the process sees is virtual addresses the MMU translates (lecture 17).
+The duplication is the point: there is no single level at which those
+questions have an answer.
+
+## The map, as data
+
+The table above is a picture of an array. Writing it as one makes the structure
+explicit and gives you something to extend when a lecture is missing.
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+/* The curriculum on one page, as data rather than prose.
+ *
+ * Each row is a C construct, the hardware or OS concept that explains why it
+ * behaves the way it does, and the lecture that covers the concept. The point
+ * of printing it is that the table is derived from an array: add a row and
+ * the table updates, which is the same argument as "make the mapping
+ * explicit in code" one level up. */
+
+struct link {
+    const char *c_construct;
+    const char *hardware;
+    int lecture;
+    const char *one_line;
+};
+
+static void rule(size_t width) {
+    for (size_t i = 0; i < width; i++) putchar('-');
+    putchar('\n');
+}
+
+int main(void) {
+    const struct link links[] = {
+        {"char c = 'A'",        "ASCII / Unicode",        1,
+         "a char is a byte is a code point"},
+        {"INT_MAX + 1",         "two's complement",        2,
+         "wraps to INT_MIN; the sign bit is just a bit"},
+        {"struct { char; int; }", "word alignment",        1,
+         "padding makes it 8 bytes, not 5"},
+        {"a & b, a | b, a ^ b", "boolean algebra",         4,
+         "gate-level operations, applied 32 at a time"},
+        {"int *p = &x",         "address space",           3,
+         "a pointer is a typed address, nothing more"},
+        {"volatile int flag",   "caches & coherence",      6,
+         "forces a memory read the compiler would elide"},
+        {"malloc(64)",          "heap & virtual memory",  16,
+         "a mapping, not a pile of RAM"},
+        {"free(p)",             "page tables",            17,
+         "returns pages; the process keeps its VA"},
+        {"fork()",              "process = address space", 11,
+         "copy-on-write pages, separate PIDs"},
+        {"pthread_create()",    "threads share an AS",    12,
+         "same heap, same globals, own stack"},
+        {"pthread_mutex_lock()", "atomic instructions",   14,
+         "a lock is a CAS loop plus a wait queue"},
+        {"fopen / fread",       "I/O subsystem, buffering", 18,
+         "stdio buffers; the syscall is read(2)"},
+        {"strcpy into char[8]", "stack frame layout",     19,
+         "the return address is 8 bytes away"},
+        {"socket / htonl",      "network byte order",     20,
+         "big-endian on the wire, little on your CPU"},
+    };
+    const size_t count = sizeof links / sizeof links[0];
+
+    printf("%-28s %-28s %-8s %s\n", "C construct", "hardware concept",
+           "lecture", "why");
+    rule(112);
+
+    for (size_t i = 0; i < count; i++) {
+        printf("%-28s %-28s L%-7d %s\n",
+               links[i].c_construct,
+               links[i].hardware,
+               links[i].lecture,
+               links[i].one_line);
+    }
+
+    /* A second view: how many rows point at each lecture. Not every lecture
+     * appears, and the ones that appear twice are the ones where the C and
+     * the hardware are hardest to separate. */
+    printf("\nlectures referenced, counted:\n");
+    for (int lec = 1; lec <= 22; lec++) {
+        int n = 0;
+        for (size_t i = 0; i < count; i++) {
+            if (links[i].lecture == lec) n++;
+        }
+        if (n > 0) {
+            printf("  L%-3d %d row(s)\n", lec, n);
+        }
+    }
+
+    /* The through-line, in one sentence, checked for length. */
+    const char *thesis =
+        "C exposes the machine; the machine explains C.";
+    printf("\nthesis (%zu chars): %s\n", strlen(thesis), thesis);
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+C construct                  hardware concept             lecture  why
+----------------------------------------------------------------------------------------------------------------
+char c = 'A'                 ASCII / Unicode              L1       a char is a byte is a code point
+INT_MAX + 1                  two's complement             L2       wraps to INT_MIN; the sign bit is just a bit
+struct { char; int; }        word alignment               L1       padding makes it 8 bytes, not 5
+a & b, a | b, a ^ b          boolean algebra              L4       gate-level operations, applied 32 at a time
+int *p = &x                  address space                L3       a pointer is a typed address, nothing more
+volatile int flag            caches & coherence           L6       forces a memory read the compiler would elide
+malloc(64)                   heap & virtual memory        L16      a mapping, not a pile of RAM
+free(p)                      page tables                  L17      returns pages; the process keeps its VA
+fork()                       process = address space      L11      copy-on-write pages, separate PIDs
+pthread_create()             threads share an AS          L12      same heap, same globals, own stack
+pthread_mutex_lock()         atomic instructions          L14      a lock is a CAS loop plus a wait queue
+fopen / fread                I/O subsystem, buffering     L18      stdio buffers; the syscall is read(2)
+strcpy into char[8]          stack frame layout           L19      the return address is 8 bytes away
+socket / htonl               network byte order           L20      big-endian on the wire, little on your CPU
+
+lectures referenced, counted:
+  L1   2 row(s)
+  L2   1 row(s)
+  L3   1 row(s)
+  L4   1 row(s)
+  L6   1 row(s)
+  L11  1 row(s)
+  L12  1 row(s)
+  L14  1 row(s)
+  L16  1 row(s)
+  L17  1 row(s)
+  L18  1 row(s)
+  L19  1 row(s)
+  L20  1 row(s)
+
+thesis (46 chars): C exposes the machine; the machine explains C.
+```
+
+The count is the honest part of this exercise. Thirteen of twenty-two lectures
+appear in a table of *the* central links. The rest — RISC versus CISC, pipelining,
+scheduling, deadlock detection, thrashing, cloud service models — are real
+material that a C program touches less directly. A revision map that claimed
+every lecture had an equal footprint would be lying about the shape of the
+subject.
+
+## Which way the explanation runs
+
+For each link, it is worth asking which direction the explanation goes.
+
+| Link | Explanation runs | Because |
+| --- | --- | --- |
+| overflow → two's complement | hardware → C | the CPU's adder wraps; C inherits it |
+| `volatile` → cache coherence | hardware → C | the compiler cannot see the cache |
+| `malloc` → page tables | both ways | the API is C's; the cost is the MMU's |
+| `fork()` → copy-on-write | OS → C | the semantics were chosen for the implementation |
+| `strcpy` → stack layout | C → vulnerability | the language made the layout reachable |
+
+Most arrows point from the machine to the language. Two do not, and they are
+the interesting ones: `malloc`'s interface shapes what the allocator can do
+with pages, and C's lack of bounds checking is what turns a stack layout into
+an exploit class. The language is not purely downstream of the hardware; it
+also decides which hardware facts become visible.
+
+## Common pitfalls
+
+### Treating the mapping as memorisation
+
+Knowing that `volatile` relates to caches is not the same as knowing *when* to
+use it: a variable modified by a signal handler or a memory-mapped register,
+not a variable shared between threads (that needs atomics). The link is a
+pointer to the reasoning, not the reasoning itself.
+
+### Assuming one lecture per construct
+
+Several constructs appear twice because they sit at a boundary — a struct is
+both a byte layout and a compiler decision, an allocation is both an API and a
+page mapping. That is a feature of the subject, not an inconsistency in the
+notes.
+
+### Revising by rereading
+
+Rereading feels productive and is one of the weakest revision methods. The
+program above is a better test: close the lesson, write the array from memory,
+and see which rows you cannot fill. The gaps are the revision list.
+
+<ExerciseCard
+	id="m22-extend-map"
+	concept="the C-to-hardware map as data"
+	prompt="Add five rows to the links array for the topics it omits: latches and flip-flops (lecture 5), pipelining (8), RISC versus CISC (9), scheduling (13), and deadlock (15). Each row is still a C construct, a hardware concept, a lecture number and one line of why. Then turn the counting loop around: print how many rows point at each lecture that has at least one, and then a single line listing every lecture from 1 to 22 that has none, so the omissions are visible. Do not print the table itself. Print exactly:&#10;rows: 20&#10;  L1   2 row(s)&#10;  L2   1 row(s)&#10;  L3   1 row(s)&#10;  L4   1 row(s)&#10;  L5   1 row(s)&#10;  L6   1 row(s)&#10;  L8   1 row(s)&#10;  L9   1 row(s)&#10;  L11  1 row(s)&#10;  L12  1 row(s)&#10;  L13  1 row(s)&#10;  L14  1 row(s)&#10;  L15  1 row(s)&#10;  L16  1 row(s)&#10;  L17  2 row(s)&#10;  L18  1 row(s)&#10;  L19  1 row(s)&#10;  L20  1 row(s)&#10;no row for: L7 L10 L21 L22&#10;The rows already present are the fourteen in the lesson plus the L19 buffer-overflow row; keep every one of them and add exactly five. Counts go through the lecture numbers in ascending order, and the missing list is space separated after the colon."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;struct link &#123;&#10;    const char *c_construct;&#10;    const char *hardware;&#10;    int lecture;&#10;    const char *one_line;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: five new rows, then report the gaps 1..22 */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="rows: 20&#10;  L1   2 row(s)&#10;  L2   1 row(s)&#10;  L3   1 row(s)&#10;  L4   1 row(s)&#10;  L5   1 row(s)&#10;  L6   1 row(s)&#10;  L8   1 row(s)&#10;  L9   1 row(s)&#10;  L11  1 row(s)&#10;  L12  1 row(s)&#10;  L13  1 row(s)&#10;  L14  1 row(s)&#10;  L15  1 row(s)&#10;  L16  1 row(s)&#10;  L17  2 row(s)&#10;  L18  1 row(s)&#10;  L19  1 row(s)&#10;  L20  1 row(s)&#10;no row for: L7 L10 L21 L22&#10;"
+	hints={[
+		'Two passes over the same array is the simplest shape: one loop over lectures 1 to 22 counting rows, then one loop printing the lectures whose count was zero.',
+		'The missing lectures are 7 (I/O), 10 (OS intro), 21 (cloud) and 22 (revision): the map deliberately stops where the C construct has no hardware counterpart, and saying so is the point of the last line.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* The mapping is data: add a row and the report changes. Counting rows per&#10; * lecture makes the omissions visible instead of implied. */&#10;&#10;struct link &#123;&#10;    const char *c_construct;&#10;    const char *hardware;&#10;    int lecture;&#10;    const char *one_line;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    const struct link links[] = &#123;&#10;        &#123;&quot;char c = 'A'&quot;, &quot;ASCII / Unicode&quot;, 1,&#10;         &quot;a char is a byte is a code point&quot;&#125;,&#10;        &#123;&quot;INT_MAX + 1&quot;, &quot;two's complement&quot;, 2,&#10;         &quot;wraps to INT_MIN; the sign bit is just a bit&quot;&#125;,&#10;        &#123;&quot;struct &#123; char; int; &#125;&quot;, &quot;word alignment&quot;, 1,&#10;         &quot;padding makes it 8 bytes, not 5&quot;&#125;,&#10;        &#123;&quot;int *p = &amp;x&quot;, &quot;address space&quot;, 3,&#10;         &quot;a pointer is a typed address, nothing more&quot;&#125;,&#10;        &#123;&quot;a &amp; b, a | b, a ^ b&quot;, &quot;boolean algebra&quot;, 4,&#10;         &quot;gate-level operations, applied 32 at a time&quot;&#125;,&#10;        &#123;&quot;for (;;) spin&quot;, &quot;latches &amp; flip-flops&quot;, 5,&#10;         &quot;a loop counter is two flip-flops and some gates&quot;&#125;,&#10;        &#123;&quot;volatile int flag&quot;, &quot;caches &amp; coherence&quot;, 6,&#10;         &quot;forces a memory read the compiler would elide&quot;&#125;,&#10;        &#123;&quot;a[i] = b[i] + 1&quot;, &quot;pipelining&quot;, 8,&#10;         &quot;independent iterations issue one per cycle&quot;&#125;,&#10;        &#123;&quot;#ifdef __arm__&quot;, &quot;RISC vs CISC&quot;, 9,&#10;         &quot;same C, a different instruction count per line&quot;&#125;,&#10;        &#123;&quot;fork()&quot;, &quot;process = address space&quot;, 11,&#10;         &quot;copy-on-write pages, separate PIDs&quot;&#125;,&#10;        &#123;&quot;pthread_create()&quot;, &quot;threads share an AS&quot;, 12,&#10;         &quot;same heap, same globals, own stack&quot;&#125;,&#10;        &#123;&quot;sleep(1) in a worker&quot;, &quot;scheduling&quot;, 13,&#10;         &quot;the OS chose who ran next, not the code&quot;&#125;,&#10;        &#123;&quot;pthread_mutex_lock()&quot;, &quot;atomic instructions&quot;, 14,&#10;         &quot;a lock is a CAS loop plus a wait queue&quot;&#125;,&#10;        &#123;&quot;lock twice in one thread&quot;, &quot;deadlock&quot;, 15,&#10;         &quot;hold and wait is one of the four conditions&quot;&#125;,&#10;        &#123;&quot;malloc(64)&quot;, &quot;heap &amp; virtual memory&quot;, 16,&#10;         &quot;a mapping, not a pile of RAM&quot;&#125;,&#10;        &#123;&quot;free(p)&quot;, &quot;page tables&quot;, 17,&#10;         &quot;returns pages; the process keeps its VA&quot;&#125;,&#10;        &#123;&quot;working set &gt; RAM&quot;, &quot;thrashing&quot;, 17,&#10;         &quot;every access faults; the CPU waits on the disk&quot;&#125;,&#10;        &#123;&quot;strcpy into char[8]&quot;, &quot;stack frame layout&quot;, 19,&#10;         &quot;the return address is 8 bytes away&quot;&#125;,&#10;        &#123;&quot;fopen / fread&quot;, &quot;I/O subsystem, buffering&quot;, 18,&#10;         &quot;stdio buffers; the syscall is read(2)&quot;&#125;,&#10;        &#123;&quot;socket / htonl&quot;, &quot;network byte order&quot;, 20,&#10;         &quot;big-endian on the wire, little on your CPU&quot;&#125;,&#10;    &#125;;&#10;    const size_t count = sizeof links / sizeof links[0];&#10;&#10;    printf(&quot;rows: %zu\n&quot;, count);&#10;    for (int lecture = 1; lecture &lt;= 22; lecture++) &#123;&#10;        int rows = 0;&#10;&#10;        for (size_t i = 0; i &lt; count; i++) &#123;&#10;            if (links[i].lecture == lecture) &#123;&#10;                rows++;&#10;            &#125;&#10;        &#125;&#10;        if (rows &gt; 0) &#123;&#10;            printf(&quot;  L%-3d %d row(s)\n&quot;, lecture, rows);&#10;        &#125;&#10;    &#125;&#10;&#10;    printf(&quot;no row for:&quot;);&#10;    for (int lecture = 1; lecture &lt;= 22; lecture++) &#123;&#10;        int rows = 0;&#10;&#10;        for (size_t i = 0; i &lt; count; i++) &#123;&#10;            if (links[i].lecture == lecture) &#123;&#10;                rows++;&#10;            &#125;&#10;        &#125;&#10;        if (rows == 0) &#123;&#10;            printf(&quot; L%d&quot;, lecture);&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;\n&quot;);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m22-quiz-direction"
+	question="`malloc` returns a pointer into a heap that the process believes is contiguous, but the physical pages behind it are scattered. Which two lectures does that sentence join, and what does the gap between them explain about why `free` does not usually return memory to the OS?"
+	options={[
+		'Lectures 16 and 17. malloc is allocator bookkeeping above the page mapping, so free returns the block to the free list and the pages stay mapped in the process\'s address space — the resident set does not fall until the allocator chooses to release whole pages.',
+		'Lectures 3 and 16. The gap is that addresses are virtual, so free has to translate the pointer to a physical address before releasing it.',
+		'Lectures 2 and 17. The gap is two\'s complement arithmetic in the allocator\'s size fields, which is why a freed block can look negative.',
+		'Lectures 11 and 16. The gap is that free returns memory across process boundaries, which is why the parent sees the heap shrink.'
+	]}
+	answer={0}
+	explanation="malloc and free are a user-space allocator over pages the kernel mapped; the process's view of a contiguous heap is virtual, and the physical pages are only pinned to it by the mapping. Releasing a block edits the allocator's own metadata, and returning memory to the OS means munmapping pages — a separate, coarser decision."
+/>
+
+<LectureReference lecture="Lecture 22 — Revision" slides="1–15" />

@@ -1,0 +1,205 @@
+---
+id: 12-02-pthreads
+title: Pthreads
+module: 12
+lecture: 'Lecture 12 — Threads'
+slides: '15–29'
+estimatedMinutes: 19
+prerequisites: ['12-01-threads-vs-processes']
+tags: ['pthreads', 'join', 'threads']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The four calls that are enough
+
+POSIX threads — **pthreads** — has a large API. Four calls cover almost every
+program in this course:
+
+| Call | Purpose | Returns 0 on success |
+| --- | --- | --- |
+| `pthread_create(&t, NULL, fn, arg)` | start a thread running `fn(arg)` | yes |
+| `pthread_join(t, &ret)` | wait for it, collect its return value | yes |
+| `pthread_mutex_lock(&m)` | enter a critical section | yes |
+| `pthread_mutex_unlock(&m)` | leave it | yes |
+
+The signatures encode two important decisions. The thread function is
+`void *(*)(void *)`: one pointer in, one pointer out. And the calls return an
+error code instead of setting `errno` — you check `!= 0` directly.
+
+`pthread_t` is an opaque handle. It is not a PID, and printing it with `%d` is
+undefined because its type varies by platform.
+
+## What you'll be able to do
+
+- Write the four pthread calls a basic program needs, and check each return code.
+- Pass data into a thread through the `void *` argument without corrupting it.
+- Join every thread so the total does not depend on the schedule.
+- Explain why `pthread_t` must not be printed with `%d`.
+
+<TheoryBlock label="Why it matters for C" title="The void pointer is how you pass anything">
+
+	The `void *` argument is the only channel into the thread. For an `int` you cast through
+	`intptr_t`; for a struct you pass its address and make sure it outlives the thread. That cast is
+	where beginners lose values, because `(void *)` of a small int and a pointer are different things
+	on some platforms and the compiler will not always tell you.
+</TheoryBlock>
+
+<Eli5Block
+	topic="join"
+	football="The manager does not walk off at half time assuming the warm-up happened. They wait at the tunnel until every player reports back. Only then do they add up the laps on the clipboard. Joining a thread is that wait: until it returns, you do not know the work is done."
+	money="Before closing the books you wait for every department's return. A number that has not arrived is not zero — it is unknown, and summing the inbox before the last envelope lands gives a total you cannot defend. Joining is that wait. Skip it and you add up whatever happened to be filled in so far, then label it final."
+/>
+
+## Four threads, one deterministic total
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <pthread.h>
+#include <stdio.h>
+
+#define THREADS 4
+#define PER_THREAD 1000
+
+static long partial[THREADS];
+
+static void *sum_slice(void *arg) {
+    long index = (long)arg;
+    long total = 0;
+
+    for (long i = 0; i < PER_THREAD; i++) {
+        total += index * PER_THREAD + i;
+    }
+    partial[index] = total;     /* each thread owns its own slot */
+    return NULL;
+}
+
+int main(void) {
+    pthread_t threads[THREADS];
+
+    for (long i = 0; i < THREADS; i++) {
+        if (pthread_create(&threads[i], NULL, sum_slice, (void *)i) != 0) {
+            fprintf(stderr, "could not create thread %ld\n", i);
+            return 1;
+        }
+    }
+    for (int i = 0; i < THREADS; i++) {
+        if (pthread_join(threads[i], NULL) != 0) {
+            fprintf(stderr, "could not join thread %d\n", i);
+            return 1;
+        }
+    }
+
+    long total = 0;
+    for (int i = 0; i < THREADS; i++) {
+        total += partial[i];
+    }
+
+    /* Deterministic: 0 + 1 + ... + 3999 */
+    printf("sum of 0..%d = %ld\n", THREADS * PER_THREAD - 1, total);
+    return 0;
+}
+```
+
+This program is deliberately free of races. Each thread writes `partial[index]`
+for a distinct `index`, so no two threads touch the same slot. The main thread
+reads them only after every join has returned, which is a memory barrier: the
+writes are guaranteed visible.
+
+Every program in this lesson needs the thread library linked, so the compile
+command carries one extra flag:
+
+```text
+gcc -std=c11 -Wall -Wextra -pthread threads.c -o threads
+```
+
+Without `-pthread` the link fails with undefined references to
+`pthread_create` and `pthread_join`. The flag does two things: it links the
+library and it defines the feature-test macros that make the header declare the
+full API.
+
+That is the pattern for any parallel reduction — partition the output, join, then
+combine on one thread.
+
+## Expected output
+
+```text
+sum of 0..3999 = 7998000
+```
+
+That value is fixed by arithmetic, not by timing: the four partial sums are
+added in index order after all threads finish. However the scheduler interleaves
+the threads, the answer is the same. This is the property to look for when you
+review thread code — can you name a reason the result is independent of ordering?
+
+Strictly, `(void *)i` where `i` is a `long` is a pointer-sized integer cast. It
+works on every platform this course targets because `long` and a pointer are the
+same size on LP64. On Windows, `long` is 32 bits and the cast would truncate —
+`intptr_t` from `<stdint.h>` is the portable spelling.
+
+## Common pitfalls
+
+### Casting the argument back to `int` instead of `long`
+
+```c
+long index = (int)arg;      /* wrong on a platform where long is 64-bit */
+```
+
+The value fits here, but the cast says the author did not think about sizes. Use
+`intptr_t` or, in this program, `(long)arg` consistently on both sides.
+
+### Joining a thread whose id was overwritten
+
+`pthread_t` values are only valid until joined. Reusing a `pthread_t` variable
+across `pthread_create` calls before joining leaks the previous thread's handle.
+One array slot per thread, as above, avoids it.
+
+### Not checking the return of `pthread_create`
+
+The call fails with `EAGAIN` at the thread limit. Proceeding without checking
+means you later join an uninitialised `pthread_t`, which is undefined behaviour
+and often a crash.
+
+### Returning a pointer to thread-local storage
+
+`return &some_local;` from the thread function hands back an address in a stack
+frame that no longer exists. The joiner reads garbage. Small values go through
+the `void *` return directly; larger results go into a struct the caller
+allocated.
+
+<ExerciseCard
+	id="pthreads-max-index"
+	concept="partitioned scan, private slots"
+	prompt="The sandbox has no threads, so write the partitioned scan out as four sequential slices of 1000 indices. Each slice keeps the highest index divisible by 7 and stores it in its own slot of a shared array, then the final reduction prints the largest slot. The point is the same as the threaded version: each worker writes only its own slot, so no mutex is needed. Print exactly:&#10;&#10;chunk 0 best 994&#10;chunk 1 best 1995&#10;chunk 2 best 2996&#10;chunk 3 best 3997&#10;max index 3997&#10;&#10;Each slice starts at t * 1000 and the answer per slice must come from scanning, not from arithmetic on 7."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define THREADS 4&#10;#define PER_THREAD 1000&#10;&#10;static long best[THREADS];&#10;&#10;int main(void) &#123;&#10;    /* TODO: for each slice, scan its 1000 indices and keep the last one&#10;       divisible by 7; then reduce the four slots to one maximum */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="chunk 0 best 994&#10;chunk 1 best 1995&#10;chunk 2 best 2996&#10;chunk 3 best 3997&#10;max index 3997&#10;"
+	hints={[
+		'Slice t covers indices t * PER_THREAD through t * PER_THREAD + PER_THREAD - 1. Keeping the last value that satisfies index % 7 == 0 gives the highest one without any extra comparison.',
+		'The four answers are 994, 1995, 2996 and 3997; the maximum is 3997. The reduction is a loop comparing best[t] with a running max, exactly the code that would follow the joins in the threaded version.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* Threads are not available in this sandbox, so the partitioned scan is&#10; * written out as a loop: each &quot;thread&quot; gets its own slice and its own slot&#10; * in the shared array, which is exactly why the real version needs no&#10; * mutex. Only the final reduction is shared. */&#10;&#10;#define THREADS 4&#10;#define PER_THREAD 1000&#10;&#10;static long best[THREADS];&#10;&#10;int main(void) &#123;&#10;    for (size_t t = 0; t &lt; THREADS; t++) &#123;&#10;        long found = -1;&#10;&#10;        for (int i = 0; i &lt; PER_THREAD; i++) &#123;&#10;            int index = (int)(t * (size_t)PER_THREAD) + i;&#10;            if (index % 7 == 0) &#123;&#10;                found = index;&#10;            &#125;&#10;        &#125;&#10;        best[t] = found;&#10;        printf(&quot;chunk %zu best %ld\n&quot;, t, best[t]);&#10;    &#125;&#10;&#10;    long max = best[0];&#10;    for (size_t t = 1; t &lt; THREADS; t++) &#123;&#10;        if (best[t] &gt; max) &#123;&#10;            max = best[t];&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;max index %ld\n&quot;, max);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="pthreads-quiz-1"
+	question="The program above writes to `partial[index]` with no mutex. Why is that not a data race, and what would change if each thread instead did `partial[0]++;`?"
+	options={[
+		'Each thread writes a different element, so the writes cannot interleave on the same object and no synchronisation is needed. With partial[0]++ every thread reads and writes one shared cell, and lost updates become possible',
+		'It is not a race because pthread_create internally locks the array',
+		'It is a race, but a benign one, so it is fine as long as the values are added at the end',
+		'It is not a race because int writes are atomic on every machine, and partial[0]++ would also be atomic'
+	]}
+	answer={0}
+	explanation="A data race needs conflicting accesses to the same memory location; distinct elements are distinct objects, whereas partial[0]++ on one cell is a read-modify-write that two threads can interleave."
+/>
+
+<LectureReference lecture="Lecture 12 — Threads" slides="15–29" />

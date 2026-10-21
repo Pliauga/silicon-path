@@ -1,0 +1,139 @@
+{
+  "chunks": [
+    {
+      "chunk_id": "chunk-001",
+      "heading_path": "cst1500-week-1",
+      "page_start": 1,
+      "page_end": 1,
+      "token_estimate": 664,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-002",
+      "heading_path": "cst1500-week-1 > Under the Lid of a Personal Computer",
+      "page_start": 2,
+      "page_end": 3,
+      "token_estimate": 547,
+      "has_tables": false,
+      "has_figures": true
+    },
+    {
+      "chunk_id": "chunk-003",
+      "heading_path": "cst1500-week-1 > EX 3: Identification of Memory details",
+      "page_start": 4,
+      "page_end": 4,
+      "token_estimate": 448,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-004",
+      "heading_path": "cst1500-week-1 > Number Systems",
+      "page_start": 5,
+      "page_end": 6,
+      "token_estimate": 727,
+      "has_tables": true,
+      "has_figures": true
+    },
+    {
+      "chunk_id": "chunk-005",
+      "heading_path": "cst1500-week-1 > Conversions",
+      "page_start": 7,
+      "page_end": 9,
+      "token_estimate": 525,
+      "has_tables": false,
+      "has_figures": true
+    },
+    {
+      "chunk_id": "chunk-006",
+      "heading_path": "cst1500-week-1 > EX 8: Beginning with C programming I",
+      "page_start": 10,
+      "page_end": 10,
+      "token_estimate": 888,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-007",
+      "heading_path": "cst1500-week-1 > EX 8: Beginning with C programming I",
+      "page_start": 11,
+      "page_end": 12,
+      "token_estimate": 377,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-008",
+      "heading_path": "cst1500-week-1 > EX 9: Beginning with C programming II",
+      "page_start": 13,
+      "page_end": 13,
+      "token_estimate": 508,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-009",
+      "heading_path": "cst1500-week-1 > Whitespace in C",
+      "page_start": 14,
+      "page_end": 14,
+      "token_estimate": 655,
+      "has_tables": true,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-010",
+      "heading_path": "cst1500-week-1 > Floating-Point Types",
+      "page_start": 15,
+      "page_end": 16,
+      "token_estimate": 431,
+      "has_tables": true,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-011",
+      "heading_path": "cst1500-week-1 > C \u2013 Variables",
+      "page_start": 1,
+      "page_end": 1,
+      "token_estimate": 406,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-012",
+      "heading_path": "cst1500-week-1 > C \u2013 Variables",
+      "page_start": 17,
+      "page_end": 17,
+      "token_estimate": 465,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-013",
+      "heading_path": "cst1500-week-1 > EX 12: Understanding variable Declaration in C program",
+      "page_start": 18,
+      "page_end": 19,
+      "token_estimate": 364,
+      "has_tables": false,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-014",
+      "heading_path": "cst1500-week-1 > Floating-point Literals",
+      "page_start": 20,
+      "page_end": 20,
+      "token_estimate": 656,
+      "has_tables": true,
+      "has_figures": false
+    },
+    {
+      "chunk_id": "chunk-015",
+      "heading_path": "cst1500-week-1 > Relational Operators",
+      "page_start": 21,
+      "page_end": 21,
+      "token_estimate": 295,
+      "has_tables": true,
+      "has_figures": false
+    }
+  ]
+}

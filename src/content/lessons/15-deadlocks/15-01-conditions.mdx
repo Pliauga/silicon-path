@@ -1,0 +1,406 @@
+---
+id: 15-01-conditions
+title: The Four Conditions
+module: 15
+lecture: 'Lecture 15 — Deadlocks'
+slides: '2–15'
+estimatedMinutes: 17
+prerequisites: ['14-03-monitors']
+tags: ['deadlock', 'resource-allocation-graph', 'circular-wait']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## When every process is waiting
+
+A **deadlock** is a set of processes in which each one is waiting for an
+event that only another member of the set can cause. Nothing has crashed.
+No instruction has failed. Every process is healthy, runnable in
+principle, and will wait forever anyway.
+
+The textbook case needs two processes and two locks. Process A takes the
+accounts mutex, then asks for the audit mutex. Process B takes the audit
+mutex, then asks for the accounts mutex. If the scheduler switches
+between the two acquisitions, each holds what the other wants, and
+neither will ever let go. The operating system sees two blocked threads
+and no reason to wake either one.
+
+What makes this worth a lecture of its own is that it is not a bug in
+any single line. Both threads use the locks correctly. The failure lives
+in the *arrangement*: which lock each one takes, and in what order.
+
+## What you'll be able to do
+
+- Name the four Coffman conditions and give a concrete instance of each.
+- Draw a resource-allocation graph for a small system by hand.
+- Decide from that graph whether the system is deadlocked.
+- Explain why all four conditions must hold at once, and how breaking any
+  one of them is enough to prevent deadlock.
+
+## Four conditions, all necessary
+
+In 1971 Coffman, Elphick, and Shoshani listed four conditions that must
+all hold for a deadlock to be possible. They are usually taught as a
+checklist, which undersells them: each one is a lever. If you can prove
+that any single one is false in your system, deadlock is impossible
+there, and you can stop worrying.
+
+| Condition          | Meaning                                                    | Concrete instance                                       |
+| ------------------ | ---------------------------------------------------------- | ------------------------------------------------------- |
+| Mutual exclusion   | At least one resource is held in a non-shareable mode      | One writer holds a file; nobody else may open it        |
+| Hold and wait      | A process holds one resource while requesting another      | Thread A keeps the accounts lock while asking for audit |
+| No preemption      | A held resource cannot be taken away by force              | The OS will not yank a mutex out of a running thread    |
+| Circular wait      | A closed chain of processes, each waiting on the next      | A waits on B, B waits on A                              |
+
+The word *necessary* is doing real work in that sentence. The four
+conditions being true does not mean a deadlock exists — it means one
+*could* exist. A system with all four present may run for years without
+seizing up, because the fourth condition needs a specific timing to close
+the loop. Conversely, if any one is false, no timing can produce a
+deadlock, and that is a proof rather than a hope.
+
+## Drawing the graph
+
+A **resource-allocation graph** has one node per process (drawn as a
+circle) and one node per resource (drawn as a square). Edges come in two
+directions, and the direction is the whole point:
+
+- A **request edge** points from a process to the resource it is waiting
+  for: `P0 -> R1`.
+- An **assignment edge** points from a resource to the process holding
+  it: `R0 -> P0`.
+
+Both kinds of edge are genuine *waiting* relationships. A process on the
+far end of a request edge is waiting. A resource on the far end of an
+assignment edge is being waited *on*. To walk the graph is to follow
+"I am stuck because of you".
+
+If the graph contains a cycle, the system is deadlocked — provided each
+resource has exactly one instance. With a single instance per resource,
+a cycle and a deadlock are the same statement. With several instances of
+some resource, a cycle is necessary but not sufficient: a process might
+be able to get a second copy of what it wants from elsewhere.
+
+| Graph                          | Reading                         | Verdict   |
+| ------------------------------ | ------------------------------- | --------- |
+| `P0 -> R1 -> P1 -> R0 -> P0`   | Two processes, two resources    | Deadlock  |
+| `P0 -> R1 -> P1 -> R2 -> P2`   | A chain that ends at a free run | No deadlock |
+
+The second row is the one people get wrong. Every process in it is
+waiting, and the wait is real, but the chain terminates at P2, which is
+not waiting for anything. P2 finishes, releases R2, P1 proceeds, and the
+whole chain unwinds from the tail. *Everyone being blocked is not the
+same as everyone being blocked forever.*
+
+<TheoryBlock label="Why it matters for C" title="The runtime will not save you">
+
+	POSIX mutexes have no deadlock detection. `pthread_mutex_lock` blocks
+	and that is the end of the story; there is no error code for "this
+	will never return". The tools that exist are all advisory:
+	`pthread_mutex_trylock` lets you back off instead of blocking, and
+	debuggers can show which thread owns which lock. The rest is a
+	convention you enforce yourself — usually a rule that locks are
+	always acquired in a fixed global order.
+
+</TheoryBlock>
+
+<Eli5Block
+	topic="deadlock-conditions"
+	football="Two defenders each grab the other's shirt and neither will let go first. Both are standing still, both are healthy, and the referee has no rule that lets him pull a shirt out of a hand. The stalemate is a shape made of two holds, not a mistake by either player."
+	money="Two shopkeepers each hold the other's only change note and neither will hand it over before receiving their own back. Both tills are open, both shops are solvent, and no sale can complete. The problem is the loop of holds, not the amount of money."
+/>
+
+## Detecting a cycle in code
+
+The algorithm is a plain depth-first search with three colours. White
+means unvisited, grey means "on the current path", black means
+"finished". The instant an edge leads to a grey node you have found a
+back edge, and a back edge is a cycle. The parent array recovers the
+path so it can be printed rather than merely asserted.
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+/* A resource-allocation graph, built by hand as an adjacency list.
+ *
+ * Convention: a request edge points from a process to the resource it
+ * wants; an assignment edge points from a resource to the process that
+ * holds it. With single-instance resources, a cycle in this graph is a
+ * deadlock -- not a hint of one, the thing itself. */
+
+enum { MAX_NODES = 8 };
+
+struct graph {
+    int n;                      /* total nodes: processes then resources */
+    int procs;                  /* first `procs` nodes are processes */
+    int adjacent[MAX_NODES][MAX_NODES];
+    int degree[MAX_NODES];
+};
+
+static void graph_init(struct graph *g, int procs, int resources)
+{
+    memset(g, 0, sizeof *g);
+    g->n = procs + resources;
+    g->procs = procs;
+}
+
+static void add_edge(struct graph *g, int from, int to)
+{
+    g->adjacent[from][g->degree[from]] = to;
+    g->degree[from] += 1;
+}
+
+static void name_of(const struct graph *g, int node, char *out, size_t size)
+{
+    if (node < g->procs) {
+        snprintf(out, size, "P%d", node);
+    } else {
+        snprintf(out, size, "R%d", node - g->procs);
+    }
+}
+
+static void print_graph(const struct graph *g, const char *heading)
+{
+    char from[8];
+    char to[8];
+
+    printf("%s\n", heading);
+    for (int u = 0; u < g->n; u++) {
+        name_of(g, u, from, sizeof from);
+        for (int i = 0; i < g->degree[u]; i++) {
+            name_of(g, g->adjacent[u][i], to, sizeof to);
+            printf("  %s -> %s   %s\n", from, to,
+                   u < g->procs ? "request" : "assignment");
+        }
+    }
+}
+
+/* Standard three-colour DFS. White = unvisited, grey = on the current
+ * stack, black = finished. A back edge lands on a grey node, which is
+ * exactly a cycle, and the parent chain recovers its path. */
+enum { WHITE = 0, GREY = 1, BLACK = 2 };
+
+struct search {
+    int colour[MAX_NODES];
+    int parent[MAX_NODES];
+};
+
+static int dfs(const struct graph *g, struct search *s, int u, int *cycle, int *len)
+{
+    s->colour[u] = GREY;
+
+    for (int i = 0; i < g->degree[u]; i++) {
+        int v = g->adjacent[u][i];
+
+        if (s->colour[v] == WHITE) {
+            s->parent[v] = u;
+            if (dfs(g, s, v, cycle, len)) {
+                return 1;
+            }
+        } else if (s->colour[v] == GREY) {
+            /* v is an ancestor of u. Walk parents back from u to v to
+             * collect the return half of the cycle, then reverse it so
+             * the printed path reads forward: v -> ... -> u -> v. */
+            int tail[MAX_NODES];
+            int count = 0;
+            int cursor = u;
+
+            while (cursor != v && count < MAX_NODES) {
+                tail[count++] = cursor;
+                cursor = s->parent[cursor];
+            }
+            *len = 0;
+            cycle[(*len)++] = v;
+            for (int k = count - 1; k >= 0; k--) {
+                cycle[(*len)++] = tail[k];
+            }
+            return 1;
+        }
+    }
+
+    s->colour[u] = BLACK;
+    return 0;
+}
+
+static void detect(const struct graph *g, const char *heading)
+{
+    struct search s;
+    int cycle[MAX_NODES];
+    int len = 0;
+    char label[8];
+
+    memset(&s, 0, sizeof s);
+    printf("%s\n", heading);
+
+    int found = 0;
+    for (int u = 0; u < g->n && !found; u++) {
+        if (s.colour[u] == WHITE) {
+            s.parent[u] = -1;
+            found = dfs(g, &s, u, cycle, &len);
+        }
+    }
+
+    if (!found) {
+        printf("  acyclic: every waiting process eventually runs\n\n");
+        return;
+    }
+
+    printf("  cycle:");
+    for (int k = 0; k < len; k++) {
+        name_of(g, cycle[k], label, sizeof label);
+        printf(" %s ->", label);
+    }
+    name_of(g, cycle[0], label, sizeof label);
+    printf(" %s\n\n", label);
+}
+
+int main(void)
+{
+    /* Three processes, three resources, one instance of each.
+     * P0 holds R0 and waits for R1. P1 holds R1 and waits for R0.
+     * P2 holds R2 and waits for nothing. */
+    struct graph deadlocked;
+    graph_init(&deadlocked, 3, 3);
+    add_edge(&deadlocked, 0, 4);   /* P0 requests R1 */
+    add_edge(&deadlocked, 1, 3);   /* P1 requests R0 */
+    add_edge(&deadlocked, 3, 0);   /* R0 assigned to P0 */
+    add_edge(&deadlocked, 4, 1);   /* R1 assigned to P1 */
+    add_edge(&deadlocked, 5, 2);   /* R2 assigned to P2 */
+
+    print_graph(&deadlocked, "graph A: three processes, three resources");
+    printf("\n");
+    detect(&deadlocked, "graph A analysis");
+
+    /* Same shape, but the chain ends instead of closing: P0 wants R1,
+     * which P1 holds; P1 wants R2, which P2 holds; P2 wants nothing.
+     * Everybody waits, and everybody will eventually run. */
+    struct graph waiting;
+    graph_init(&waiting, 3, 3);
+    add_edge(&waiting, 0, 4);     /* P0 requests R1 */
+    add_edge(&waiting, 1, 5);     /* P1 requests R2 */
+    add_edge(&waiting, 3, 0);     /* R0 assigned to P0 */
+    add_edge(&waiting, 4, 1);     /* R1 assigned to P1 */
+    add_edge(&waiting, 5, 2);     /* R2 assigned to P2 */
+
+    print_graph(&waiting, "graph B: a chain, not a ring");
+    printf("\n");
+    detect(&waiting, "graph B analysis");
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+graph A: three processes, three resources
+  P0 -> R1   request
+  P1 -> R0   request
+  R0 -> P0   assignment
+  R1 -> P1   assignment
+  R2 -> P2   assignment
+
+graph A analysis
+  cycle: P0 -> R1 -> P1 -> R0 -> P0
+
+graph B: a chain, not a ring
+  P0 -> R1   request
+  P1 -> R2   request
+  R0 -> P0   assignment
+  R1 -> P1   assignment
+  R2 -> P2   assignment
+
+graph B analysis
+  acyclic: every waiting process eventually runs
+```
+
+Note that graph A is printed first as five edges and only then as a
+cycle. The cycle is not a separate fact from the edges; it is the edges,
+read in order. `P0 -> R1` (P0 wants R1), `R1 -> P1` (P1 holds R1),
+`P1 -> R0` (P1 wants R0), `R0 -> P0` (P0 holds R0), and the walk closes.
+
+Graph B has the same number of edges and the same "everybody is waiting"
+feel, and the search returns `acyclic`. P2 holds R2 and is not waiting,
+so P2 is where the unwinding starts. The DFS reaches P2 and finds nothing
+to follow.
+
+One detail worth noticing is that the detector only *reports* the first
+cycle it finds. In a real system with several independent deadlocks you
+would want all of them, which means continuing the search after freeing
+the cycle nodes in the model rather than returning immediately.
+
+<ExerciseCard
+	id="m15-draw-graph"
+	concept="resource-allocation graph, multi-instance"
+	prompt="Rebuild the detector for an eight-node graph: P0 to P3 first, then R0, R1 and the two instances of R2 as separate vertices R2a and R2b. Run two graphs. Graph A is the lesson's ring plus one more process: R0 assigned to P0, R1 assigned to P1, P0 requests R1, P1 requests R0, R2a assigned to P2, and P3 requests the free instance R2b. Graph C is the case the single-instance test cannot decide: R0 assigned to P0, P0 requests R2 (modelled against R2a), R2a assigned to P2, P2 requests R0, with R2b free. Print exactly:&#10;graph A: 8 nodes, 6 edges&#10;  cycle: P0 -&gt; R1 -&gt; P1 -&gt; R0 -&gt; P0&#10;  verdict: deadlocked&#10;graph C: 8 nodes, 4 edges&#10;  cycle: P0 -&gt; R2a -&gt; P2 -&gt; R0 -&gt; P0&#10;  free instances of R2: 1&#10;  verdict: not a deadlock&#10;Detail lines are indented by two spaces and nothing else is printed. The verdict for graph C must come from the free instance, not from the cycle being absent."
+	starter="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* Eight nodes: P0..P3 then R0, R1, R2a, R2b. */&#10;&#10;#define MAX_NODES 8&#10;&#10;struct graph &#123;&#10;    int n;&#10;    int degree[MAX_NODES];&#10;    int adjacent[MAX_NODES][MAX_NODES];&#10;&#125;;&#10;&#10;static void add_edge(struct graph *g, int u, int v) &#123;&#10;    g-&gt;adjacent[u][g-&gt;degree[u]++] = v;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: build graph A and graph C, run a three-colour DFS for a&#10;       cycle, and let the free instance decide the verdict */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="graph A: 8 nodes, 6 edges&#10;  cycle: P0 -&gt; R1 -&gt; P1 -&gt; R0 -&gt; P0&#10;  verdict: deadlocked&#10;graph C: 8 nodes, 4 edges&#10;  cycle: P0 -&gt; R2a -&gt; P2 -&gt; R0 -&gt; P0&#10;  free instances of R2: 1&#10;  verdict: not a deadlock&#10;"
+	hints={[
+		'The vertex count is processes plus resource instances: two instances of R2 are two vertices, so four processes and four instances make eight.',
+		'Graph A\'s cycle is still P0 through R1 through P1 through R0, and P3 never joins it; graph C finds a cycle only because the request edge points at R2a, and R2b sitting free is what makes the deadlock verdict wrong.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* Eight nodes: four processes and four resource instances (R2 has two).&#10; * A cycle through one instance of R2 does not prove a deadlock, because the&#10; * other instance may be free — the single-instance test cannot see that. */&#10;&#10;#define MAX_NODES 8&#10;&#10;struct graph &#123;&#10;    int n;&#10;    int degree[MAX_NODES];&#10;    int adjacent[MAX_NODES][MAX_NODES];&#10;&#125;;&#10;&#10;static void graph_init(struct graph *g, int n) &#123;&#10;    memset(g, 0, sizeof *g);&#10;    g-&gt;n = n;&#10;&#125;&#10;&#10;static void add_edge(struct graph *g, int u, int v) &#123;&#10;    g-&gt;adjacent[u][g-&gt;degree[u]++] = v;&#10;&#125;&#10;&#10;static void name_of(int node, char *out, size_t cap) &#123;&#10;    if (node &lt; 4) &#123;&#10;        snprintf(out, cap, &quot;P%d&quot;, node);&#10;    &#125; else &#123;&#10;        static const char *const RES[] = &#123;&quot;R0&quot;, &quot;R1&quot;, &quot;R2a&quot;, &quot;R2b&quot;&#125;;&#10;        snprintf(out, cap, &quot;%s&quot;, RES[node - 4]);&#10;    &#125;&#10;&#125;&#10;&#10;enum &#123; WHITE = 0, GREY = 1, BLACK = 2 &#125;;&#10;&#10;static int dfs(const struct graph *g, int colour[MAX_NODES], int parent[MAX_NODES],&#10;               int u, int cycle[MAX_NODES], int *len) &#123;&#10;    colour[u] = GREY;&#10;    for (int i = 0; i &lt; g-&gt;degree[u]; i++) &#123;&#10;        int v = g-&gt;adjacent[u][i];&#10;        if (colour[v] == WHITE) &#123;&#10;            parent[v] = u;&#10;            if (dfs(g, colour, parent, v, cycle, len)) &#123;&#10;                return 1;&#10;            &#125;&#10;        &#125; else if (colour[v] == GREY) &#123;&#10;            int tail[MAX_NODES];&#10;            int count = 0;&#10;            int cursor = u;&#10;&#10;            while (cursor != v &amp;&amp; count &lt; MAX_NODES) &#123;&#10;                tail[count++] = cursor;&#10;                cursor = parent[cursor];&#10;            &#125;&#10;            *len = 0;&#10;            cycle[(*len)++] = v;&#10;            for (int k = count - 1; k &gt;= 0; k--) &#123;&#10;                cycle[(*len)++] = tail[k];&#10;            &#125;&#10;            return 1;&#10;        &#125;&#10;    &#125;&#10;    colour[u] = BLACK;&#10;    return 0;&#10;&#125;&#10;&#10;static int find_cycle(const struct graph *g, int cycle[MAX_NODES]) &#123;&#10;    int colour[MAX_NODES] = &#123;WHITE&#125;;&#10;    int parent[MAX_NODES];&#10;    int len = 0;&#10;&#10;    for (int u = 0; u &lt; g-&gt;n; u++) &#123;&#10;        if (colour[u] == WHITE) &#123;&#10;            parent[u] = -1;&#10;            if (dfs(g, colour, parent, u, cycle, &amp;len)) &#123;&#10;                return len;&#10;            &#125;&#10;        &#125;&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;&#10;static void report(const char *heading, const struct graph *g, int free_r2) &#123;&#10;    int cycle[MAX_NODES];&#10;    int len = find_cycle(g, cycle);&#10;    int edges = 0;&#10;&#10;    for (int u = 0; u &lt; g-&gt;n; u++) &#123;&#10;        edges += g-&gt;degree[u];&#10;    &#125;&#10;    printf(&quot;%s: %d nodes, %d edges\n&quot;, heading, g-&gt;n, edges);&#10;    if (len == 0) &#123;&#10;        printf(&quot;  acyclic\n&quot;);&#10;        return;&#10;    &#125;&#10;    printf(&quot;  cycle:&quot;);&#10;    for (int k = 0; k &lt; len; k++) &#123;&#10;        char label[8];&#10;        name_of(cycle[k], label, sizeof label);&#10;        printf(&quot; %s -&gt;&quot;, label);&#10;    &#125;&#10;    &#123;&#10;        char label[8];&#10;        name_of(cycle[0], label, sizeof label);&#10;        printf(&quot; %s\n&quot;, label);&#10;    &#125;&#10;    if (free_r2 &gt; 0) &#123;&#10;        printf(&quot;  free instances of R2: %d\n&quot;, free_r2);&#10;        printf(&quot;  verdict: not a deadlock\n&quot;);&#10;    &#125; else &#123;&#10;        printf(&quot;  verdict: deadlocked\n&quot;);&#10;    &#125;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    struct graph a;&#10;    graph_init(&amp;a, 8);&#10;    add_edge(&amp;a, 0, 5); /* P0 requests R1 */&#10;    add_edge(&amp;a, 1, 4); /* P1 requests R0 */&#10;    add_edge(&amp;a, 4, 0); /* R0 assigned to P0 */&#10;    add_edge(&amp;a, 5, 1); /* R1 assigned to P1 */&#10;    add_edge(&amp;a, 6, 2); /* R2a assigned to P2 */&#10;    add_edge(&amp;a, 3, 7); /* P3 requests R2b, which is free */&#10;    report(&quot;graph A&quot;, &amp;a, 0);&#10;&#10;    struct graph c;&#10;    graph_init(&amp;c, 8);&#10;    add_edge(&amp;c, 4, 0); /* R0 assigned to P0 */&#10;    add_edge(&amp;c, 0, 6); /* P0 requests R2, modelled against R2a */&#10;    add_edge(&amp;c, 6, 2); /* R2a assigned to P2 */&#10;    add_edge(&amp;c, 2, 4); /* P2 requests R0 */&#10;    report(&quot;graph C&quot;, &amp;c, 1);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Believing "everyone is blocked" means deadlock
+
+Graph B in the output above is the counterexample: three processes all
+blocked, no deadlock, because a process outside the wait chain can still
+finish. To claim a deadlock you need a cycle, not a queue. Waiting is
+normal; the difference is whether the wait can ever end.
+
+### Reading a cycle on a multi-instance graph as a deadlock
+
+The one-instance-per-resource equivalence is a real theorem but a narrow
+one. Give R2 two copies and `P0 -> R1 -> P1 -> R0 -> P0` can be satisfied
+by the second copy of a contested resource; the cycle exists and the
+system is fine. Multi-instance analysis needs the matrix methods in the
+next lesson, not a graph walk.
+
+### Confusing deadlock with starvation
+
+A deadlocked process is blocked by another process's hold. A starved
+process is runnable and never scheduled — a reader thread that keeps
+losing the race to arriving writers. Starvation is unfairness over time;
+deadlock is a permanent arrangement. Fixing one does nothing for the
+other.
+
+### Treating a timeout as proof
+
+A `pthread_mutex_timedlock` that expires tells you a lock was held for
+longer than you expected. It does not tell you the holder is stuck in a
+cycle — it may be doing slow I/O, or it may be preempted. Retrying after
+a timeout is fine; concluding "deadlock" from a single expiration is not.
+
+### Assuming the four conditions are a checklist for detection
+
+They are a checklist for *possibility*. A running system with all four
+present is the normal state of every lock-using program ever written.
+Detection needs the graph; prevention is where you use the conditions as
+levers.
+
+<QuizCard
+	id="m15-quiz-cycle"
+	question="A resource-allocation graph has four processes and two resources, each with exactly one instance. It contains the cycle P0 -> R0 -> P1 -> R1 -> P0, and P2 and P3 hold no resources. Is the system deadlocked, and what would change if R1 had two instances?"
+	options={[
+		'Yes, deadlocked: with one instance per resource a cycle is necessary and sufficient, and idle processes P2 and P3 change nothing. With two instances of R1 the cycle would no longer prove a deadlock, because a free instance could satisfy the request.',
+		'No: P2 and P3 hold nothing, so they can still run, which means the system as a whole makes progress.',
+		'Yes, deadlocked, and it would stay deadlocked with two instances of R1 as well, because the cycle is still in the graph.',
+		'No: a cycle only proves deadlock when it contains every process in the system.'
+	]}
+	answer={0}
+	explanation="With exactly one instance of each resource the resource-allocation graph reduces to a wait-for graph, where a cycle is necessary and sufficient for deadlock; processes outside the cycle are irrelevant. A second instance of R1 breaks sufficiency: the cycle can exist while a free instance resolves it."
+/>
+
+<LectureReference lecture="Lecture 15 — Deadlocks" slides="2–15" />

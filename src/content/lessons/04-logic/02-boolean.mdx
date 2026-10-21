@@ -1,0 +1,233 @@
+---
+id: 04-02-boolean
+title: Boolean Algebra
+module: 4
+lecture: 'Lecture 04 — Boolean Logic'
+slides: '17–30'
+estimatedMinutes: 15
+prerequisites: ['04-01-gates']
+tags: ['de-morgan', 'identities', 'simplification']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Rules you can check by exhaustion
+
+Boolean algebra is arithmetic over the two values `0` and `1`, with
+`AND`, `OR`, and `NOT` playing the roles of multiply, add, and negate.
+Its laws look obvious because the domain is so small — and that is also
+what makes them checkable. There are only four input combinations for two
+variables, so any identity over two variables can be verified completely
+by trying all of them.
+
+The most useful law is **De Morgan's**:
+
+- `~(a & b)` equals `~a | ~b`
+- `~(a | b)` equals `~a & ~b`
+
+In words: negating a compound condition flips the operator and negates
+each part. This is not a memorised trick. It is the reason a compiler can
+turn `if (!(x && y))` into a branch on `!x || !y` — and the reason you can
+rewrite a condition to be readable without changing its meaning.
+
+## What you'll be able to do
+
+- State De Morgan's two laws and apply them to a C condition without error.
+- Verify an identity by exhaustive enumeration over a byte.
+- Simplify a condition using the distributive and absorption laws.
+- Explain why `!(a && b)` is not `!a && !b`.
+
+## The laws that matter
+
+| Law | AND form | OR form |
+| --- | -------- | ------- |
+| Identity | `a & 1 == a` | `a \| 0 == a` |
+| Annihilation | `a & 0 == 0` | `a \| 1 == 1` |
+| Idempotence | `a & a == a` | `a \| a == a` |
+| Complement | `a & ~a == 0` | `a \| ~a == 0xFF` |
+| Commutative | `a & b == b & a` | `a \| b == b \| a` |
+| Associative | `(a & b) & c == a & (b & c)` | `(a \| b) \| c == a \| (b \| c)` |
+| Distributive | `a & (b \| c) == (a & b) \| (a & c)` | `a \| (b & c) == (a \| b) & (a \| c)` |
+| Absorption | `a & (a \| b) == a` | `a \| (a & b) == a` |
+| De Morgan | `~(a & b) == ~a \| ~b` | `~(a \| b) == ~a & ~b` |
+
+Two of these are worth pausing on because they surprise people coming
+from ordinary arithmetic.
+
+**Distributive works both ways.** In normal algebra, `a × (b + c)` expands
+but `a + (b × c)` does not factor. In Boolean algebra both directions
+hold, because the domain has only two values. That is what makes
+sum-of-products and product-of-sums both valid ways to build a circuit.
+
+**Absorption has no arithmetic analogue.** `a | (a & b) == a` says that
+if `a` is already true, the extra term cannot change the answer. This is
+the law that lets you delete terms during simplification, and it is the
+one beginners skip.
+
+<Eli5Block
+	topic="de-morgan"
+	football="'It is not the case that you need a ticket and a seat' means the same as 'you either have no ticket, or you have no seat'. Denying the pair denies at least one half. Denying both halves at once would be a different, much stronger claim, and it is the mistake people make."
+	money="'The payment did not clear because the card is valid and the balance is sufficient' means the card failed, or the balance failed. It cannot mean both failed — that is a narrower statement. Flipping the 'and' to an 'or' while negating each part is the whole rule."
+/>
+
+<TheoryBlock label="Why it matters for C" title="Two ways to negate a condition">
+
+	`if (!(a && b))` and `if (!a || !b)` are identical. The second is usually
+	what the author meant and reads better, but only because De Morgan says
+	so. Getting it wrong — writing `if (!a && !b)` — changes the meaning to
+	"neither", which is a real and common bug in validation code: rejecting
+	input when *both* fields are missing instead of when *either* is.
+
+</TheoryBlock>
+
+## Checking a law rather than trusting it
+
+A law over one byte has 256 values; over two bytes, 65,536 pairs. That is
+small enough to test completely, and doing so turns a memorised rule into
+a measured fact.
+
+The program below runs both De Morgan identities over every pair of byte
+values and counts how many times each holds. It then shows the same law
+in its comparison form, where it actually gets used.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* De Morgan's laws, checked over every pair of byte values.
+ * If either identity ever failed, the count would be below 65536. */
+
+int main(void) {
+    int first = 0;
+    int second = 0;
+
+    for (unsigned a = 0; a < 256u; a++) {
+        for (unsigned b = 0; b < 256u; b++) {
+            first  += (~(a & b) & 0xFFu) == ((~a | ~b) & 0xFFu);
+            second += (~(a | b) & 0xFFu) == ((~a & ~b) & 0xFFu);
+        }
+    }
+
+    printf("~ (a & b) == ~a | ~b   for %d of 65536 pairs\n", first);
+    printf("~ (a | b) == ~a & ~b   for %d of 65536 pairs\n\n", second);
+
+    /* The same laws in their comparison form, which is where they are
+     * actually useful: negating a compound condition. */
+    int age = 20;
+    int has_ticket = 0;
+
+    printf("if (!(age >= 18 && has_ticket)) -> %s\n",
+           (!(age >= 18 && has_ticket)) ? "true" : "false");
+    printf("if (age < 18 || !has_ticket)    -> %s\n",
+           (age < 18 || !has_ticket) ? "true" : "false");
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+~ (a & b) == ~a | ~b   for 65536 of 65536 pairs
+~ (a | b) == ~a & ~b   for 65536 of 65536 pairs
+
+if (!(age >= 18 && has_ticket)) -> true
+if (age < 18 || !has_ticket)    -> true
+```
+
+Both counts are total. That is exhaustive proof for eight-bit values: no
+pair was left untested, so no counterexample exists at this width. The
+same argument extends to wider types because the law acts on each bit
+independently, but the code does not prove that part — the algebra does.
+
+The two conditions at the bottom are the payoff. `age` is 20, so the first
+half of the conjunction is true; `has_ticket` is 0, so the whole
+conjunction is false and its negation is true. The rewritten form reaches
+the same answer through a path a reader can follow: either under-age, or
+without a ticket.
+
+Note the transformation of the comparison as well as the connectives.
+`!(age >= 18)` becomes `age < 18`. Negating a comparison flips it, and
+forgetting that step is the usual way a De Morgan rewrite goes wrong.
+
+## Simplifying a real condition
+
+Start with something written defensively:
+
+```c
+if ((admin || owner) && (admin || editor)) { /* ... */ }
+```
+
+Factor out `admin` using the OR-distributive law:
+
+```c
+if (admin || (owner && editor)) { /* ... */ }
+```
+
+That is fewer operations and, more importantly, states the rule: admins
+always pass; everyone else needs both roles. The compiler will optimise
+either version into similar instructions, so the reason to simplify is
+readability, not speed.
+
+## Common pitfalls
+
+### Writing `!a && !b` for `!(a && b)`
+
+This is the canonical error. `!(a && b)` is true when *either* is false;
+`!a && !b` is true only when *both* are false. De Morgan's law has the
+`&&` become `||`, and dropping that flip changes the meaning.
+
+### Forgetting to negate the comparison
+
+`!(x > 5)` is `x <= 5`, not `x < 5`. The negation of a strict inequality
+is a non-strict one in the other direction, and the boundary case at
+exactly 5 is where bugs live.
+
+### Applying bitwise laws to `&&`
+
+`a & (b | c) == (a & b) | (a & c)` holds for bits. `a && (b || c)`
+short-circuits: if `a` is false, `b` and `c` are never evaluated. That is
+observable when they have side effects, and it is why the two operators
+are not interchangeable even when the truth values coincide.
+
+### Assuming the compiler preserves your grouping
+
+Boolean expressions have no sequencing in the algebra. `&&` and `||` do
+short-circuit by definition, but `&` and `|` do not, and a compiler may
+reassociate them freely. If the order of side effects matters, split the
+expression into separate statements.
+
+<ExerciseCard
+	id="m04-demorgan-simplify"
+	concept="exhaustive proof of Boolean laws"
+	prompt="Verify all nine laws from the table over every byte pair, and over every byte triple for the two laws that need a third value. Print one line per law in exactly this form and order: identity, annihilation, idempotence, complement, commutative, associative, distributive, absorption, de-morgan — each as `name: holds/total`, where the pair laws print 65536 as the total and the triple laws print 16777216. Then simplify (admin || owner) &amp;&amp; (admin || editor) to admin || (owner &amp;&amp; editor) in code and print `simplified: 8/8` after confirming both forms agree on all eight input combinations."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;int main(void) &#123;&#10;    /* TODO: prove each of the nine laws over every byte pair, and over every&#10;       triple for the two laws that need a third value; count the pairs checked&#10;       so each line ends in the same total, then check the simplified forms */&#10;    return 0;&#10;&#125;"
+	expectedStdout="identity: 65536/65536&#10;annihilation: 65536/65536&#10;idempotence: 65536/65536&#10;complement: 65536/65536&#10;commutative: 65536/65536&#10;associative: 16777216/16777216&#10;distributive: 16777216/16777216&#10;absorption: 65536/65536&#10;de-morgan: 65536/65536&#10;simplified: 8/8&#10;"
+	hints={[
+		'Two bytes give 65536 pairs; a law that mentions c needs three nested loops, 256 cubed = 16777216 triples, which still finishes in well under a second.',
+		'The identity row means AND with 0xFF and OR with 0, and every ~ result must be masked back with & 0xFF, because ~ widens to 32 bits and turns 0x00 into 0xFFFFFFFF.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;int main(void) &#123;&#10;    long pair = 0;&#10;    long identity = 0, annihilation = 0, idempotence = 0, complement = 0;&#10;    long commutative = 0, absorption = 0, de_morgan = 0;&#10;&#10;    for (unsigned a = 0; a &lt; 256u; a++) &#123;&#10;        for (unsigned b = 0; b &lt; 256u; b++) &#123;&#10;            unsigned x = a;&#10;            unsigned y = b;&#10;            long both = 1;&#10;&#10;            both &amp;= ((x &amp; 0xFFu) == x) &amp;&amp; ((x | 0u) == x);&#10;            identity += both;&#10;&#10;            both = ((x &amp; 0u) == 0u) &amp;&amp; ((x | 0xFFu) == 0xFFu);&#10;            annihilation += both;&#10;&#10;            both = ((x &amp; x) == x) &amp;&amp; ((x | x) == x);&#10;            idempotence += both;&#10;&#10;            both = ((x &amp; (~x &amp; 0xFFu)) == 0u) &amp;&amp; ((x | (~x &amp; 0xFFu)) == 0xFFu);&#10;            complement += both;&#10;&#10;            both = ((x &amp; y) == (y &amp; x)) &amp;&amp; ((x | y) == (y | x));&#10;            commutative += both;&#10;&#10;            both = ((x &amp; (x | y)) == x) &amp;&amp; ((x | (x &amp; y)) == x);&#10;            absorption += both;&#10;&#10;            both = ((~(x &amp; y) &amp; 0xFFu) == ((~x | ~y) &amp; 0xFFu)) &amp;&amp;&#10;                   ((~(x | y) &amp; 0xFFu) == ((~x &amp; ~y) &amp; 0xFFu));&#10;            de_morgan += both;&#10;&#10;            pair++;&#10;        &#125;&#10;    &#125;&#10;&#10;    long triple = 0;&#10;    long associative = 0, distributive = 0;&#10;&#10;    for (unsigned a = 0; a &lt; 256u; a++) &#123;&#10;        for (unsigned b = 0; b &lt; 256u; b++) &#123;&#10;            for (unsigned c = 0; c &lt; 256u; c++) &#123;&#10;                unsigned x = a;&#10;                unsigned y = b;&#10;                unsigned z = c;&#10;&#10;                associative += (((x &amp; y) &amp; z) == (x &amp; (y &amp; z))) &amp;&amp;&#10;                               (((x | y) | z) == (x | (y | z)));&#10;                distributive += ((x &amp; (y | z)) == ((x &amp; y) | (x &amp; z))) &amp;&amp;&#10;                                ((x | (y &amp; z)) == ((x | y) &amp; (x | z)));&#10;                triple++;&#10;            &#125;&#10;        &#125;&#10;    &#125;&#10;&#10;    printf(&quot;identity: %ld/%ld\n&quot;, identity, pair);&#10;    printf(&quot;annihilation: %ld/%ld\n&quot;, annihilation, pair);&#10;    printf(&quot;idempotence: %ld/%ld\n&quot;, idempotence, pair);&#10;    printf(&quot;complement: %ld/%ld\n&quot;, complement, pair);&#10;    printf(&quot;commutative: %ld/%ld\n&quot;, commutative, pair);&#10;    printf(&quot;associative: %ld/%ld\n&quot;, associative, triple);&#10;    printf(&quot;distributive: %ld/%ld\n&quot;, distributive, triple);&#10;    printf(&quot;absorption: %ld/%ld\n&quot;, absorption, pair);&#10;    printf(&quot;de-morgan: %ld/%ld\n&quot;, de_morgan, pair);&#10;&#10;    int agree = 0;&#10;    for (int admin = 0; admin &lt; 2; admin++) &#123;&#10;        for (int owner = 0; owner &lt; 2; owner++) &#123;&#10;            for (int editor = 0; editor &lt; 2; editor++) &#123;&#10;                int complex_form = (admin || owner) &amp;&amp; (admin || editor);&#10;                int simple_form = admin || (owner &amp;&amp; editor);&#10;                agree += (complex_form == simple_form);&#10;            &#125;&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;simplified: %d/8\n&quot;, agree);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m04-quiz-negate"
+	question="Rewrite !(x > 0 && y != 0) without the leading negation, using De Morgan's law. Which comparison operators appear in your answer?"
+	options={[
+		'x <= 0 || y == 0 — so <= and == appear',
+		'x < 0 || y != 0 — so < and != appear',
+		'x <= 0 && y == 0 — so <= and == appear',
+		'x < 0 && y == 0 — so < and == appear'
+	]}
+	answer={0}
+	explanation="De Morgan turns the conjunction into a disjunction and negates each half: the negation of x &gt; 0 is x &lt;= 0, boundary included, and the negation of y != 0 is y == 0."
+/>
+
+<LectureReference lecture="Lecture 04 — Boolean Logic" slides="17–30" />

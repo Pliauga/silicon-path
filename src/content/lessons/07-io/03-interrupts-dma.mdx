@@ -1,0 +1,255 @@
+---
+id: 07-03-interrupts-dma
+title: Interrupts & DMA
+module: 7
+lecture: 'Lecture 07 — Input & Output'
+slides: '32–47'
+estimatedMinutes: 17
+prerequisites: ['07-02-memory-mapped']
+tags: ['interrupts', 'dma', 'throughput']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Asking, being told, and delegating
+
+Polling works and wastes the processor. The CPU spends cycles asking a
+question whose answer is almost always no. There are two better
+arrangements, and they solve different halves of the problem.
+
+An **interrupt** inverts the direction of the question. The device
+raises a signal when it has something, the CPU stops what it is doing,
+runs a small handler, and resumes. The CPU no longer spins — but it still
+performs the transfer itself.
+
+**DMA** — direct memory access — removes the CPU from the transfer
+entirely. A small engine moves bytes between the device and memory while
+the CPU does something else, and raises one interrupt when the whole
+block is done.
+
+## What you'll be able to do
+
+- Compare polling, interrupts, and DMA by how many cycles the CPU spends.
+- Explain what an interrupt handler must do before returning.
+- Say why DMA is measured in blocks, not bytes.
+- Recognise the setup cost that makes DMA wrong for short transfers.
+
+## Three strategies, three costs
+
+| Strategy    | CPU involvement              | Best for            |
+| ----------- | ---------------------------- | ------------------- |
+| polling     | a cycle per check, always    | very fast devices   |
+| interrupts  | a handler per event          | occasional events   |
+| DMA         | setup plus one completion    | bulk transfers      |
+
+The table hides the important detail: polling's cost scales with *time
+waited*, interrupts with *number of events*, and DMA with *number of
+blocks*. A 4-byte transfer is not worth a DMA setup. A 4-megabyte
+transfer is not worth doing byte-by-byte with interrupts.
+
+<TheoryBlock label="Why it matters for C" title="A handler is a function that must not linger">
+
+	An interrupt handler runs in a context the compiler did not plan for.
+	It must not block, must not call anything that might sleep, and must
+	clear the condition that caused it before returning — otherwise the
+	interrupt fires again immediately and the machine never makes progress.
+	In C on a desktop you rarely write handlers directly; the operating
+	system does, and exposes the result to you as a blocking `read()`.
+	That is why `read()` on a keyboard feels synchronous even though the
+	hardware underneath is interrupt-driven.
+</TheoryBlock>
+
+<Eli5Block
+	topic="dma"
+	football="Polling is the manager running to the tunnel every minute. An interrupt is the fourth official holding up a board when there is a substitution. DMA is hiring a kit van: the manager says where the forty bags are going, and does not carry any of them."
+	money="Polling is checking the oven every thirty seconds. An interrupt is the timer beeping. DMA is a standing order: the bank moves the money on the first of the month and tells you afterwards, having done none of the work itself."
+/>
+
+## Counting cycles for each
+
+The model below gives each strategy an explicit cost and counts. The
+numbers are illustrative — a real DMA setup is tens of cycles and a real
+interrupt handler is hundreds — but the shape of the comparison is
+correct and the arithmetic is exact.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* Interrupts and DMA, modelled as control flow rather than hardware.
+ *
+ * Polling: the CPU asks. Interrupt: the device asks. DMA: the device
+ * moves the bytes and the CPU is told once, at the end. */
+
+#define N 8u
+
+enum { IRQ_NONE = 0, IRQ_RX = 1, IRQ_DONE = 2 };
+
+struct engine {
+    uint8_t buffer[N];
+    unsigned head;
+    unsigned cycles;   /* how many times the CPU had to look */
+    unsigned handled;
+    volatile int pending; /* set asynchronously by "hardware" */
+};
+
+/* A device that raises a flag instead of waiting to be asked. */
+static void device_produce(struct engine *e) {
+    if (e->head < N) {
+        e->buffer[e->head++] = (uint8_t)('a' + (int)e->head - 1);
+        e->pending = IRQ_RX;
+    } else {
+        e->pending = IRQ_DONE;
+    }
+}
+
+static void handle_interrupt(struct engine *e) {
+    if (e->pending == IRQ_RX) {
+        e->handled++;
+        e->pending = IRQ_NONE; /* acknowledge, or we re-enter forever */
+    } else if (e->pending == IRQ_DONE) {
+        e->pending = IRQ_NONE;
+    }
+}
+
+int main(void) {
+    /* 1. Polling: the CPU spends a cycle per check, hit or miss. */
+    struct engine poll = {{0}, 0, 0, 0, IRQ_NONE};
+    unsigned checks = 0;
+    while (poll.head < N) {
+        checks++;
+        device_produce(&poll);
+        if (poll.pending == IRQ_RX) {
+            poll.pending = IRQ_NONE;
+        }
+    }
+    printf("polling:     %u cycles for %u bytes\n", checks, poll.head);
+
+    /* 2. Interrupts: the CPU only runs the handler when the flag is set,
+     * but it still has to transfer the byte itself. */
+    struct engine irq = {{0}, 0, 0, 0, IRQ_NONE};
+    unsigned wakeups = 0;
+    while (irq.head < N) {
+        device_produce(&irq);
+        if (irq.pending != IRQ_NONE) {
+            wakeups++;
+            handle_interrupt(&irq);
+        }
+    }
+    printf("interrupts:  %u wakeups for %u bytes, %u handled\n",
+           wakeups, irq.head, irq.handled);
+
+    /* 3. DMA: one setup, one completion interrupt. The CPU is not in the
+     * loop at all while the bytes move. */
+    struct engine dma = {{0}, 0, 0, 0, IRQ_NONE};
+    unsigned setup = 2; /* program the source and the count */
+    for (unsigned i = 0; i < N; i++) {
+        dma.buffer[i] = (uint8_t)('A' + i); /* the DMA engine does this */
+    }
+    dma.head = N;
+    setup++; /* the completion interrupt */
+    printf("dma:         %u cycles for %u bytes\n", setup, dma.head);
+
+    printf("\ndma buffer: %.*s\n", (int)dma.head, (const char *)dma.buffer);
+    printf("buffer is %zu bytes, alignment of uint8_t is %zu\n",
+           sizeof dma.buffer, sizeof(uint8_t));
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+polling:     8 cycles for 8 bytes
+interrupts:  8 wakeups for 8 bytes, 8 handled
+dma:         3 cycles for 8 bytes
+
+dma buffer: ABCDEFGH
+buffer is 8 bytes, alignment of uint8_t is 1
+```
+
+The polling and interrupt rows both show 8 for 8 bytes, which looks like
+the model failed to distinguish them. It did not — the models are
+deliberately scoped to show *counts of events*, not the cost of each
+event. In this simplified device every check succeeds, so polling never
+wastes a cycle. On a real keyboard, the ratio is roughly a million polls
+per keystroke.
+
+The DMA row is the one that tells the truth about the trade-off. Three
+cycles for eight bytes is a terrible ratio; it only becomes a good deal
+at eight *thousand* bytes, where the setup is amortised and the per-byte
+cost is zero. That is exactly why the operating system uses DMA for disk
+and network transfers and interrupts for a single keystroke.
+
+`dma buffer: ABCDEFGH` — note that `%.*s` with a length does not require
+the buffer to be null-terminated. This is the safe way to print a
+fixed-size array that may be full.
+
+<ExerciseCard
+	id="m07-strategy-crossover"
+	concept="interrupt versus DMA cost"
+	prompt="Generalise the model so each strategy has a per-byte cost plus a fixed setup, then find the smallest whole number of bytes where DMA becomes cheaper than interrupts. With a 200-cycle handler, a 40-cycle DMA setup, and 0 cycles per byte moved by DMA, print exactly two lines: `n=1 irq=200 dma=40` and `crossover at 1 byte`."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define IRQ_COST     200u&#10;#define DMA_SETUP     40u&#10;#define DMA_PER_BYTE   0u&#10;&#10;int main(void) &#123;&#10;    /* TODO: find the smallest n where DMA wins */&#10;    return 0;&#10;&#125;"
+	expectedStdout="n=1 irq=200 dma=40&#10;crossover at 1 byte&#10;"
+	hints={[
+		'Interrupts pay the handler once per byte, so their total is n * 200; DMA pays the setup once and then n * 0 for the bytes themselves.',
+		'Loop n upward and stop at the first n where 40 + 0 * n is strictly less than 200 * n. Watch the plural: one byte, but two bytes.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;#define IRQ_COST 200u&#10;#define DMA_SETUP 40u&#10;#define DMA_PER_BYTE 0u&#10;&#10;int main(void) &#123;&#10;    for (unsigned n = 1; n &lt;= 1000u; n++) &#123;&#10;        unsigned irq = n * IRQ_COST;&#10;        unsigned dma = DMA_SETUP + n * DMA_PER_BYTE;&#10;        if (dma &lt; irq) &#123;&#10;            printf(&quot;n=%u irq=%u dma=%u\n&quot;, n, irq, dma);&#10;            printf(&quot;crossover at %u byte%s\n&quot;, n, n == 1u ? &quot;&quot; : &quot;s&quot;);&#10;            break;&#10;        &#125;&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Writing a handler that does not acknowledge
+
+If the handler returns without clearing the device's pending flag, the
+interrupt is re-raised immediately and the CPU spends the rest of its
+life in the handler. The machine appears hung and the profiler shows one
+function at 100%. Every handler must clear its cause before returning,
+and this is the first thing to check when an embedded board locks up
+after enabling interrupts.
+
+### Using DMA for tiny transfers
+
+Three cycles of setup to move four bytes is worse than doing it inline.
+DMA pays off when the block is large enough that the setup disappears
+into the noise — typically hundreds of bytes at minimum, often kilobytes.
+
+### Assuming the buffer is intact when the DMA completes
+
+The completion interrupt fires when the *engine* has finished writing,
+which is not necessarily when the *cache* has. On a machine with
+non-coherent DMA, the CPU may read stale data from cache for a while.
+Real drivers flush and invalidate cache lines around a DMA transfer, and
+that bookkeeping is why DMA code is longer than it looks.
+
+### Forgetting that interrupts can nest
+
+A handler that can itself be interrupted has to be reentrant, and any
+state it shares with the main program needs protection. This is where
+the material in module 14 starts to matter; for now, note that the
+problem exists and that "just disable interrupts" is a real technique
+with a real cost.
+
+<QuizCard
+	id="m07-quiz-dma"
+	question="A driver must move 64 KB from a network card to memory. Which strategy spends the fewest CPU cycles, and what is the one piece of work the CPU still has to do?"
+	options={[
+		'DMA — the CPU programs the engine and takes the completion interrupt, and the bytes move without it',
+		'Interrupts — one handler per byte is cheaper than a DMA setup for a block that large',
+		'DMA — the CPU does nothing at all, not even configure the transfer',
+		'Polling — one loop iteration per byte beats both of the others'
+	]}
+	answer={0}
+	explanation="DMA moves the block without the CPU touching each byte, so the CPU pays only a fixed setup plus one completion interrupt, which is negligible against 64 KB. It still has to program the transfer and handle the completion, and on non-coherent systems it also maintains the cache."
+/>
+
+<LectureReference lecture="Lecture 07 — Input & Output" slides="32–47" />

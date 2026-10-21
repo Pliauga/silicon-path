@@ -1,0 +1,262 @@
+---
+id: 06-03-cache
+title: Cache
+module: 6
+lecture: 'Lecture 06 — Memory Systems'
+slides: '34–48'
+estimatedMinutes: 17
+prerequisites: ['06-02-ram-rom']
+tags: ['cache', 'tags', 'hit-rate']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## A small, fast copy of a small part of memory
+
+A cache is a table of recent cache lines with enough bookkeeping to
+answer one question quickly: *is the line containing this address
+already here?* If yes, the read is a **hit** and costs a nanosecond. If
+no, it is a **miss**, the line is fetched from the level below, and the
+read costs tens of nanoseconds.
+
+The bookkeeping is an address split. Every address is divided into a
+**tag** (which line this is), an **index** (which slot it goes in), and
+an **offset** (where in the line). In a **direct-mapped** cache the index
+is computed from the address, so each line has exactly one possible slot.
+
+That single-slot rule is the whole weakness of the design. Two lines that
+share an index fight over one slot forever, and the cache is large enough
+to hold both but structured so it cannot.
+
+## What you'll be able to do
+
+- Split an address into tag, index, and offset for a direct-mapped cache.
+- Predict the hit rate of a simple access pattern by hand.
+- Explain why a stride equal to the cache size produces total misses.
+- Say why real caches are set-associative rather than direct-mapped.
+
+## Reading an address
+
+Take a cache with four lines of sixteen bytes — 64 bytes total. The
+offset is the low four bits (sixteen addresses per line). The index is
+the next two bits (four slots). Everything above that is the tag.
+
+| Address | Offset (low 4) | Index (next 2) | Tag (rest) | Slot |
+| ------- | -------------- | -------------- | ---------- | ---- |
+| `0x000` | `0`            | `00`           | `0`        | 0    |
+| `0x040` | `0`            | `00`           | `1`        | 0    |
+| `0x080` | `0`            | `00`           | `2`        | 0    |
+| `0x0C0` | `0`            | `00`           | `3`        | 0    |
+
+Every address in that table is 64 bytes apart, which is exactly the cache
+size. They all land in slot 0 with different tags, so accessing them in
+turn evicts the previous one every single time. The cache never holds
+more than one of them, despite having four slots.
+
+<TheoryBlock label="Why it matters for C" title="Your data layout chooses the stride">
+
+	A structure-of-arrays layout walking one field uses a stride of one
+	element. An array-of-structures layout walking the same field uses a
+	stride of `sizeof(struct)`. If that size happens to be a multiple of the
+	cache size, every access lands in the same slot. This is why
+	performance-sensitive C sometimes pads a struct to 48 or 56 bytes
+	instead of 64.
+</TheoryBlock>
+
+<Eli5Block
+	topic="cache-slot"
+	football="A direct-mapped cache is a car park where each coach has one reserved bay. Two coaches sharing a bay can never park at the same time, even though the car park has spaces free. The tag on the bay is how the attendant knows which coach is in it."
+	money="A direct-mapped cache is a set of lockers where each customer is assigned exactly one locker by a rule. Two customers whose rule picks the same locker evict each other all day, and the empty lockers elsewhere are no help at all."
+/>
+
+## Counting hits and misses
+
+Timing this on a real machine is unreliable. Counting is not: the
+simulation below is a few dozen lines, and its output is the same on
+every machine that compiles it.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* A direct-mapped cache you can see. Every address maps to exactly one
+ * slot, so two addresses that share a slot evict each other forever.
+ * Counting hits and misses is deterministic; timing it is not. */
+
+#define LINE_BYTES 16u
+#define LINES      4u
+#define CACHE_BYTES (LINE_BYTES * LINES) /* 64 */
+
+struct line {
+    int valid;
+    unsigned tag;
+};
+
+struct cache {
+    struct line lines[LINES];
+    unsigned hits;
+    unsigned misses;
+};
+
+static unsigned index_of(unsigned addr) { return (addr / LINE_BYTES) % LINES; }
+static unsigned tag_of(unsigned addr)   { return (addr / LINE_BYTES) / LINES; }
+
+static int access(struct cache *c, unsigned addr) {
+    unsigned i = index_of(addr);
+    unsigned t = tag_of(addr);
+    struct line *l = &c->lines[i];
+
+    if (l->valid && l->tag == t) {
+        c->hits++;
+        return 1;
+    }
+    c->misses++;
+    l->valid = 1;
+    l->tag = t;
+    return 0;
+}
+
+static void report(const char *name, const struct cache *c) {
+    unsigned total = c->hits + c->misses;
+    printf("%-12s %2u accesses  %2u hits  %2u misses  hit rate %2u%%\n",
+           name, total, c->hits, c->misses,
+           total ? c->hits * 100u / total : 0u);
+}
+
+int main(void) {
+    printf("cache: %u lines of %u bytes = %u bytes total\n\n",
+           LINES, LINE_BYTES, CACHE_BYTES);
+
+    /* Sixteen consecutive ints: four fit in each 16-byte line, so only
+     * one access in four has to go to memory. */
+    struct cache seq = {{{0, 0}}, 0, 0};
+    for (unsigned a = 0; a < 64u; a += 4u) {
+        access(&seq, a);
+    }
+    report("sequential", &seq);
+
+    /* Step by exactly the cache size: every address lands in slot 0 with
+     * a new tag, so every access evicts the previous one. This is the
+     * worst case for a direct-mapped cache, and it is why real caches
+     * are set-associative. */
+    struct cache stride = {{{0, 0}}, 0, 0};
+    for (unsigned i = 0; i < 8u; i++) {
+        access(&stride, i * CACHE_BYTES);
+    }
+    report("stride 64", &stride);
+
+    /* Two ints read over and over stay resident after the first miss. */
+    struct cache hot = {{{0, 0}}, 0, 0};
+    for (unsigned i = 0; i < 8u; i++) {
+        access(&hot, 4u);
+        access(&hot, 8u);
+    }
+    report("hot pair", &hot);
+
+    printf("\ntag and index for the slot-0 addresses:\n");
+    for (unsigned i = 0; i < 4u; i++) {
+        unsigned a = i * CACHE_BYTES;
+        printf("  0x%03X -> index %u, tag %u\n", a, index_of(a), tag_of(a));
+    }
+    printf("\nstruct cache occupies %zu bytes\n", sizeof(struct cache));
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+cache: 4 lines of 16 bytes = 64 bytes total
+
+sequential   16 accesses  12 hits   4 misses  hit rate 75%
+stride 64     8 accesses   0 hits   8 misses  hit rate  0%
+hot pair     16 accesses  15 hits   1 misses  hit rate 93%
+
+tag and index for the slot-0 addresses:
+  0x000 -> index 0, tag 0
+  0x040 -> index 0, tag 1
+  0x080 -> index 0, tag 2
+  0x0C0 -> index 0, tag 3
+
+struct cache occupies 40 bytes
+```
+
+Three patterns, three very different rates, from the same 64-byte cache.
+
+**Sequential: 75%.** Sixteen ints is 64 bytes, four lines. Each line is
+missed once and then hit three times. The first access in each group of
+four is the only one that goes to memory, which is 4 misses out of 16.
+
+**Stride 64: 0%.** Every address is a multiple of the cache size, so
+every one maps to slot 0. The cache is large enough for all eight lines
+and holds exactly one at a time.
+
+**Hot pair: 93%.** Two ints in the same line, read over and over. One
+compulsory miss, then fifteen hits. This is the best case and also the
+least interesting one — real programs look more like the first row.
+
+<ExerciseCard
+	id="m06-associative"
+	concept="two-way set-associative cache"
+	prompt="Turn the direct-mapped cache into a two-way set-associative one: two sets, two lines per set, still 16-byte lines, and on a miss replace the least recently used line in that set. Run three patterns — the stride-64 loop (eight addresses 0, 64, 128 up to 448), the alternating pair (addresses 0 and 64, eight times), and the sequential sweep (sixteen consecutive ints) — and print one line per miss as `miss set=0 tag=2 evict tag=0`, with `evict -` when an empty way was used. Then print a summary in exactly the form `stride 64: 8 accesses, 0 hits, 8 misses, hit rate 0%`. The stride stays at 0%, which is the point; the alternating pair should reach 75%."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;#define LINE_BYTES 16u&#10;#define SETS 2u&#10;#define WAYS 2u&#10;&#10;struct line &#123;&#10;    int valid;&#10;    unsigned tag;&#10;    unsigned age;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: two ways per set, least recently used line replaced on a miss */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="cache: 2 sets x 2 ways, 16-byte lines, 64 bytes total&#10;&#10;  miss set=0 tag=0 evict -&#10;  miss set=0 tag=2 evict -&#10;  miss set=0 tag=4 evict tag=0&#10;  miss set=0 tag=6 evict tag=2&#10;  miss set=0 tag=8 evict tag=4&#10;  miss set=0 tag=10 evict tag=6&#10;  miss set=0 tag=12 evict tag=8&#10;  miss set=0 tag=14 evict tag=10&#10;stride 64: 8 accesses, 0 hits, 8 misses, hit rate 0%&#10;  miss set=0 tag=0 evict -&#10;  miss set=0 tag=2 evict -&#10;alternating pair: 8 accesses, 6 hits, 2 misses, hit rate 75%&#10;  miss set=0 tag=0 evict -&#10;  miss set=1 tag=0 evict -&#10;  miss set=0 tag=1 evict -&#10;  miss set=1 tag=1 evict -&#10;sequential: 16 accesses, 12 hits, 4 misses, hit rate 75%&#10;"
+	hints={[
+		'The set is (addr / LINE_BYTES) % SETS and the tag is (addr / LINE_BYTES) / SETS. Bump an age counter on every access, including hits, so the smallest age really means least recently used.',
+		'On a miss look for an invalid way first; if both are valid, take the one with the smallest age. Print the evicted tag before you overwrite it.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;#define LINE_BYTES 16u&#10;#define SETS 2u&#10;#define WAYS 2u&#10;&#10;struct line &#123;&#10;    int valid;&#10;    unsigned tag;&#10;    unsigned age;&#10;&#125;;&#10;&#10;struct cache &#123;&#10;    struct line lines[SETS][WAYS];&#10;    unsigned ticks;&#10;    unsigned hits;&#10;    unsigned misses;&#10;&#125;;&#10;&#10;static unsigned index_of(unsigned addr) &#123; return (addr / LINE_BYTES) % SETS; &#125;&#10;static unsigned tag_of(unsigned addr) &#123; return (addr / LINE_BYTES) / SETS; &#125;&#10;&#10;static void access(struct cache *c, unsigned addr) &#123;&#10;    unsigned set = index_of(addr);&#10;    unsigned tag = tag_of(addr);&#10;&#10;    c-&gt;ticks++;&#10;&#10;    for (unsigned way = 0; way &lt; WAYS; way++) &#123;&#10;        struct line *line = &amp;c-&gt;lines[set][way];&#10;        if (line-&gt;valid &amp;&amp; line-&gt;tag == tag) &#123;&#10;            line-&gt;age = c-&gt;ticks;&#10;            c-&gt;hits++;&#10;            return;&#10;        &#125;&#10;    &#125;&#10;&#10;    c-&gt;misses++;&#10;&#10;    struct line *victim = NULL;&#10;    for (unsigned way = 0; way &lt; WAYS; way++) &#123;&#10;        if (!c-&gt;lines[set][way].valid) &#123;&#10;            victim = &amp;c-&gt;lines[set][way];&#10;            break;&#10;        &#125;&#10;    &#125;&#10;&#10;    if (victim == NULL) &#123;&#10;        victim = &amp;c-&gt;lines[set][0];&#10;        for (unsigned way = 1; way &lt; WAYS; way++) &#123;&#10;            if (c-&gt;lines[set][way].age &lt; victim-&gt;age) &#123;&#10;                victim = &amp;c-&gt;lines[set][way];&#10;            &#125;&#10;        &#125;&#10;        printf(&quot;  miss set=%u tag=%u evict tag=%u\n&quot;, set, tag, victim-&gt;tag);&#10;    &#125; else &#123;&#10;        printf(&quot;  miss set=%u tag=%u evict -\n&quot;, set, tag);&#10;    &#125;&#10;&#10;    victim-&gt;valid = 1;&#10;    victim-&gt;tag = tag;&#10;    victim-&gt;age = c-&gt;ticks;&#10;&#125;&#10;&#10;static void report(const char *name, const struct cache *c) &#123;&#10;    unsigned total = c-&gt;hits + c-&gt;misses;&#10;    unsigned rate = total ? c-&gt;hits * 100u / total : 0u;&#10;    printf(&quot;%s: %u accesses, %u hits, %u misses, hit rate %u%%\n&quot;, name, total,&#10;           c-&gt;hits, c-&gt;misses, rate);&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    printf(&quot;cache: %u sets x %u ways, %u-byte lines, %u bytes total\n\n&quot;, SETS,&#10;           WAYS, LINE_BYTES, SETS * WAYS * LINE_BYTES);&#10;&#10;    struct cache stride = &#123;0&#125;;&#10;    for (unsigned i = 0; i &lt; 8u; i++) &#123;&#10;        access(&amp;stride, i * 64u);&#10;    &#125;&#10;    report(&quot;stride 64&quot;, &amp;stride);&#10;&#10;    struct cache pair = &#123;0&#125;;&#10;    for (unsigned i = 0; i &lt; 8u; i++) &#123;&#10;        access(&amp;pair, (i % 2u) ? 64u : 0u);&#10;    &#125;&#10;    report(&quot;alternating pair&quot;, &amp;pair);&#10;&#10;    struct cache seq = &#123;0&#125;;&#10;    for (unsigned a = 0; a &lt; 64u; a += 4u) &#123;&#10;        access(&amp;seq, a);&#10;    &#125;&#10;    report(&quot;sequential&quot;, &amp;seq);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Concluding that a cache "does not work" from one bad pattern
+
+The stride-64 result looks catastrophic, and it is — for that pattern.
+The same cache achieves 93% on the hot pair. A hit rate is a property of
+an access pattern against a cache geometry, not of either one alone.
+Before concluding a cache is ineffective, check what you asked it to do.
+
+### Computing the index with the wrong bits
+
+The index comes from the bits just above the offset, not from the top of
+the address. Taking the high bits instead gives a valid-looking simulation
+where every address maps to a distinct slot and nothing ever evicts,
+which is a cache that does not exist. Watch for a hit rate of 100% on a
+pattern that should thrash.
+
+### Comparing timings across machines
+
+A 15% difference measured with `clock()` on a laptop is noise: background
+processes, frequency scaling, and cache sharing with other cores all move
+the number by more than that. Compare counters, or run the measurement
+hundreds of times and look at the minimum, and never quote a single run.
+
+### Forgetting that the cache is per-core
+
+L1 and L2 usually belong to one core; L3 is shared. This is why moving a
+thread to another core can make it slower for a moment: it starts with a
+cold local cache even though the data is unchanged.
+
+<QuizCard
+	id="m06-quiz-stride"
+	question="A direct-mapped cache has 4 lines of 16 bytes. A loop reads addresses 0, 64, 128, 192, then repeats. What hit rate does it achieve, and what single change to the address pattern would fix it?"
+	options={[
+		'0% — all four map to slot 0 and evict each other, so read addresses that differ in the index bits instead, such as 0, 16, 32, 48',
+		'0% — all four map to slot 0, and only a larger cache could fix it',
+		'25% — the first pass misses and later passes hit what is still resident',
+		'100% — the loop keeps revisiting the same four addresses, so they stay cached'
+	]}
+	answer={0}
+	explanation="Each address is a multiple of 64, so (addr / 16) % 4 is 0 every time: four different tags fight over one slot. Shifting the addresses by 16 bytes each puts them in four different slots and the same cache achieves full hits."
+/>
+
+<LectureReference lecture="Lecture 06 — Memory Systems" slides="34–48" />

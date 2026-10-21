@@ -1,0 +1,333 @@
+---
+id: 03-03-machine-code
+title: Machine Code
+module: 3
+lecture: 'Lecture 03 — Architecture 1'
+slides: '34–48'
+estimatedMinutes: 17
+prerequisites: ['03-02-registers-buses']
+tags: ['instructions', 'fetch-decode', 'opcodes']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## An instruction is a number
+
+Your C source becomes a sequence of bytes. Each instruction is a small
+number — the **opcode** — optionally followed by the data it operates on.
+`0x01` might mean "load this immediate value"; `0x03` might mean "store
+the accumulator into memory". The CPU has no idea what any of it means in
+human terms. It reads the opcode, jumps to a table of behaviours wired
+into silicon, and does the thing.
+
+The **program counter** is the only thing that makes a sequence of numbers
+into a program. It holds the address of the next instruction, and after
+each instruction it advances — by one, or by some larger amount, or
+somewhere else entirely if the instruction was a jump. That is the whole
+control flow of every program ever written.
+
+## What you'll be able to do
+
+- Describe fetch–decode–execute in one sentence and name what changes each cycle.
+- Read a two-byte instruction and say what its opcode and operand mean.
+- Explain why a program stored in memory is what makes `if` possible.
+- Say what a jump does to the program counter, and what it does not do.
+
+## Fetch, decode, execute
+
+The cycle is three steps and it never changes.
+
+| Step    | What happens | What holds the result |
+| ------- | ------------ | --------------------- |
+| Fetch   | memory is read at the address in the program counter | the instruction register |
+| Decode  | the opcode is looked up in the control unit's table | the control signals |
+| Execute | the operation runs; the counter advances or jumps | registers, memory, or the counter |
+
+Two facts follow, and both matter more than the vocabulary.
+
+First, instructions and data are the same kind of object: bytes in memory.
+Nothing in the hardware distinguishes them. A program that computes an
+address and jumps to it — a return from a function, a virtual call — is
+doing exactly what the fetch step does every cycle.
+
+Second, the program counter is a register like any other. A jump is just
+a write to it. There is nothing special about control flow at the
+hardware level; `if` is a conditional write to the counter.
+
+<Eli5Block
+	topic="machine-code"
+	football="A referee's hand signals are a short list of gestures, and each one means exactly one thing. A long instruction is a sequence of those gestures. The referee does not interpret; they look up the gesture and respond. A new gesture has to be taught to every referee before it means anything."
+	money="A till has numbered keys: 1 for bread, 2 for milk, 3 for void. The shopkeeper presses a number and the machine knows what to do. The numbers are not the goods — they are the index into a list of behaviours that was agreed in advance and built into the machine."
+/>
+
+<TheoryBlock label="Why it matters for C" title="Your source is not what runs">
+
+	`gcc -S` shows the assembly your C became; `objdump -d` shows the bytes.
+	Two source files that look different can compile to identical
+	instructions, and one source file can compile differently at `-O0` and
+	`-O2`. That gap is not a compiler defect — it is the entire reason the
+	C standard defines behaviour in terms of an abstract machine rather than
+	a chip.
+
+</TheoryBlock>
+
+## A machine small enough to read
+
+The interpreter below defines eight opcodes and runs a nine-instruction
+program on them. It prints the program as bytes first, so the encoding is
+visible, then traces every fetch. Nothing here is a model of a real
+instruction set — real ones have addressing modes, flags, and variable
+length encoding — but every idea in this lesson is present in it.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* Eight opcodes is enough to make the point: an instruction is a small
+ * number, and a program is an array of those numbers. */
+
+enum opcode {
+    OP_HALT  = 0,
+    OP_LOADI = 1, /* accumulator = immediate operand   */
+    OP_LOADM = 2, /* accumulator = memory[operand]     */
+    OP_STORE = 3, /* memory[operand] = accumulator     */
+    OP_DEC   = 4, /* accumulator -= 1                  */
+    OP_JNZ   = 5, /* pc = operand if accumulator != 0  */
+    OP_PRINT = 6  /* print the accumulator             */
+};
+
+struct instruction {
+    uint8_t op;
+    int8_t operand;
+};
+
+/* The program is data. That is the von Neumann idea stated exactly. */
+static const struct instruction program[] = {
+    {OP_LOADI, 3},   /* 0: acc = 3               */
+    {OP_STORE, 0},   /* 1: mem[0] = 3            */
+    {OP_LOADM, 0},   /* 2: acc = mem[0]  <- loop */
+    {OP_PRINT, 0},   /* 3: show it               */
+    {OP_DEC,   0},   /* 4: acc -= 1              */
+    {OP_STORE, 0},   /* 5: mem[0] = acc          */
+    {OP_JNZ,   2},   /* 6: back to 2 if nonzero  */
+    {OP_PRINT, 0},   /* 7: the zero              */
+    {OP_HALT,  0}    /* 8: stop                  */
+};
+
+static const char *name_of(uint8_t op) {
+    switch (op) {
+    case OP_LOADI: return "LOADI";
+    case OP_LOADM: return "LOADM";
+    case OP_STORE: return "STORE";
+    case OP_DEC:   return "DEC";
+    case OP_JNZ:   return "JNZ";
+    case OP_PRINT: return "PRINT";
+    case OP_HALT:  return "HALT";
+    default:       return "????";
+    }
+}
+
+int main(void) {
+    const size_t count = sizeof program / sizeof program[0];
+
+    /* The program as bytes. Each instruction is two bytes: an opcode and
+     * an operand. Two bytes per instruction is a design decision, not a
+     * law of nature; real machines use one to six. */
+    printf("the program as bytes:\n");
+    for (size_t i = 0; i < count; i++) {
+        printf("  %2zu: %02X %02X\n", i, program[i].op,
+               (unsigned)(uint8_t)program[i].operand);
+    }
+    printf("  %zu bytes for %zu instructions\n\n",
+           count * sizeof(struct instruction), count);
+
+    printf("pc  op     arg   acc before\n");
+    printf("--  -----  ---   ----------\n");
+
+    int memory[4] = {0, 0, 0, 0};
+    int accumulator = 0;
+    size_t pc = 0;
+    int steps = 0;
+
+    while (steps < 64) {
+        /* FETCH: the program counter says which cell to read. */
+        struct instruction ir = program[pc];
+        printf("%2zu  %-5s  %3d   %d\n", pc, name_of(ir.op), ir.operand,
+               accumulator);
+        steps++;
+
+        /* DECODE and EXECUTE. One case per opcode, nothing clever. */
+        switch (ir.op) {
+        case OP_LOADI:
+            accumulator = ir.operand;
+            pc++;
+            break;
+        case OP_LOADM:
+            accumulator = memory[(unsigned)ir.operand & 3u];
+            pc++;
+            break;
+        case OP_STORE:
+            memory[(unsigned)ir.operand & 3u] = accumulator;
+            pc++;
+            break;
+        case OP_DEC:
+            accumulator--;
+            pc++;
+            break;
+        case OP_JNZ:
+            pc = (accumulator != 0) ? (size_t)ir.operand : pc + 1;
+            break;
+        case OP_PRINT:
+            printf("            -> %d\n", accumulator);
+            pc++;
+            break;
+        case OP_HALT:
+            printf("            halted after %d instructions\n", steps);
+            return 0;
+        default:
+            printf("            unknown opcode 0x%X\n", ir.op);
+            return 1;
+        }
+    }
+    printf("            ran past %d instructions without halting\n", steps);
+    return 1;
+}
+```
+
+## Expected output
+
+```text
+the program as bytes:
+   0: 01 03
+   1: 03 00
+   2: 02 00
+   3: 06 00
+   4: 04 00
+   5: 03 00
+   6: 05 02
+   7: 06 00
+   8: 00 00
+  18 bytes for 9 instructions
+
+pc  op     arg   acc before
+--  -----  ---   ----------
+ 0  LOADI    3   0
+ 1  STORE    0   3
+ 2  LOADM    0   3
+ 3  PRINT    0   3
+            -> 3
+ 4  DEC      0   3
+ 5  STORE    0   2
+ 6  JNZ      2   2
+ 2  LOADM    0   2
+ 3  PRINT    0   2
+            -> 2
+ 4  DEC      0   2
+ 5  STORE    0   1
+ 6  JNZ      2   1
+ 2  LOADM    0   1
+ 3  PRINT    0   1
+            -> 1
+ 4  DEC      0   1
+ 5  STORE    0   0
+ 6  JNZ      2   0
+ 7  PRINT    0   0
+            -> 0
+ 8  HALT     0   0
+            halted after 19 instructions
+```
+
+Read the byte dump first. Instruction 0 is `01 03`: opcode `LOADI`, operand
+3. Instruction 6 is `05 02`: opcode `JNZ`, operand 2 — a jump back to
+instruction 2, which only an encoding like this makes visible as a single
+number. The whole program is 18 bytes, and a machine that could only hold
+those 18 bytes could run it.
+
+Then read the trace. The program counter does not advance blindly: at
+`pc 6` it reads `JNZ 2` and the next line is `pc 2`, not `pc 7`. It makes
+that jump three times, once for each pass where the accumulator is
+nonzero, and falls through on the fourth when the accumulator reaches
+zero.
+
+The accumulator ends at 0, and the loop exits. That exit is the
+conditional write to the program counter failing. There is no separate
+"loop" mechanism.
+
+## Why this makes `if` possible
+
+A jump that is taken or not taken depending on a value is all a branch
+needs. Real machines add flags: a compare sets a zero flag, and `JZ` reads
+that flag instead of testing the accumulator. The mechanism is the same —
+the program counter is written, or it is not.
+
+That is also why a mispredicted branch is expensive. The CPU guesses which
+way the branch goes and starts fetching ahead. Guess wrong, and everything
+fetched past the branch has to be discarded.
+
+## Common pitfalls
+
+### Thinking instructions are a different kind of memory
+
+On a von Neumann machine they are the same bytes in the same memory. This
+is why a buffer overflow that overwrites a return address works: the
+attacker writes bytes that the program counter will later treat as code.
+Segments and page permissions exist to make that harder, not because the
+hardware distinguishes instructions from data.
+
+### Assuming instruction width is fixed
+
+x86 instructions are one to fifteen bytes; ARM64 is fixed at four. A
+variable width means the decoder cannot know where the next instruction
+starts without decoding the current one, which is a real cost in the fetch
+stage.
+
+### Reading an opcode dump as if byte order were free
+
+`05 02` on a little-endian machine is the two-byte value `0x0205` if you
+read it as a `uint16_t`, not `0x0502`. Instruction encoding usually
+defines its own field order inside the bytes and does not follow the
+machine's endianness, which is exactly why disassembling is a job for a
+tool rather than for hand arithmetic.
+
+### Confusing the program counter with a stack pointer
+
+The counter says where the *next instruction* is. The stack pointer says
+where *local data* is. A function call writes the return address to the
+stack and then jumps — both registers move, which makes them easy to
+conflate in a trace.
+
+<ExerciseCard
+	id="m03-extend-machine"
+	concept="opcodes and program-counter jumps"
+	prompt="Extend the two-word instruction machine with a JMZ opcode that sets the program counter to its operand when the accumulator is zero, and a LOAD opcode that reads its operand from a data slot in the same array instead of treating it as an immediate. Trace the program described in the starter by printing one line per executed instruction, in exactly these forms: `pc=0 LOADI acc=7`, `pc=2 PRINT acc=7`, `pc=6 JMZ acc=0 -&gt; 12`, `pc=12 LOAD acc=42`, ending with `pc=16 HALT acc=42`. Load 42 from slot 20 and let the JMZ skip the LOADI 99 and its PRINT."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum opcode &#123; OP_HALT = 0, OP_LOADI = 1, OP_PRINT = 2, OP_JMZ = 3, OP_LOAD = 4 &#125;;&#10;&#10;#define DATA_SLOT 20&#10;&#10;/* The program to encode, two words per instruction, with the data slot at word 20:&#10; *   LOADI 7 ; PRINT ; LOADI 0 ; JMZ 12 ; LOAD 20 ; PRINT ; HALT&#10; * JMZ jumps to word 12 only when the accumulator is zero, so words 12, 14 and 16&#10; * run on that path; words[DATA_SLOT] holds 42. */&#10;int main(void) &#123;&#10;    int32_t words[32] = &#123;0&#125;;&#10;    int32_t pc = 0;&#10;    int32_t acc = 0;&#10;&#10;    /* TODO: write the program into words, then run it while pc walks the array */&#10;    return 0;&#10;&#125;"
+	expectedStdout="pc=0 LOADI acc=7&#10;pc=2 PRINT acc=7&#10;pc=4 LOADI acc=0&#10;pc=6 JMZ acc=0 -&gt; 12&#10;pc=12 LOAD acc=42&#10;pc=14 PRINT acc=42&#10;pc=16 HALT acc=42&#10;"
+	hints={[
+		'Every instruction is two words: opcode at words[pc] and operand at words[pc + 1], so the default next pc is pc + 2.',
+		'For JMZ, set pc to the operand only when the accumulator is zero and fall through otherwise; LOAD copies words[operand] into the accumulator, which is the indirect read.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;enum opcode &#123; OP_HALT = 0, OP_LOADI = 1, OP_PRINT = 2, OP_JMZ = 3, OP_LOAD = 4 &#125;;&#10;&#10;#define DATA_SLOT 20&#10;&#10;static const char *name_of(int32_t op) &#123;&#10;    switch (op) &#123;&#10;    case OP_HALT: return &quot;HALT&quot;;&#10;    case OP_LOADI: return &quot;LOADI&quot;;&#10;    case OP_PRINT: return &quot;PRINT&quot;;&#10;    case OP_JMZ: return &quot;JMZ&quot;;&#10;    case OP_LOAD: return &quot;LOAD&quot;;&#10;    default: return &quot;?&quot;;&#10;    &#125;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    int32_t words[32] = &#123;0&#125;;&#10;    words[0] = OP_LOADI;  words[1] = 7;&#10;    words[2] = OP_PRINT;  words[3] = 0;&#10;    words[4] = OP_LOADI;  words[5] = 0;&#10;    words[6] = OP_JMZ;    words[7] = 12;&#10;    words[8] = OP_LOADI;  words[9] = 99;&#10;    words[10] = OP_PRINT; words[11] = 0;&#10;    words[12] = OP_LOAD;  words[13] = DATA_SLOT;&#10;    words[14] = OP_PRINT; words[15] = 0;&#10;    words[16] = OP_HALT;  words[17] = 0;&#10;    words[DATA_SLOT] = 42;&#10;&#10;    int32_t accumulator = 0;&#10;    int pc = 0;&#10;    while (pc &gt;= 0 &amp;&amp; pc &lt; 18) &#123;&#10;        int32_t op = words[pc];&#10;        int32_t operand = words[pc + 1];&#10;        int next = pc + 2;&#10;&#10;        if (op == OP_HALT) &#123;&#10;            printf(&quot;pc=%d HALT acc=%d\n&quot;, pc, accumulator);&#10;            break;&#10;        &#125;&#10;        if (op == OP_LOADI) &#123;&#10;            accumulator = operand;&#10;        &#125; else if (op == OP_LOAD) &#123;&#10;            accumulator = words[operand];&#10;        &#125; else if (op == OP_JMZ &amp;&amp; accumulator == 0) &#123;&#10;            next = (int)operand;&#10;            printf(&quot;pc=%d JMZ acc=%d -&gt; %d\n&quot;, pc, accumulator, next);&#10;            pc = next;&#10;            continue;&#10;        &#125;&#10;        printf(&quot;pc=%d %s acc=%d\n&quot;, pc, name_of(op), accumulator);&#10;        pc = next;&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m03-quiz-jump"
+	question="An instruction at pc 6 is JNZ 2, and the accumulator holds 0. What is the next value of the program counter, and what would it be if the accumulator held 7?"
+	options={[
+		'pc 7 when the accumulator is zero, and pc 2 when it is 7',
+		'pc 2 when the accumulator is zero, and pc 7 when it is 7',
+		'pc 8 either way — the operand only changes the instruction after next',
+		'pc 7 when the accumulator is zero, and pc 3 when it is 7, because the operand counts from the next instruction'
+	]}
+	answer={0}
+	explanation="JNZ is taken only when the accumulator is nonzero, and when it is taken the operand becomes the whole of the program counter. With the accumulator at 0 the branch falls through to the following instruction at pc 7."
+/>
+
+<LectureReference lecture="Lecture 03 — Architecture 1" slides="34–48" />

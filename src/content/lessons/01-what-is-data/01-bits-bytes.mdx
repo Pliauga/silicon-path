@@ -1,0 +1,105 @@
+---
+id: 01-01-bits-bytes
+title: Bits & Bytes
+module: 1
+lecture: 'Lecture 01 — Data Representation 1'
+slides: '5–17'
+estimatedMinutes: 12
+prerequisites: []
+tags: ['binary', 'bytes', 'encoding']
+hasExercise: false
+hasQuiz: false
+---
+
+<script>
+	import BitToggle from '$lib/components/viz/BitToggle.svelte'; import TheoryBlock from
+	'$lib/components/lesson/TheoryBlock.svelte'; import Eli5Block from
+	'$lib/components/lesson/Eli5Block.svelte'; import LectureReference from
+	'$lib/components/lesson/LectureReference.svelte';
+</script>
+
+## A computer has no idea what a number is
+
+Everything a CPU does is voltage: high or low, on or off. That is the whole
+alphabet. A wire can only ever tell you one of two things, which is why the
+fundamental unit of information is the **bit** — a single binary digit, `0` or
+`1`.
+
+This sounds like a limitation until you notice what a group of bits can express.
+One bit is two states. Two bits are four. Each bit you add doubles the number of
+distinguishable patterns, so eight bits give you 2⁸ = **256** distinct values.
+That grouping of eight is a **byte**, and it is the smallest addressable unit
+on essentially every machine you will use.
+
+<Eli5Block topic="bits" />
+
+<TheoryBlock label="Why it matters for C" title="Every operation you write is a bit operation">
+
+	When you write `int x = 42;` the compiler is deciding how many bits to reserve and how to lay
+	those bits out. When you later write `x & 0xff`, you are addressing those bits directly. C is
+	unusual among high-level languages in that it never hides this layer from you — which is exactly
+	why it is worth learning alongside the hardware.
+</TheoryBlock>
+
+## Counting in binary
+
+Place value works the same in base 2 as it does in base 10; there are just fewer
+digits to work with. In decimal, `407` means `4×100 + 0×10 + 7×1`. In binary,
+`1011` means `1×8 + 0×4 + 1×2 + 1×1`, which is 11.
+
+The rightmost bit is the **least significant bit** (LSB); the leftmost is the
+**most significant bit** (MSB). Reading left to right, an eight-bit value
+labelled `7 6 5 4 3 2 1 0` shows each bit's place value as a power of two.
+
+Try it. Click any bit, or Tab into the row and use the arrow keys, then press
+Space. The readouts below the switches are the same eight bits written five
+ways at once.
+
+<BitToggle initial={165} label="One byte, eight switches" />
+
+Take the starting value, `1010 0101`. Written in binary it is unmistakable.
+Grouped into nibbles it becomes `A5`, which is why hex exists and why a byte is
+always exactly two hex digits. As an unsigned decimal it is 165. And the ASCII
+line reads an em dash — not because the widget is broken, but because 165 is
+above 126, and printable ASCII stops there.
+
+Flip bits until the value lands between 65 and 90 and the ASCII line starts
+producing capital letters. That is the entire hierarchy of a byte in one
+control: bits are the physical fact, and every number, every letter, and every
+colour you have ever seen on a screen is an agreement about how to read them.
+
+## Why hex exists
+
+Binary is honest but unreadable at scale. `11111111` is hard to parse at a
+glance; `FF` is not. Hexadecimal is base 16, and because 16 = 2⁴, **one hex
+digit maps exactly onto four bits**. That is not a coincidence, it is the entire
+reason programmers use it: a byte is always exactly two hex digits, no padding
+or mental arithmetic required.
+
+| Binary      | Hex  | Decimal |
+| ----------- | ---- | ------- |
+| `0000 0000` | `00` | 0       |
+| `0000 1111` | `0F` | 15      |
+| `1010 0101` | `A5` | 165     |
+| `1111 1111` | `FF` | 255     |
+
+<Eli5Block topic="hex" />
+
+When you see `0x7f` in C source, read it as "the byte `0111 1111`". Bitwise
+masks, file format headers, and memory dumps are all written this way because
+the alternative is counting ones by eye.
+
+## What a byte can and cannot say
+
+256 values is enough for a single ASCII character, a small integer, or one
+channel of an RGB colour. It is not enough for a word, a pixel, or a price. That
+gap is why C has `char`, `short`, `int`, and `long`: each is a promise about how
+many bits you get, and each one trades range against memory.
+
+There is a subtlety worth flagging now rather than later. The C standard does not
+promise that `int` is 32 bits — it promises it is _at least_ 16. In practice it is
+32 bits on every desktop you will touch, but portable code uses `<stdint.h>` and
+`int32_t` when the width genuinely matters. You will meet this again when we talk
+about overflow.
+
+<LectureReference lecture="Lecture 01 — Data Representation 1" slides="5–17" />

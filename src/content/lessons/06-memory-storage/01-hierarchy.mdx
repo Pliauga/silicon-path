@@ -1,0 +1,276 @@
+---
+id: 06-01-hierarchy
+title: The Memory Hierarchy
+module: 6
+lecture: 'Lecture 06 — Memory Systems'
+slides: '3–20'
+estimatedMinutes: 18
+prerequisites: ['05-03-registers']
+tags: ['memory', 'latency', 'alignment']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import LazyStudy from '$lib/components/viz/LazyStudy.svelte';
+	import MemoryHierarchy3D from '$lib/components/viz/MemoryHierarchy3D.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Why there is more than one kind of memory
+
+Registers are fast and tiny. Main memory is large and slow. The gap is
+not a small one: a register access costs roughly a quarter of a
+nanosecond, a main-memory access roughly eighty. If the CPU had to wait
+eighty nanoseconds for every value it needed, it would spend almost all
+of its time idle, no matter how clever the arithmetic unit was.
+
+The resolution is a **hierarchy**: several sizes of storage, each faster
+and smaller than the one below, arranged so that the values the CPU is
+about to need are usually already in the fastest tier. Registers at the
+top, then a few levels of cache, then main memory, then storage. Each
+level is a bet that the next access will be near the last one.
+
+That bet has a name — **locality** — and it is the reason a program that
+walks an array forward runs faster than one that walks it sideways.
+
+## What you'll be able to do
+
+- Name the tiers of the memory hierarchy and their rough relative
+  latencies.
+- Explain spatial and temporal locality in your own words.
+- Count cache-unfriendly accesses in a traversal instead of timing them.
+- Predict a struct's `sizeof` from its field order and alignment.
+
+## The tiers
+
+| Tier       | Typical size | Typical latency | What lives there        |
+| ---------- | ------------ | --------------- | ----------------------- |
+| Registers  | a few hundred bytes | under 1 ns | the values being computed |
+| L1 cache   | 32–64 KB     | ~1 ns           | recently touched lines  |
+| L2 cache   | 256 KB–1 MB  | ~4 ns           | more of the same        |
+| L3 cache   | 8–32 MB      | ~15 ns          | shared between cores    |
+| Main memory | 8–64 GB     | ~80 ns          | everything else         |
+| Storage    | hundreds of GB | ~100,000 ns  | files                   |
+
+Read the latency column as a ratio rather than a number. If an L1 hit
+were one second, a main-memory access would be about eighty seconds, and
+a disk read would be most of a day. That is why the hierarchy is not an
+optimisation detail; it is the shape of the machine.
+
+<TheoryBlock label="Why it matters for C" title="Layout is a performance decision">
+
+	C gives you control over byte order that most languages hide. Reordering
+	the fields of a struct changes how many bytes it occupies and therefore
+	how many cache lines a loop touches. Writing a loop `for (row) for (col)`
+	rather than `for (col) for (row)` changes which addresses you visit in
+	sequence. Neither change alters what the program computes; both can
+	change how long it takes by several times.
+</TheoryBlock>
+
+## Locality, in two words
+
+**Temporal locality** means a value you used recently is likely to be used
+again soon — a loop counter, an accumulator. **Spatial locality** means a
+value near one you used recently is likely to be used soon — the next
+element of an array.
+
+Caches exploit both by moving data in fixed-size blocks called **cache
+lines**, typically 64 bytes. Fetching one byte costs you the whole line,
+which is a bargain for a loop over an array and a waste for a pointer
+chase.
+
+<Eli5Block
+	topic="locality"
+	football="A memory hierarchy is the physio's bag, the dugout, and the team bus. The bag holds what the player needs this minute; the dugout holds what the squad might need this half; the bus holds everything else. Fetching from the bus is slow, so you keep the likely things close and hope you guessed right."
+	money="It is the wallet, the till, and the bank vault. Notes you are about to spend are in your hand, the day's float is in the till, and the rest is in the vault. Each step out is slower and holds more, and the system only works because most purchases need the wallet."
+/>
+
+## Counting instead of timing
+
+Wall-clock timing on a shared machine is unreliable: other processes, the
+scheduler, and thermal throttling all move the number. What is perfectly
+deterministic is *how many times consecutive accesses land on adjacent
+bytes*, which is a proxy for how many cache lines a traversal touches.
+
+The program below does three things: it walks a 4×4 array in both orders
+and counts adjacency, and it prints the offsets of two structs with the
+same fields in different orders.
+
+```c
+#include <stddef.h>
+#include <stdio.h>
+#include <stdint.h>
+
+/* Two facts about the memory hierarchy that you can count instead of
+ * time: how far apart consecutive accesses land, and how much of a
+ * struct is padding the compiler inserted to keep fields aligned. */
+
+#define ROWS 4
+#define COLS 4
+
+struct packed_on_purpose {
+    uint8_t  a;   /* offset 0  */
+    uint32_t b;   /* offset 4  — 3 bytes of padding before it */
+    uint8_t  c;   /* offset 8  */
+};                /* size 12: 3 bytes of tail padding */
+
+struct reordered {
+    uint32_t b;   /* offset 0  */
+    uint8_t  a;   /* offset 4  */
+    uint8_t  c;   /* offset 5  */
+};                /* size 8: the same fields, less padding */
+
+/* Walk a 2-D array in the two possible orders and record how often the
+ * next address is adjacent to the previous one. */
+static void walk(const char *name, int row_major) {
+    int grid[ROWS][COLS];
+    for (int r = 0; r < ROWS; r++) {
+        for (int c = 0; c < COLS; c++) {
+            grid[r][c] = r * COLS + c;
+        }
+    }
+
+    const int *prev = NULL;
+    int adjacent = 0;
+    int steps = 0;
+
+    for (int i = 0; i < ROWS * COLS; i++) {
+        int r = row_major ? i / COLS : i % ROWS;
+        int c = row_major ? i % COLS : i / ROWS;
+        const int *cur = &grid[r][c];
+
+        if (prev != NULL) {
+            steps++;
+            ptrdiff_t gap = cur > prev ? cur - prev : prev - cur;
+            if (gap == 1) {
+                adjacent++;
+            }
+        }
+        prev = cur;
+    }
+
+    printf("%-12s %2d steps, %2d land on the next int (%d%%)\n",
+           name, steps, adjacent, adjacent * 100 / steps);
+}
+
+int main(void) {
+    int grid[ROWS][COLS];
+    printf("grid: %d x %d ints, %zu bytes total, %zu bytes per row\n",
+           ROWS, COLS, sizeof grid, sizeof grid[0]);
+    printf("one cache line is typically 64 bytes = %zu ints\n\n",
+           (size_t)(64 / sizeof grid[0][0]));
+
+    walk("row-major", 1);
+    walk("column-major", 0);
+
+    printf("\nstruct packed_on_purpose: size %zu\n",
+           sizeof(struct packed_on_purpose));
+    printf("  a at %zu, b at %zu, c at %zu\n",
+           offsetof(struct packed_on_purpose, a),
+           offsetof(struct packed_on_purpose, b),
+           offsetof(struct packed_on_purpose, c));
+
+    printf("struct reordered:         size %zu\n",
+           sizeof(struct reordered));
+    printf("  b at %zu, a at %zu, c at %zu\n",
+           offsetof(struct reordered, b),
+           offsetof(struct reordered, a),
+           offsetof(struct reordered, c));
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+grid: 4 x 4 ints, 64 bytes total, 16 bytes per row
+one cache line is typically 64 bytes = 16 ints
+
+row-major    15 steps, 15 land on the next int (100%)
+column-major 15 steps,  0 land on the next int (0%)
+
+struct packed_on_purpose: size 12
+  a at 0, b at 4, c at 8
+struct reordered:         size 8
+  b at 0, a at 4, c at 5
+```
+
+The grid is 64 bytes, so on this machine it fits in exactly one cache
+line. That is why the count is a clean 100% versus 0% and not a
+percentage in between. On a larger array the row-major walk would still
+be near 100% and the column-major walk near zero, but the totals would
+not be as tidy.
+
+The struct sizes are the second lesson. Both structs hold a `uint32_t`
+and two `uint8_t`s — six bytes of actual data. The first occupies twelve
+because the compiler inserts three bytes of padding before `b` (so the
+four-byte field starts on a four-byte boundary) and three more at the end
+(so the struct's own size is a multiple of its alignment). The second
+occupies eight because the wide field is first.
+
+<LazyStudy href="/memory/" fig="06.1" caption="The memory hierarchy, registers to disk">
+	<MemoryHierarchy3D />
+</LazyStudy>
+
+<ExerciseCard
+	id="m06-struct-budget"
+	concept="padding and field order"
+	prompt="Design two structs with the same four fields — uint8_t u8, uint64_t u64, uint16_t u16, char c — one that occupies exactly 16 bytes and one that occupies 24. Print the tight one first in exactly the form `tight size=16 u8=10 u64=0 u16=8 c=11`, then the loose one, using the same field order in the line as the field list above and %zu for sizeof and every offsetof."
+	starter="#include &lt;stddef.h&gt;&#10;#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;struct tight &#123;&#10;    /* TODO: order the fields to fit in 16 bytes */&#10;    uint8_t u8;&#10;    uint64_t u64;&#10;    uint16_t u16;&#10;    char c;&#10;&#125;;&#10;&#10;struct loose &#123;&#10;    /* TODO: order the same fields so the struct needs 24 bytes */&#10;    uint8_t u8;&#10;    uint64_t u64;&#10;    uint16_t u16;&#10;    char c;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: print size and offsets for both */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="tight size=16 u8=10 u64=0 u16=8 c=11&#10;loose size=24 u8=0 u64=8 u16=16 c=18&#10;"
+	hints={[
+		'Each field must start on a multiple of its own alignment, and the whole struct is rounded up to a multiple of its widest alignment, which here is eight.',
+		'Putting uint64_t first gives 8 + 2 + 1 + 1, padded to 16. Putting uint8_t first forces the uint64_t to wait for offset 8, and the tail pads to 24.'
+	]}
+	solution="#include &lt;stddef.h&gt;&#10;#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;/* Widest field first, so nothing forces padding between fields. */&#10;struct tight &#123;&#10;    uint64_t u64;&#10;    uint16_t u16;&#10;    uint8_t u8;&#10;    char c;&#10;&#125;;&#10;&#10;/* The same four fields, with the narrow ones first, so the uint64_t has to&#10; * wait for the next eight-byte boundary. */&#10;struct loose &#123;&#10;    uint8_t u8;&#10;    uint64_t u64;&#10;    uint16_t u16;&#10;    char c;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    printf(&quot;tight size=%zu u8=%zu u64=%zu u16=%zu c=%zu\n&quot;,&#10;           sizeof(struct tight), offsetof(struct tight, u8),&#10;           offsetof(struct tight, u64), offsetof(struct tight, u16),&#10;           offsetof(struct tight, c));&#10;    printf(&quot;loose size=%zu u8=%zu u64=%zu u16=%zu c=%zu\n&quot;,&#10;           sizeof(struct loose), offsetof(struct loose, u8),&#10;           offsetof(struct loose, u64), offsetof(struct loose, u16),&#10;           offsetof(struct loose, c));&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Assuming `sizeof(struct)` equals the sum of its fields
+
+It rarely does. The compiler inserts padding so each field starts at an
+address that satisfies its alignment requirement, and pads the end so an
+array of the struct stays aligned. `sizeof` is the *stored* size, and it
+is the number that matters for `malloc` and for cache lines.
+
+### Timing a loop and believing the number
+
+`clock()` measures wall time, which on a laptop includes the scheduler
+preempting you and the fans spinning up. A single run that is 20% faster
+proves nothing. If you must measure, repeat many times, take the minimum,
+and treat any difference under a factor of two as noise.
+
+### Believing column-major is "wrong"
+
+For a 4×4 grid it does the same arithmetic. It is slower only because of
+how memory is laid out, and for very small arrays that fits in cache the
+difference can vanish entirely. The lesson is about where the hardware
+looks, not about a coding rule.
+
+### Confusing a cache line with a word
+
+A word is what the CPU reads in one instruction; a line is what the cache
+fetches from memory. A line is typically 64 bytes — sixteen 32-bit words
+— because fetching one word and then needing its neighbour is so common
+that it pays to bring the neighbours along.
+
+<QuizCard
+	id="m06-quiz-locality"
+	question="A program sums a 10,000-element array with a stride of one, then again with a stride of 64 ints. Both loops touch the same number of elements. Why is the first one faster?"
+	options={[
+		'Stride one uses every byte of each 64-byte line it fetches; stride 64 ints touches one int per line and wastes the other fifteen',
+		'The compiler vectorises the stride-one loop and falls back to scalar code for the strided one',
+		'Stride one keeps the whole array in registers, so it never touches memory at all',
+		'Stride 64 ints makes the addresses wrap around, so the second loop reads the wrong elements'
+	]}
+	answer={0}
+	explanation="A 64-byte line holds sixteen consecutive ints, so a stride of one turns one miss into sixteen useful reads. A stride of 64 ints jumps 256 bytes, a new line every time, so every access misses and the other fifteen ints fetched are never used."
+/>
+
+<LectureReference lecture="Lecture 06 — Memory Systems" slides="3–20" />

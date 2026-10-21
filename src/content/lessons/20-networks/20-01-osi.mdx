@@ -1,0 +1,318 @@
+---
+id: 20-01-osi
+title: The OSI Model
+module: 20
+lecture: 'Lecture 20 — Networks'
+slides: '1–14'
+estimatedMinutes: 16
+prerequisites: ['19-03-buffer-overflows']
+tags: ['osi', 'layers', 'protocols']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Why anyone bothered with seven layers
+
+Sending a byte from one machine to another involves radio waves, copper,
+switching hardware, routing tables, retransmission timers, and an application
+that wants a web page. Each of those concerns is wildly different, and each
+changes on a different schedule: a new Wi-Fi standard appears every few years,
+while HTTP/1.1 lasted fifteen.
+
+The OSI model is a claim that these concerns can be separated. If each layer
+offers a service and demands only that service from the layer below, then
+changing how fibre encodes bits does not require changing a mail client. The
+model was published by ISO in 1984 as a *reference* — a vocabulary for arguing
+about where a function belongs — and it never shipped as a working stack. The
+protocols that did ship, TCP/IP, collapse it into four layers. The seven-layer
+vocabulary survived anyway, because it is the most useful thing in the room for
+asking "whose bug is this?"
+
+## What you'll be able to do
+
+- Name the seven layers in order and give a device or protocol at each.
+- Say what a layer adds to the data it receives from the layer above.
+- Use the model to localise a fault: cable, address, port, or application.
+- Explain why TCP/IP has four layers and OSI has seven.
+
+## The seven layers
+
+| # | Layer | Unit | Job | Examples |
+| --- | --- | --- | --- | --- |
+| 7 | Application | data | what the user asked for | HTTP, DNS, SMTP |
+| 6 | Presentation | data | encoding, compression, encryption | TLS, UTF-8, JPEG |
+| 5 | Session | data | dialogue state, checkpoints | RPC, sockets API |
+| 4 | Transport | segment | end-to-end delivery, ports | TCP, UDP |
+| 3 | Network | packet | addressing and routing across networks | IP, ICMP |
+| 2 | Data link | frame | framing on one link, MAC addresses | Ethernet, Wi-Fi |
+| 1 | Physical | bits | voltage, light, radio | 1000BASE-T, 802.11 PHY |
+
+Read it bottom-up to see the accumulation. Layer 1 moves a bit. Layer 2 groups
+bits into a frame with a header carrying a hardware address, so a frame can
+reach the right device on one wire. Layer 3 adds a logical address that survives
+crossing many wires, so a packet can be routed anywhere. Layer 4 adds ports so
+that many conversations can share one host. Layer 7 is the request itself.
+
+Each layer's header is opaque to the layer below. That is the entire trick, and
+it is the same trick as an abstract data type: the lower layer sees bytes to
+move and knows nothing about what they mean.
+
+<TheoryBlock label="Why it matters for C" title="Encapsulation is a struct with a payload">
+
+	Layer 2 receiving layer 3's output is doing exactly what a function that
+	takes `const void *data, size_t len` does — moving an opaque blob. When you
+	write a network client you will hand the kernel a buffer and a length, and
+	every header below yours will be prepended by code you never call directly.
+	Understanding the model is understanding which of those prepends your program
+	is responsible for, and which the kernel does on your behalf.
+
+</TheoryBlock>
+
+## Where the model earns its keep
+
+A user says "the site is down." The model turns that into a sequence of
+questions with different answers and different owners.
+
+| Question | Layer | If it fails |
+| --- | --- | --- |
+| Is the cable/radio up? | 1 | link light off, interface `NO-CARRIER` |
+| Does ARP resolve the gateway? | 2 | frames sent, nothing replies |
+| Can I ping the server's IP? | 3 | routing or firewall |
+| Does the port accept a connection? | 4 | service not listening, or blocked |
+| Does the app answer correctly? | 7 | the server is fine; the request is wrong |
+
+The value is that these are checked in order and each one narrows the search.
+Skipping to layer 7 and reading logs is how a two-minute cable problem becomes
+an afternoon.
+
+<Eli5Block
+	topic="layers"
+	football="A club sends a player to another city. The manager writes the instruction (application), the secretary puts it in a sealed envelope (transport), the post room writes the street address (network), the driver puts it in the right van for that street (link), and the van drives there (physical). Each step only reads its own part of the envelope."
+	money="A payment moves from a buyer to a seller. The buyer writes the amount and purpose, the bank seals it, the clearing house adds routing numbers, the courier moves the physical note, and the vault holds it. Any one step can be replaced without the others knowing, as long as the envelope format does not change."
+/>
+
+## The four-layer reality
+
+TCP/IP maps onto OSI unevenly, and the unevenness is instructive:
+
+| OSI | TCP/IP | Note |
+| --- | --- | --- |
+| 7, 6, 5 | Application | merged; TLS sits inside it |
+| 4 | Transport | TCP and UDP |
+| 3 | Internet | IP |
+| 2, 1 | Link | Ethernet, Wi-Fi, drivers |
+
+The merge of 5, 6, and 7 was not laziness. In practice session state,
+encoding, and the application protocol are so entangled — think HTTP cookies
+and content encoding — that a boundary between them was never enforceable. The
+model's seven layers are a checklist of *concerns*; the deployed stack is a
+checklist of *interfaces*. Four interfaces is what survived contact with
+implementations.
+
+## The model, as data
+
+The table above is easier to trust when a program produces it. This one stores
+the seven layers as an array, sorts them with `qsort` — a comparison function
+pointer is the one C feature the layer diagram never mentions — and then costs
+out encapsulation: how much of a packet is header and how much is the request.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* The model as data, so the table in the lesson and the program agree.
+ *
+ * Two things happen here. First the seven layers are sorted by number with
+ * qsort, which is the one place in this curriculum where a comparison
+ * function pointer shows up. Second, a protocol name is mapped back to its
+ * layer by linear search — the operation you actually perform when a packet
+ * is misbehaving and you need to know whose bug it is. */
+
+struct layer {
+    int number;
+    const char *name;
+    const char *unit;
+    const char *example;
+};
+
+static int by_number(const void *a, const void *b) {
+    const struct layer *la = a;
+    const struct layer *lb = b;
+    return (la->number > lb->number) - (la->number < lb->number);
+}
+
+static const char *layer_of(const char *protocol) {
+    static const struct {
+        const char *name;
+        int layer;
+    } known[] = {
+        {"HTTP", 7}, {"DNS", 7}, {"SMTP", 7},
+        {"TLS", 6}, {"UTF-8", 6},
+        {"sockets", 5},
+        {"TCP", 4}, {"UDP", 4},
+        {"IP", 3}, {"ICMP", 3},
+        {"Ethernet", 2}, {"Wi-Fi", 2},
+        {"1000BASE-T", 1},
+    };
+
+    for (size_t i = 0; i < sizeof known / sizeof known[0]; i++) {
+        if (strcmp(known[i].name, protocol) == 0) {
+            static char buf[32];
+            snprintf(buf, sizeof buf, "layer %d", known[i].layer);
+            return buf;
+        }
+    }
+    return "unknown";
+}
+
+int main(void) {
+    struct layer layers[] = {
+        {4, "Transport",  "segment", "TCP, UDP"},
+        {7, "Application", "data",   "HTTP, DNS, SMTP"},
+        {1, "Physical",   "bit",     "1000BASE-T, 802.11 PHY"},
+        {6, "Presentation", "data",  "TLS, UTF-8, JPEG"},
+        {3, "Network",    "packet",  "IP, ICMP"},
+        {5, "Session",    "data",    "RPC, sockets API"},
+        {2, "Data link",  "frame",   "Ethernet, Wi-Fi"},
+    };
+    const size_t count = sizeof layers / sizeof layers[0];
+
+    printf("as declared: ");
+    for (size_t i = 0; i < count; i++) {
+        printf("%d%s", layers[i].number, i + 1 < count ? ", " : "\n");
+    }
+
+    qsort(layers, count, sizeof layers[0], by_number);
+
+    printf("after qsort: ");
+    for (size_t i = 0; i < count; i++) {
+        printf("%d%s", layers[i].number, i + 1 < count ? ", " : "\n");
+    }
+
+    printf("\n%-3s %-14s %-9s %s\n", "#", "layer", "unit", "examples");
+    for (size_t i = 0; i < count; i++) {
+        printf("%-3d %-14s %-9s %s\n",
+               layers[i].number, layers[i].name,
+               layers[i].unit, layers[i].example);
+    }
+
+    /* Each layer adds a header and hands the result down. The size grows by
+     * a fixed amount per layer; this is the encapsulation the prose claims. */
+    printf("\nencapsulation of a 100-byte request:\n");
+    int size = 100;
+    printf("  application payload        %4d bytes\n", size);
+    size += 20; printf("  + TCP header (20)          %4d bytes\n", size);
+    size += 20; printf("  + IP header (20)           %4d bytes\n", size);
+    size += 14; printf("  + Ethernet header (14)     %4d bytes\n", size);
+    size += 4;  printf("  + Ethernet FCS (4)         %4d bytes\n", size);
+    printf("  overhead %d bytes, %.0f%% of what was sent\n",
+           size - 100, ((size - 100) * 100.0) / size);
+
+    printf("\nprotocol lookup:\n");
+    const char *probes[] = {"HTTP", "TCP", "IP", "Ethernet", "COBOL", NULL};
+    for (size_t i = 0; probes[i] != NULL; i++) {
+        printf("  %-12s -> %s\n", probes[i], layer_of(probes[i]));
+    }
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+as declared: 4, 7, 1, 6, 3, 5, 2
+after qsort: 1, 2, 3, 4, 5, 6, 7
+
+#   layer          unit      examples
+1   Physical       bit       1000BASE-T, 802.11 PHY
+2   Data link      frame     Ethernet, Wi-Fi
+3   Network        packet    IP, ICMP
+4   Transport      segment   TCP, UDP
+5   Session        data      RPC, sockets API
+6   Presentation   data      TLS, UTF-8, JPEG
+7   Application    data      HTTP, DNS, SMTP
+
+encapsulation of a 100-byte request:
+  application payload         100 bytes
+  + TCP header (20)           120 bytes
+  + IP header (20)            140 bytes
+  + Ethernet header (14)      154 bytes
+  + Ethernet FCS (4)          158 bytes
+  overhead 58 bytes, 37% of what was sent
+
+protocol lookup:
+  HTTP         -> layer 7
+  TCP          -> layer 4
+  IP           -> layer 3
+  Ethernet     -> layer 2
+  COBOL        -> unknown
+```
+
+The encapsulation arithmetic is the part to sit with. A 100-byte request leaves
+the machine as 158 bytes, so 37% of what crossed the wire was headers. That
+fraction is why IPv6 dropped optional fields from the fixed header, why TCP
+selective acknowledgement exists, and why a request with a 20-byte payload over
+TCP/IPv4/Ethernet is mostly overhead. It is also why the layers are worth
+separating: each header is added by code that does not know or care what the
+one above it meant.
+
+## Common pitfalls
+
+### Treating the layers as physical
+
+Nothing in a running system corresponds to "layer 5." The layers are a way of
+partitioning responsibility in an argument, not a set of processes. A single
+`send()` call in your C program traverses all of them inside the kernel and
+returns a count.
+
+### Believing each layer is a separate program
+
+The lower layers live in the kernel and the network card. A user program
+touches layer 4 through the sockets API and layer 7 through whatever protocol
+it implements. Layers 1–3 are someone else's code, which is exactly why the
+interfaces between them are standardised.
+
+### Assuming OSI order describes time
+
+The headers are added on the way down at the sender and removed on the way up
+at the receiver, but the receiver's layers do not run in lockstep. A frame can
+be parsed by hardware, queued, and handed up later. Ordering of *layers* is
+not ordering of *instants*.
+
+<ExerciseCard
+	id="m20-layer-sort"
+	concept="data as a table, qsort, linear lookup"
+	prompt="Store the seven layers in an array of structs holding a number, a name and one example protocol, declared out of order as 4 7 1 6 3 5 2. Print the numbers as declared, sort with qsort and print them again, then print a table with number, name and example. Finally write layer_of(protocol) as a linear search over a second small table and query HTTP, TCP, IP, Ethernet and COBOL. Print exactly:&#10;as declared: 4, 7, 1, 6, 3, 5, 2&#10;after qsort: 1, 2, 3, 4, 5, 6, 7&#10;&#10;#   layer          example&#10;1   Physical       1000BASE-T&#10;2   Data link      Ethernet&#10;3   Network        IP&#10;4   Transport      TCP&#10;5   Session        RPC&#10;6   Presentation   TLS&#10;7   Application    HTTP&#10;&#10;protocol lookup:&#10;  HTTP         -&gt; 7&#10;  TCP          -&gt; 4&#10;  IP           -&gt; 3&#10;  Ethernet     -&gt; 2&#10;  COBOL        -&gt; unknown&#10;The two blank lines are real output. Nothing else is printed."
+	starter="#include &lt;stdio.h&gt;&#10;#include &lt;stdlib.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;struct layer &#123;&#10;    int number;&#10;    const char *name;&#10;    const char *example;&#10;&#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: array, qsort by number, table, then layer_of lookups */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="as declared: 4, 7, 1, 6, 3, 5, 2&#10;after qsort: 1, 2, 3, 4, 5, 6, 7&#10;&#10;#   layer          example&#10;1   Physical       1000BASE-T&#10;2   Data link      Ethernet&#10;3   Network        IP&#10;4   Transport      TCP&#10;5   Session        RPC&#10;6   Presentation   TLS&#10;7   Application    HTTP&#10;&#10;protocol lookup:&#10;  HTTP         -&gt; 7&#10;  TCP          -&gt; 4&#10;  IP           -&gt; 3&#10;  Ethernet     -&gt; 2&#10;  COBOL        -&gt; unknown&#10;"
+	hints={[
+		'qsort needs a comparator taking two const void pointers, casting them to struct layer pointers and returning the difference of the numbers.',
+		'The lookup returns a number or a sentinel such as minus one, and main prints the sentinel case as the word unknown.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;#include &lt;stdlib.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* The layer table is data, not if-chains: an array of structs sorted by&#10; * number, and a lookup that scans it. */&#10;&#10;struct layer &#123;&#10;    int number;&#10;    const char *name;&#10;    const char *example;&#10;&#125;;&#10;&#10;static int by_number(const void *a, const void *b) &#123;&#10;    const struct layer *left = a;&#10;    const struct layer *right = b;&#10;&#10;    return left-&gt;number - right-&gt;number;&#10;&#125;&#10;&#10;/* -1 when the protocol is not in the table. */&#10;static int layer_of(const char *protocol) &#123;&#10;    static const struct &#123;&#10;        const char *name;&#10;        int layer;&#10;    &#125; known[] = &#123;&#10;        &#123;&quot;HTTP&quot;, 7&#125;, &#123;&quot;TCP&quot;, 4&#125;, &#123;&quot;IP&quot;, 3&#125;, &#123;&quot;Ethernet&quot;, 2&#125;,&#10;    &#125;;&#10;    const int count = (int)(sizeof known / sizeof known[0]);&#10;&#10;    for (int i = 0; i &lt; count; i++) &#123;&#10;        if (strcmp(known[i].name, protocol) == 0) &#123;&#10;            return known[i].layer;&#10;        &#125;&#10;    &#125;&#10;    return -1;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    struct layer layers[] = &#123;&#10;        &#123;4, &quot;Transport&quot;, &quot;TCP&quot;&#125;,&#10;        &#123;7, &quot;Application&quot;, &quot;HTTP&quot;&#125;,&#10;        &#123;1, &quot;Physical&quot;, &quot;1000BASE-T&quot;&#125;,&#10;        &#123;6, &quot;Presentation&quot;, &quot;TLS&quot;&#125;,&#10;        &#123;3, &quot;Network&quot;, &quot;IP&quot;&#125;,&#10;        &#123;5, &quot;Session&quot;, &quot;RPC&quot;&#125;,&#10;        &#123;2, &quot;Data link&quot;, &quot;Ethernet&quot;&#125;,&#10;    &#125;;&#10;    const int count = (int)(sizeof layers / sizeof layers[0]);&#10;&#10;    printf(&quot;as declared: &quot;);&#10;    for (int i = 0; i &lt; count; i++) &#123;&#10;        printf(&quot;%s%d&quot;, i == 0 ? &quot;&quot; : &quot;, &quot;, layers[i].number);&#10;    &#125;&#10;    printf(&quot;\n&quot;);&#10;&#10;    qsort(layers, (size_t)count, sizeof layers[0], by_number);&#10;    printf(&quot;after qsort: &quot;);&#10;    for (int i = 0; i &lt; count; i++) &#123;&#10;        printf(&quot;%s%d&quot;, i == 0 ? &quot;&quot; : &quot;, &quot;, layers[i].number);&#10;    &#125;&#10;    printf(&quot;\n\n&quot;);&#10;&#10;    printf(&quot;%-3s %-14s %s\n&quot;, &quot;#&quot;, &quot;layer&quot;, &quot;example&quot;);&#10;    for (int i = 0; i &lt; count; i++) &#123;&#10;        printf(&quot;%-3d %-14s %s\n&quot;, layers[i].number, layers[i].name,&#10;               layers[i].example);&#10;    &#125;&#10;&#10;    printf(&quot;\nprotocol lookup:\n&quot;);&#10;    const char *probes[] = &#123;&quot;HTTP&quot;, &quot;TCP&quot;, &quot;IP&quot;, &quot;Ethernet&quot;, &quot;COBOL&quot;&#125;;&#10;&#10;    for (int i = 0; i &lt; 5; i++) &#123;&#10;        int layer = layer_of(probes[i]);&#10;&#10;        printf(&quot;  %-12s -&gt; &quot;, probes[i]);&#10;        if (layer &lt; 0) &#123;&#10;            printf(&quot;unknown\n&quot;);&#10;        &#125; else &#123;&#10;            printf(&quot;%d\n&quot;, layer);&#10;        &#125;&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m20-quiz-osi-fault"
+	question="A server's web page times out, but `ping` to the same address succeeds and `nc -z host 443` reports the port is closed. Which layers have you ruled out, and which two are still suspects?"
+	options={[
+		'Ping rules out layers 1 to 3 — an ICMP echo reaches the host and returns — and a closed port means a TCP reset came back, so the host\'s transport stack is reachable. The suspects are layer 4 (nothing bound to 443, or bound to the wrong port) and layer 7 (the web server not running, or serving a different name).',
+		'Ping rules out layer 7 only, because ping is an application protocol; the suspects are layers 1 and 2.',
+		'Ping rules out layers 1 to 4, so only layer 7 can be at fault.',
+		'Nothing is ruled out, because ping and HTTPS use different protocols and neither result says anything about the other.'
+	]}
+	answer={0}
+	explanation="An echo reply proves addressing and routing work end to end, so physical, data link and network are fine. A refused connection is also an answer from the remote host, which clears the transport path; what is missing is a listener and the service behind it."
+/>
+
+<LectureReference lecture="Lecture 20 — Networks" slides="1–14" />

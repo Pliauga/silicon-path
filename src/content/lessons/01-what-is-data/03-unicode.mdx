@@ -1,0 +1,340 @@
+---
+id: 01-03-unicode
+title: Unicode & UTF-8
+module: 1
+lecture: 'Lecture 01 — Data Representation 1'
+slides: '26–41'
+estimatedMinutes: 14
+prerequisites: ['01-02-ascii']
+tags: ['unicode', 'utf8', 'encoding']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The world did not fit in seven bits
+
+ASCII has 128 code points. That covers English, digits, punctuation, and a set of
+teletype commands, and it covers nothing else: no accent, no Greek letter, no
+Cyrillic, no Chinese character, no emoji. Every country that adopted computers
+had to invent its own extension, and those extensions collided. A byte of
+`0xE9` meant `é` in one Latin-1 variant, a box-drawing character in another
+vendor's code page, and part of a two-byte Japanese character in a third.
+
+**Unicode** is the fix, and the fix is an abstraction rather than a table. It
+does not say that `é` is byte 233. It says that `é` is **code point U+00E9** — a
+number in an abstract space, independent of any bytes. Separately, it defines
+encodings that say how to spell that number as bytes. Those are two layers, and
+almost every confusion about text comes from collapsing them.
+
+The encoding this course uses is **UTF-8**, and it won for one blunt reason:
+every ASCII byte keeps its meaning. A UTF-8 file containing only ASCII is
+byte-for-byte an ASCII file. Every tool written since 1963 keeps working.
+
+## What you'll be able to do
+
+- Explain the difference between a code point and a code unit.
+- Derive the byte length of a character from its code point's magnitude.
+- Decode a two- or three-byte UTF-8 sequence by hand.
+- Say why `strlen` on a UTF-8 string counts bytes, and when that is the number you want.
+- State why one `char` can never hold a single character in general.
+
+## Code points, not characters
+
+A **code point** is a number from `U+0000` to `U+10FFFF`. That is 1,114,112
+possible values, of which 2,048 in the range `U+D800` to `U+DFFF` are reserved as
+**surrogates** and are not valid on their own. The remainder, 1,112,064 values,
+is the space Unicode actually assigns characters into.
+
+The notation `U+00E9` is just hexadecimal with a prefix. `00E9` is 233, so
+U+00E9 and the number 233 are the same fact, written two ways.
+
+A **code unit** is a fixed-size chunk, and its size depends on the encoding.
+UTF-8 uses 8-bit code units, so a code unit is a byte. UTF-16 uses 16-bit code
+units and UTF-32 uses 32-bit ones. A code point is an abstract number; a code
+unit is a physical piece of it. One character may need several code units, and
+in UTF-16 sometimes two — which is why emoji broke so much software written
+when people assumed one character meant one `char`.
+
+<TheoryBlock label="Why it matters for C" title="char holds a byte, not a character">
+
+	`sizeof(char)` is 1 by definition, so a `char` holds exactly one byte on every
+	platform. In C that is the whole story: there is no type for a character, only
+	a type for a byte. A function that walks a string with `s[i]` is walking bytes,
+	and in UTF-8 it will land *inside* a character. C11 added `<uchar.h>` with
+	`char16_t`, `char32_t`, and conversion routines, but the standard library has
+	no tables for case mapping, classification, or normalisation. Those belong to
+	ICU or a similar library, not to ISO C.
+
+</TheoryBlock>
+
+## The length rule
+
+UTF-8 encodes the code point's magnitude into the byte count. Small numbers get
+short spellings, large ones get long ones.
+
+| Code points      | Bytes | Bit pattern                                  | Payload bits |
+| ---------------- | ----- | -------------------------------------------- | ------------ |
+| U+0000–U+007F    | 1     | `0xxxxxxx`                                   | 7            |
+| U+0080–U+07FF    | 2     | `110xxxxx 10xxxxxx`                          | 11           |
+| U+0800–U+FFFF    | 3     | `1110xxxx 10xxxxxx 10xxxxxx`                 | 16           |
+| U+10000–U+10FFFF | 4     | `11110xxx 10xxxxxx 10xxxxxx 10xxxxxx`        | 21           |
+
+The `x` positions carry the code point's bits, most significant group first, and
+the fixed bits in front are framing. Three properties follow, and each one is
+worth its own paragraph.
+
+**The lead byte announces the length.** Count the leading `1` bits before the
+first `0`. Zero of them means one byte, three means three. This is why a decoder
+can find where a character starts without searching backwards.
+
+**Continuation bytes always begin `10`.** They can never be confused with a lead
+byte, and no continuation byte is below `0x80`. So any byte below `0x80` is a
+whole ASCII character, standing alone.
+
+**ASCII is a strict subset.** The first 128 code points are encoded as the
+identical single bytes, which is the compatibility promise that made UTF-8 win.
+
+<Eli5Block
+	topic="code-points"
+	football="A squad number and a shirt are two different things. The number 10 lives on the team sheet, and the shirt is cut and printed to match it. Change the printing convention and 10 becomes two digits instead of one patch — the number on the sheet never moved, only the amount of cloth."
+	money="The price and the coins that pay it are separate facts. Twelve pounds is owed whether it arrives as one note or as a note and two coins. The amount is the idea; the coins are one physical spelling of it, and a different currency spells the same idea with more pieces."
+/>
+
+## Reading the bytes of a literal
+
+Source files are UTF-8, so a string literal containing an accent is already
+encoded before your program runs. Printing it with `%s` hands the bytes to the
+terminal unchanged, and the terminal — itself a UTF-8 decoder — turns them back
+into a glyph.
+
+The program below prints the same string twice, once in plain ASCII and once
+with an accent, plus a character with no Latin equivalent. It prints the byte
+count beside the text so the difference is visible rather than asserted.
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+/* strlen counts bytes, not characters. That distinction is the whole lesson. */
+static void dump(const char *label, const char *s) {
+    size_t n = strlen(s);
+
+    printf("%s\n", label);
+    printf("  looks like: %s\n", s);
+    printf("  strlen says %zu bytes\n", n);
+    for (size_t i = 0; i < n; i++) {
+        printf("  byte %zu = 0x%02X\n", i, (unsigned char)s[i]);
+    }
+}
+
+int main(void) {
+    /* Source files are UTF-8, so these literals are already encoded. */
+    dump("\"cafe\" plain ASCII", "cafe");
+    dump("\"cafe\" with an acute accent", "caf\u00e9");
+    dump("an arrow", "\u2192");
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+"cafe" plain ASCII
+  looks like: cafe
+  strlen says 4 bytes
+  byte 0 = 0x63
+  byte 1 = 0x61
+  byte 2 = 0x66
+  byte 3 = 0x65
+"cafe" with an acute accent
+  looks like: café
+  strlen says 5 bytes
+  byte 0 = 0x63
+  byte 1 = 0x61
+  byte 2 = 0x66
+  byte 3 = 0xC3
+  byte 4 = 0xA9
+an arrow
+  looks like: →
+  strlen says 3 bytes
+  byte 0 = 0xE2
+  byte 1 = 0x86
+  byte 2 = 0x92
+```
+
+The three plain letters occupy three bytes. Adding the accented `é` takes the
+count to five, because that one character is spelled with two bytes rather than
+one. The arrow is a single character written in three bytes. `strlen` reports the
+length of the byte sequence, which is exactly right for what `strlen` measures
+and exactly wrong for counting characters.
+
+Decoding the two-byte sequence by hand is worth doing once. `0xC3` is
+`11000011`, so its payload is the five bits `00011`. `0xA9` is `10101001`, a
+continuation byte, so its payload is the six bits `101001`. Shift the first
+payload left by six and OR the second in: `00011 << 6` is `11000000`, OR
+`101001` gives `11101001`, which is `0xE9` — 233, U+00E9. The arrow follows the
+same recipe with one more byte and comes back as `0x2192`.
+
+Notice that the plain-ASCII bytes are `0x63 0x61 0x66 0x65` — identical to what
+ASCII would produce, because UTF-8 does not touch the first 128 code points. A
+scanner that looks for `'\n'` or `'<'` in a UTF-8 buffer still finds it, since no
+byte of a multi-byte sequence can equal those values.
+
+## Encoding by hand
+
+The reverse direction is the same table read backwards, and writing it out makes
+the rule concrete. The function below handles all four lengths with one idea:
+take the code point, split its bits into groups of six from the right, and hang
+the framing on each group.
+
+```c
+#include <stdio.h>
+
+/* UTF-8 length is decided by the code point's magnitude:
+ *   U+0000..U+007F     1 byte   0xxxxxxx
+ *   U+0080..U+07FF     2 bytes  110xxxxx 10xxxxxx
+ *   U+0800..U+FFFF     3 bytes  1110xxxx 10xxxxxx 10xxxxxx
+ *   U+10000..U+10FFFF  4 bytes  11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+ * The x bits carry the code point, most significant group first. */
+
+static int utf8_encode(unsigned int code, unsigned char out[4]) {
+    if (code <= 0x7Fu) {
+        out[0] = (unsigned char)code;
+        return 1;
+    }
+    if (code <= 0x7FFu) {
+        out[0] = (unsigned char)(0xC0u | (code >> 6));
+        out[1] = (unsigned char)(0x80u | (code & 0x3Fu));
+        return 2;
+    }
+    if (code <= 0xFFFFu) {
+        out[0] = (unsigned char)(0xE0u | (code >> 12));
+        out[1] = (unsigned char)(0x80u | ((code >> 6) & 0x3Fu));
+        out[2] = (unsigned char)(0x80u | (code & 0x3Fu));
+        return 3;
+    }
+    out[0] = (unsigned char)(0xF0u | (code >> 18));
+    out[1] = (unsigned char)(0x80u | ((code >> 12) & 0x3Fu));
+    out[2] = (unsigned char)(0x80u | ((code >> 6) & 0x3Fu));
+    out[3] = (unsigned char)(0x80u | (code & 0x3Fu));
+    return 4;
+}
+
+static void show(unsigned int code, const char *name) {
+    unsigned char bytes[4] = {0, 0, 0, 0};
+    int n = utf8_encode(code, bytes);
+
+    printf("U+%04X  %-14s  %d byte", code, name, n);
+    if (n > 1) {
+        printf("s");
+    }
+    printf(":");
+    for (int i = 0; i < n; i++) {
+        printf(" %02X", bytes[i]);
+    }
+    printf("\n");
+}
+
+int main(void) {
+    show(0x0041u, "'A'");
+    show(0x007Fu, "DEL");
+    show(0x00E9u, "e with acute");
+    show(0x2192u, "right arrow");
+    show(0x6C34u, "water");
+    show(0x1F600u, "grinning face");
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+U+0041  'A'             1 byte: 41
+U+007F  DEL             1 byte: 7F
+U+00E9  e with acute    2 bytes: C3 A9
+U+2192  right arrow     3 bytes: E2 86 92
+U+6C34  water           3 bytes: E6 B0 B4
+U+1F600  grinning face   4 bytes: F0 9F 98 80
+```
+
+The third and fourth lines are the ones worth checking against the earlier
+program: `C3 A9` for U+00E9 and `E2 86 92` for U+2192, the same bytes the
+literal produced. The encoded output and the compiler's literal agree, which is
+the strongest confirmation this lesson can offer.
+
+<ExerciseCard
+	id="m01-utf8-length"
+	concept="UTF-8 lead and continuation bytes"
+	prompt="Finish utf8_length so it counts characters instead of bytes, then print one line per literal in exactly the form `cafe: bytes=4 chars=4` — the label, a colon, bytes, then chars — for the three entries the starter defines, in order: cafe, cafe-acute, arrow."
+	starter="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* A continuation byte starts with the bits 10xxxxxx. */&#10;size_t utf8_length(const char *s) &#123;&#10;    size_t chars = 0;&#10;    for (size_t i = 0; s[i] != 0; i++) &#123;&#10;        /* TODO: count only the bytes that start a character */&#10;    &#125;&#10;    return chars;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const char *word = &quot;café&quot;;&#10;    printf(&quot;%zu bytes, &quot;, strlen(word));&#10;    printf(&quot;%zu characters&quot;, utf8_length(word));&#10;    return 0;&#10;&#125;"
+	expectedStdout="cafe: bytes=4 chars=4&#10;cafe-acute: bytes=5 chars=4&#10;arrow: bytes=3 chars=1&#10;"
+	hints={[
+		'A continuation byte always has its top two bits set to 10, so mask the byte with 0xC0 and check that the result differs from 0x80.',
+		'Count the bytes where ((unsigned char)s[i] & 0xC0u) != 0x80u; everything else is a continuation and belongs to the character before it.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;static size_t utf8_length(const char *s) &#123;&#10;    size_t chars = 0;&#10;    for (size_t i = 0; s[i] != '\0'; i++) &#123;&#10;        if (((unsigned char)s[i] &amp; 0xC0u) != 0x80u) &#123;&#10;            chars++;&#10;        &#125;&#10;    &#125;&#10;    return chars;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const char *names[] = &#123;&quot;cafe&quot;, &quot;cafe-acute&quot;, &quot;arrow&quot;&#125;;&#10;    const char *words[] = &#123;&quot;cafe&quot;, &quot;caf\xc3\xa9&quot;, &quot;\xe2\x86\x92&quot;&#125;;&#10;&#10;    for (int i = 0; i &lt; 3; i++) &#123;&#10;        printf(&quot;%s: bytes=%zu chars=%zu\n&quot;, names[i], strlen(words[i]),&#10;               utf8_length(words[i]));&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Using strlen as a character count
+
+`strlen` counts bytes, always. On a UTF-8 string the result is at least the
+character count and usually larger — 5 for a four-character string with one
+accented letter, 3 for a one-character string containing an arrow. Use it when
+you are allocating a buffer or writing to a file, because those are byte
+operations. Do not use it to size a character grid or to validate a length limit
+expressed in characters.
+
+### Indexing into a multi-byte character
+
+`s[3]` in `"café"` is `0xC3`, the first byte of `é`, not `é` itself. Slicing a
+UTF-8 string at a byte index chosen by character count produces two sequences
+that are not valid UTF-8, which usually appears as mojibake or as U+FFFD
+replacement characters. Walk bytes and count lead bytes instead of indexing by
+character.
+
+### Printing a byte above 127 with %c
+
+`printf("%c", 0xE9)` does not print `é` in UTF-8. It emits the single byte `0xE9`,
+which is not a valid UTF-8 sequence on its own, so the terminal shows a
+replacement character or nothing. Code point 233 needs the two bytes `0xC3 0xA9`;
+the number and its spelling are different things.
+
+### Assuming setlocale is irrelevant
+
+The C library's multibyte conversion routines — `mbrtowc`, `mbrtoc32`, and
+`wcrtomb` — consult the current locale. A program starts in the `C` locale,
+where only ASCII converts, so these functions fail on an accent until you call
+`setlocale(LC_CTYPE, "")` to adopt the environment's locale. They are also
+locale-dependent across machines, which is a good reason to test on both.
+
+### Forgetting that NUL is a code point
+
+U+0000 is a valid Unicode code point, but it is also the C string terminator. A
+C string cannot contain it, so any text with an embedded NUL — some JSON payloads,
+some binary formats — must be handled with an explicit length. This is a property
+of C's string representation, not of Unicode.
+
+<QuizCard
+	id="m01-quiz-utf8-bytes"
+	question="A UTF-8 literal holds the four letters c-a-f-é. How many bytes does it occupy in memory including the terminator, and how many characters does it contain?"
+	options={[
+		'6 bytes and 4 characters',
+		'5 bytes and 4 characters',
+		'5 bytes and 5 characters',
+		'8 bytes and 8 characters'
+	]}
+	answer={0}
+	explanation="The four letters are c, a, f, plus e-acute, which takes two bytes (0xC3 0xA9) because it is U+00E9 — so 5 bytes plus the terminator is 6. The character count is 4 because the continuation byte starting 10xxxxxx does not begin a character of its own."
+/>
+
+<LectureReference lecture="Lecture 01 — Data Representation 1" slides="26–41" />

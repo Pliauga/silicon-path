@@ -1,0 +1,194 @@
+---
+id: 11-02-fork-exec
+title: Fork & Exec
+module: 11
+lecture: 'Lecture 11 — Processes'
+slides: '16–30'
+estimatedMinutes: 18
+prerequisites: ['11-01-process-concept']
+tags: ['fork', 'exec', 'processes']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Two calls, one pattern
+
+Module 11-01 gave you `fork`, which clones the running program. That is not how a
+shell starts `ls` — a clone of the shell would still be the shell. The second
+half is `exec`: a family of calls that replace the current program with a
+different one, in the same process.
+
+| Call | Effect | Return |
+| --- | --- | --- |
+| `fork()` | duplicate the process | twice, with 0 in the child |
+| `execv(path, argv)` | replace this process's memory with `path` | only on failure, `-1` |
+
+`execv` does not create a process. It overwrites the current one. The PID stays
+the same, the open file descriptors survive (unless marked close-on-exec), and
+the code that called `execv` is gone. **If `execv` returns, it failed.** There is
+no success return, which is why the call is always followed by an error handler.
+
+Combine them and you get the shell's entire mechanism: fork a copy, exec the
+program in the child, wait in the parent.
+
+## What you'll be able to do
+
+- Explain what `execv` replaces, and what survives the replacement.
+- Say why a call to `execv` that returns is always a failure.
+- Build the NULL-terminated `argv` array `execv` requires.
+- Read a child's exit status out of `waitpid` with `WEXITSTATUS`.
+
+<TheoryBlock label="Why it matters for C" title="Your argv is a NULL-terminated array of pointers">
+
+	`execv` takes `char *const argv[]`, and the array must end with `NULL` — the callee has no other
+	way to know its length. Omitting the terminator means `execv` reads past your array until it
+	happens to find a zero. Every `main(int argc, char **argv)` you have ever written received an
+	array built exactly this way.
+</TheoryBlock>
+
+<Eli5Block
+	topic="fork-exec"
+	football="You photocopy the team sheet so the substitute has their own copy — that is fork. Then the substitute walks out and a different player takes the shirt, same shirt number, different person — that is exec. The squad list keeps the same slot; the name in it changes."
+	money="You open a second account with the same opening balance — fork. Then you close that account and hand the number to a different customer — exec. The account number is unchanged; everything behind it is now someone else's. fork makes the slot, exec fills it with a different program."
+/>
+
+## Replacing the running image
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <stdio.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main(void) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return 1;
+    }
+
+    if (pid == 0) {
+        /* This process image is replaced entirely by /bin/echo.
+           If execv succeeds, nothing below it ever runs. */
+        char *args[] = { "echo", "hello from the replaced image", NULL };
+        execv("/bin/echo", args);
+
+        /* Reaching this line means exec failed. */
+        perror("execv");
+        _exit(127);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid");
+        return 1;
+    }
+
+    if (WIFEXITED(status)) {
+        printf("the child exited normally with status %d\n",
+               WEXITSTATUS(status));
+    }
+    return 0;
+}
+```
+
+Two details in that listing are load-bearing.
+
+`args[0]` is `"echo"`, not the full path. By convention `argv[0]` is the program
+name as invoked, and many programs use it in their error messages. The path goes
+to `execv` separately.
+
+The child uses `_exit(127)`, not `exit(127)`. `_exit` skips the atexit handlers
+and, crucially, does not flush stdio buffers that are already shared with the
+parent. Calling `exit` here after a failed exec can duplicate buffered output.
+
+`fork()` and `execv()` are POSIX. **`fork()` does not exist on Windows**, and
+neither does the fork-then-exec pattern, because Windows cannot duplicate a
+running process — `CreateProcess` takes an executable path and builds a new
+process around it. Portable code that needs both steps either wraps them in a
+library or uses `posix_spawn`, a single call designed for exactly the cases where
+the two-step dance is unnecessary.
+
+## Expected output
+
+```text
+hello from the replaced image
+the child exited normally with status 0
+```
+
+`/bin/echo` printed the first line, not your program. That is the proof the
+image was replaced. The second line is your parent, which never ran `execv` and
+is still the original program.
+
+If you changed the path to something that does not exist, `execv` would return
+`-1`, `perror` would print the reason, and `_exit(127)` would make the parent
+report status 127. That convention — 127 for "could not run the command" — is
+why a shell tells you a command was not found.
+
+## Common pitfalls
+
+### Putting code after `execv` and expecting it to run
+
+On success, the process image is gone. Statements after `execv` only execute when
+it fails. Code that assumes otherwise — a cleanup function, a closing `printf` —
+silently never runs. If you need cleanup in the child on the success path, use
+`atexit` *before* the exec, or accept that the new program owns the process now.
+
+### Forgetting `NULL` in the argv array
+
+```c
+char *args[] = { "echo", "hi" };   /* no terminator */
+```
+
+This compiles. It is undefined behaviour at runtime: `execv` scans past the array.
+If it does not crash, it may pass a garbage pointer as `argv[2]`. Always end with
+`NULL`, and let the compiler's `-Wsentinel`-style checks help where they can.
+
+### Using `exit` instead of `_exit` in the child
+
+After `fork`, the child holds a copy of the parent's stdio buffer. `exit` flushes
+it, so buffered output can appear twice. `_exit` does not flush. In a child that
+is about to `exec` or has failed to, `_exit` is the correct call.
+
+### Treating a returned `execv` as success
+
+`execv` has no success return. Any return at all is a failure. Writing
+`if (execv(path, args) == 0) { /* worked */ }` is dead code with a misleading
+shape; write the error path unconditionally after the call.
+
+<ExerciseCard
+	id="fork-exec-status"
+	concept="wait status decoding"
+	prompt="The kernel reports how a child ended as a status word, not as an exit code: the exit code lives in bits 15 to 8, the signal in the low seven bits, and 0x7f in the low byte means stopped. Decode these five statuses with your own masks, then print exactly:&#10;&#10;status=768 exit=3 signal=0 exited&#10;status=0 exit=0 signal=0 exited&#10;status=256 exit=1 signal=0 exited&#10;status=11 exit=0 signal=11 killed&#10;status=1407 exit=0 signal=5 stopped&#10;result: 3 exited, 1 killed, 1 stopped&#10;&#10;Derive the kind from the bits, not from a second table of labels: a zero low seven bits is exited, 0x7f in the low byte is stopped, anything else is killed."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;struct decoded &#123;&#10;    const char *kind;&#10;    int exit_code;&#10;    int signal;&#10;&#125;;&#10;&#10;static struct decoded decode(int status) &#123;&#10;    struct decoded d = &#123;&quot;exited&quot;, 0, 0&#125;;&#10;    /* TODO: extract the exit code, or the kill signal, or the stop signal */&#10;    return d;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    static const int STATUSES[] = &#123;768, 0, 256, 11, 1407&#125;;&#10;    /* TODO: decode each, tally the three kinds, print the six lines */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="status=768 exit=3 signal=0 exited&#10;status=0 exit=0 signal=0 exited&#10;status=256 exit=1 signal=0 exited&#10;status=11 exit=0 signal=11 killed&#10;status=1407 exit=0 signal=5 stopped&#10;result: 3 exited, 1 killed, 1 stopped&#10;"
+	hints={[
+		'Three tests in order: status & 0x7f == 0 means it exited and the code is (status >> 8) & 0xff; (status & 0xff) == 0x7f means stopped and the stop signal is bits 15 to 8; otherwise it was killed by the signal in the low seven bits.',
+		'768 is exit 3 because 3 << 8 is 768. 1407 is 0x57F, so the low byte is 0x7f (stopped) and the byte above is 5. Count the kinds as you print so the tally cannot disagree with the lines.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* The kernel does not hand you the exit code: it hands you a status word&#10; * and the macros do the bit surgery. This is that surgery, written out. */&#10;&#10;struct decoded &#123;&#10;    const char *kind;   /* exited, killed, stopped */&#10;    int exit_code;&#10;    int signal;&#10;&#125;;&#10;&#10;static struct decoded decode(int status) &#123;&#10;    struct decoded d = &#123;&quot;exited&quot;, 0, 0&#125;;&#10;&#10;    if ((status &amp; 0x7f) == 0) &#123;&#10;        d.exit_code = (status &gt;&gt; 8) &amp; 0xff;&#10;    &#125; else if ((status &amp; 0xff) == 0x7f) &#123;&#10;        d.kind = &quot;stopped&quot;;&#10;        d.signal = (status &gt;&gt; 8) &amp; 0xff;&#10;    &#125; else &#123;&#10;        d.kind = &quot;killed&quot;;&#10;        d.signal = status &amp; 0x7f;&#10;    &#125;&#10;    return d;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    static const int STATUSES[] = &#123;768, 0, 256, 11, 1407&#125;;&#10;    int exited = 0;&#10;    int killed = 0;&#10;    int stopped = 0;&#10;&#10;    for (size_t i = 0; i &lt; sizeof STATUSES / sizeof STATUSES[0]; i++) &#123;&#10;        struct decoded d = decode(STATUSES[i]);&#10;        printf(&quot;status=%d exit=%d signal=%d %s\n&quot;, STATUSES[i], d.exit_code,&#10;               d.signal, d.kind);&#10;        if (d.kind[0] == 'e') &#123;&#10;            exited++;&#10;        &#125; else if (d.kind[0] == 'k') &#123;&#10;            killed++;&#10;        &#125; else &#123;&#10;            stopped++;&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;result: %d exited, %d killed, %d stopped\n&quot;, exited, killed, stopped);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="fork-exec-quiz-1"
+	question="A child process execs a new program. Does the PID change, and do the file descriptors opened before the exec still work afterwards?"
+	options={[
+		'The PID stays the same. exec replaces the program image, not the process, so open file descriptors remain valid unless they were marked close-on-exec',
+		'The PID changes, because exec loads a new program and the kernel treats it as a new process',
+		'The PID stays the same, but every descriptor is closed by the exec, so only descriptors reopened afterwards work',
+		'The PID changes and all descriptors are closed, since exec starts from the state of a fresh shell'
+	]}
+	answer={0}
+	explanation="exec overwrites the code and data of the calling process but the kernel keeps the same task_struct, pid, and descriptor table, which is exactly why shells rely on fd inheritance across exec."
+/>
+
+<LectureReference lecture="Lecture 11 — Processes" slides="16–30" />

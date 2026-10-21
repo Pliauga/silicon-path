@@ -1,0 +1,254 @@
+---
+id: 14-03-monitors
+title: Monitors
+module: 14
+lecture: 'Lecture 14 — Synchronization'
+slides: '31–45'
+estimatedMinutes: 19
+prerequisites: ['14-02-mutex-semaphore']
+tags: ['monitors', 'condition-variables', 'concurrency']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The problem with bare mutexes
+
+Last lesson's bounded buffer works, but look at what it asks of the programmer.
+Two semaphores count slots and items; a mutex protects the indices; the order in
+which you touch them decides whether the program runs or deadlocks. Get the order
+right and it works. Get it wrong and it hangs. The correctness lives in your head,
+not in the code.
+
+A **monitor** moves that correctness into the code. The idea: a mutex plus one or
+more **condition variables**, with one rule — you hold the mutex whenever you
+touch the shared data. A condition variable is not a count and holds no value. It
+is a waiting room. `pthread_cond_wait(&cv, &mutex)` does three things atomically:
+releases the mutex, blocks until signalled, and reacquires the mutex before
+returning. That atomicity is the whole point — it closes the window where a
+thread releases the lock and another thread signals before the first is asleep.
+
+C has no `monitor` keyword. C++ and Java do. In C the pattern is written by hand,
+and this lesson is that pattern.
+
+## What you'll be able to do
+
+- Define a monitor as a mutex plus condition variables and a locking rule.
+- Explain what `pthread_cond_wait` does atomically, and why that matters.
+- Guard a wait with `while` rather than `if`, and say what breaks otherwise.
+- Signal the right condition variable, with the mutex held, after changing state.
+
+<TheoryBlock label="Why it matters for C" title="`while`, never `if`">
+
+	`pthread_cond_wait` can wake up without a signal — a spurious wakeup is permitted by POSIX — and
+	another thread can consume the condition between the signal and your thread reacquiring the mutex.
+	Both mean the predicate you checked before waiting may be false again when you return. So the wait
+	goes inside `while (condition_not_met)`, never `if`. Code that uses `if` compiles, passes tests, and
+	fails once a month in production. This is the single most common bug in hand-written monitors.
+</TheoryBlock>
+
+## The pattern on a bounded queue
+
+One producer, one consumer, capacity three, six items. The mutex protects `queue`,
+`count`, and `handled`. Two condition variables say *"there is room"* and
+*"there is something to take"*.
+
+<Eli5Block
+	topic="monitor"
+	football="A physio room with one door and one rule: you may only touch the table while you hold the key. If the table is busy you sit in the corridor and hand the key back first — atomically, so nobody slips in while you are between door and chair."
+	money="A single clerk who is also the only person allowed to open the safe. You never queue at the safe; you queue at the counter, and the clerk does the safe work while you wait. If your form is not ready, the clerk sits you down and calls you back when it is. One person, one queue, never two in the vault."
+/>
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <pthread.h>
+#include <stdio.h>
+
+/* POSIX has no monitor keyword. A monitor is a mutex plus one or more
+   condition variables, with the rule that you hold the mutex whenever you
+   touch the shared state. This is that pattern on a bounded queue. */
+
+#define CAPACITY 3
+#define PRODUCED 6
+
+static int queue[CAPACITY];
+static int count = 0;
+static int handled = 0;
+
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t not_full = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t not_empty = PTHREAD_COND_INITIALIZER;
+
+static void put(int value) {
+    pthread_mutex_lock(&lock);
+    while (count == CAPACITY) {
+        pthread_cond_wait(&not_full, &lock);    /* releases lock while waiting */
+    }
+    queue[count++] = value;
+    pthread_cond_signal(&not_empty);
+    pthread_mutex_unlock(&lock);
+}
+
+static int take(void) {
+    pthread_mutex_lock(&lock);
+    while (count == 0) {
+        pthread_cond_wait(&not_empty, &lock);
+    }
+    int value = queue[0];
+    for (int i = 1; i < count; i++) {
+        queue[i - 1] = queue[i];
+    }
+    count--;
+    handled++;
+    pthread_cond_signal(&not_full);
+    pthread_mutex_unlock(&lock);
+    return value;
+}
+
+static void *producer(void *arg) {
+    (void)arg;
+    for (int i = 0; i < PRODUCED; i++) {
+        put(i);
+    }
+    return NULL;
+}
+
+static void *consumer(void *arg) {
+    (void)arg;
+    for (int i = 0; i < PRODUCED; i++) {
+        int value = take();
+        printf("consumer took %d\n", value);
+    }
+    return NULL;
+}
+
+int main(void) {
+    pthread_t prod;
+    pthread_t cons;
+
+    if (pthread_create(&prod, NULL, producer, NULL) != 0 ||
+        pthread_create(&cons, NULL, consumer, NULL) != 0) {
+        fprintf(stderr, "could not create threads\n");
+        return 1;
+    }
+
+    pthread_join(prod, NULL);
+    pthread_join(cons, NULL);
+
+    printf("handled = %d of %d\n", handled, PRODUCED);
+
+    pthread_cond_destroy(&not_full);
+    pthread_cond_destroy(&not_empty);
+    pthread_mutex_destroy(&lock);
+    return 0;
+}
+```
+
+Three things to notice. `put` and `take` are the *only* functions that touch
+`queue`, `count`, or `handled`, and each takes the lock on entry and releases it
+on exit — the invariant is enforced at the boundary, which is what a language
+monitor does for you automatically. The `while` loops guard the waits. And each
+function signals *after* changing the state but *before* releasing the lock,
+which is safe because the signaller still holds it.
+
+```text
+gcc -std=c11 -Wall -Wextra -pthread monitor.c -o monitor
+./monitor
+```
+
+## Expected output
+
+```text
+consumer took 0
+consumer took 1
+consumer took 2
+consumer took 3
+consumer took 4
+consumer took 5
+handled = 6 of 6
+```
+
+Here is the interesting part. With capacity three and six items, the producer
+cannot run ahead: it fills three slots, then blocks on `not_full` until the
+consumer drains one. Yet the output is fully ordered, `0` through `5`. That is
+not luck. The producer is only ever ahead by three items, so the consumer always
+takes the oldest item before a newer one can be produced, and a single consumer
+thread cannot reorder what it takes. The *timing* varies between runs; the
+sequence does not.
+
+Change one thing — two consumers — and the order becomes genuinely
+non-deterministic, because either consumer may take the next item. The counts
+stay correct and `handled` still reaches 6. That is the invariant the monitor
+protects; the order is not part of it.
+
+Windows has neither `<pthread.h>` nor `<semaphore.h>`, so this program is POSIX
+only. On Windows the equivalent modern spelling is a `CRITICAL_SECTION` plus
+`CONDITION_VARIABLE`, and the `while` rule is identical.
+
+## Common pitfalls
+
+### `if` instead of `while` around the wait
+
+The bug this lesson keeps returning to. Between `pthread_cond_signal` and the
+woken thread actually reacquiring the mutex, a third thread can take the item.
+The woken thread then proceeds believing there is work when there is none, reads
+uninitialised memory, or decrements a count below zero. `while` re-checks and
+goes back to sleep.
+
+### Signalling while not holding the lock
+
+POSIX allows it, and it is usually a mistake. The signal can be delivered while
+the waiter has not yet called `pthread_cond_wait`, so the wakeup is lost and the
+waiter sleeps forever. Signal with the mutex held and the state already updated;
+the waiter cannot be between checking the predicate and sleeping, because it
+holds the mutex to check.
+
+### Using one condition variable for two conditions
+
+A single `cond` for both "room available" and "item available" means a signal
+may wake the wrong kind of waiter, which then re-checks, finds nothing, and sleeps
+again — wasteful, and with `pthread_cond_signal` rather than `broadcast` it can
+stall entirely. One condition variable per predicate.
+
+### Forgetting that `pthread_cond_wait` takes the mutex by pointer
+
+The second argument must be the same mutex you hold. Passing a different one is
+undefined behaviour: the function unlocks that other mutex — which you do not
+hold — and your thread continues holding the real one while asleep. The symptom
+is a hang with no diagnostic.
+
+<ExerciseCard
+	id="monitor-two-consumers"
+	concept="condition variable, not empty/not full"
+	prompt="Model a monitor with two condition variables as a fixed schedule. One producer offers items 0 to 5 to a buffer of capacity 2; each round it attempts up to three puts, then one consumer takes an item (consumer 0 on even rounds, consumer 1 on odd rounds), each consumer stopping after three items. A full buffer ends the producer's turn and counts as one wait; an empty buffer skips the take. Print exactly:&#10;consumer 0: 0 2 4&#10;consumer 1: 1 3 5&#10;producer waited 4 rounds&#10;handled 6 of 6&#10;buffer empty: yes&#10;Nothing else. The numbers are the point: every item is handled exactly once and both consumers make progress."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define CAPACITY 2&#10;#define ITEMS 6&#10;#define PER_CONSUMER 3&#10;&#10;int main(void) &#123;&#10;    int buffer[CAPACITY];&#10;    int head = 0;&#10;    int count = 0;&#10;    int next_item = 0;&#10;    int taken[2][PER_CONSUMER];&#10;    int ntaken[2] = &#123;0, 0&#125;;&#10;    int waits = 0;&#10;    int round = 0;&#10;&#10;    while (ntaken[0] &lt; PER_CONSUMER || ntaken[1] &lt; PER_CONSUMER) &#123;&#10;        /* TODO: the producer attempts up to three puts; a full buffer&#10;           counts one wait and ends its turn */&#10;        /* TODO: this round's consumer takes one item if the buffer is&#10;           not empty */&#10;        round++;&#10;    &#125;&#10;&#10;    /* TODO: print the two consumer lines, the wait count, the handled&#10;       total and whether the buffer ended empty */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="consumer 0: 0 2 4&#10;consumer 1: 1 3 5&#10;producer waited 4 rounds&#10;handled 6 of 6&#10;buffer empty: yes&#10;"
+	hints={[
+		'The wait count comes only from rounds where the producer still had items to offer and found the buffer at capacity 2.',
+		'Rounds 0 to 3 each end with a blocked third put, so waits is 4; the consumers alternate, so consumer 0 sees 0 2 4 and consumer 1 sees 1 3 5.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* A monitor with two condition variables, modelled as a fixed schedule:&#10; * each round the producer attempts up to three puts, then one consumer&#10; * takes (alternating). A full buffer blocks the producer; an empty one&#10; * blocks the consumer. The while loops are what make a spurious wake-up&#10; * harmless, so the model checks the condition every time. */&#10;&#10;#define CAPACITY 2&#10;#define ITEMS 6&#10;#define PER_CONSUMER 3&#10;&#10;int main(void) &#123;&#10;    int buffer[CAPACITY];&#10;    int head = 0;&#10;    int count = 0;&#10;    int next_item = 0;&#10;    int taken[2][PER_CONSUMER];&#10;    int ntaken[2] = &#123;0, 0&#125;;&#10;    int waits = 0;&#10;    int round = 0;&#10;&#10;    while (ntaken[0] &lt; PER_CONSUMER || ntaken[1] &lt; PER_CONSUMER) &#123;&#10;        int consumer = round % 2;&#10;&#10;        for (int attempt = 0; attempt &lt; 3 &amp;&amp; next_item &lt; ITEMS; attempt++) &#123;&#10;            if (count == CAPACITY) &#123;&#10;                waits++;&#10;                break;&#10;            &#125;&#10;            buffer[(head + count) % CAPACITY] = next_item;&#10;            count++;&#10;            next_item++;&#10;        &#125;&#10;&#10;        if (count &gt; 0 &amp;&amp; ntaken[consumer] &lt; PER_CONSUMER) &#123;&#10;            taken[consumer][ntaken[consumer]] = buffer[head];&#10;            ntaken[consumer]++;&#10;            head = (head + 1) % CAPACITY;&#10;            count--;&#10;        &#125;&#10;        round++;&#10;    &#125;&#10;&#10;    for (int c = 0; c &lt; 2; c++) &#123;&#10;        printf(&quot;consumer %d:&quot;, c);&#10;        for (int i = 0; i &lt; ntaken[c]; i++) &#123;&#10;            printf(&quot; %d&quot;, taken[c][i]);&#10;        &#125;&#10;        printf(&quot;\n&quot;);&#10;    &#125;&#10;    printf(&quot;producer waited %d rounds\n&quot;, waits);&#10;    printf(&quot;handled %d of %d\n&quot;, ntaken[0] + ntaken[1], ITEMS);&#10;    printf(&quot;buffer empty: %s\n&quot;, count == 0 ? &quot;yes&quot; : &quot;no&quot;);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="monitor-quiz-1"
+	question="A monitor uses two condition variables and three threads. Explain why the wait must sit inside a while loop even though the code holds the mutex for the entire check-and-wait sequence."
+	options={[
+		'The mutex is released while the thread waits, so another thread may consume the item first; on waking the condition must be re-checked, and spurious wake-ups return without any signal at all.',
+		'Because a condition variable can wake several waiters and only the last one gets the mutex.',
+		'Because the while loop is what releases the mutex; an if would keep it held and deadlock the signaller.',
+		'Because POSIX requires wait calls to appear inside a loop and the compiler rejects any other form.'
+	]}
+	answer={0}
+	explanation="pthread_cond_wait atomically releases the mutex and reacquires it before returning, so the state can change in between; another thread may take the item, or the wake-up may be spurious. The while re-tests the predicate after every return, which an if cannot do."
+/>
+
+<LectureReference lecture="Lecture 14 — Synchronization" slides="31–45" />

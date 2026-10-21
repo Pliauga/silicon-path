@@ -1,0 +1,278 @@
+---
+id: 03-01-cpu-memory
+title: The CPU & Memory
+module: 3
+lecture: 'Lecture 03 — Architecture 1'
+slides: '4–18'
+estimatedMinutes: 16
+prerequisites: ['02-03-floating-point']
+tags: ['von-neumann', 'memory', 'types']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import LazyStudy from '$lib/components/viz/LazyStudy.svelte';
+	import CPUExplodedView from '$lib/components/viz/CPUExplodedView.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte'; import TheoryBlock from
+	'$lib/components/lesson/TheoryBlock.svelte'; import LectureReference from
+	'$lib/components/lesson/LectureReference.svelte'; import ExerciseCard from
+	'$lib/components/lesson/ExerciseCard.svelte'; import QuizCard from
+	'$lib/components/lesson/QuizCard.svelte'; import PointerSandbox from
+	'$lib/components/viz/PointerSandbox.svelte';
+</script>
+
+## One room, two kinds of furniture
+
+The model nearly every machine you will use follows is called **von
+Neumann**: a processor, a memory, and a single set of wires between them.
+Instructions live in the same memory as data. That is the whole
+architecture, and it has one immediate consequence — the CPU cannot tell
+an instruction from a number. It only knows what the program counter
+told it to fetch next.
+
+The second consequence is a bottleneck. The wire between the CPU and
+memory can carry one word per cycle, and the CPU can execute an
+instruction per cycle. Feeding the machine from memory at that rate is
+impossible beyond a certain speed, so real designs insert a small, fast
+copy of recent memory between the two. That copy is the cache, and this
+lesson is the part before it.
+
+## What you'll be able to do
+
+- Describe the von Neumann cycle in one sentence without naming the parts.
+- State the size of every fundamental C type on a 64-bit machine, and say which sizes the standard actually guarantees.
+- Explain why `long` differs between Windows and Linux on the same hardware.
+- Measure a struct's size and account for every byte of padding.
+
+## The three connections
+
+A CPU needs to do three things to memory: say _where_, say _what_, and
+read or write. Those map onto three buses, and almost every architectural
+discussion is about one of them.
+
+| Bus     | Direction     | Carries            | Width decides                  |
+| ------- | ------------- | ------------------ | ------------------------------ |
+| Address | CPU to memory | which location     | how much memory is addressable |
+| Data    | both ways     | the value          | how much moves per transfer    |
+| Control | CPU to memory | read, write, clock | when a transfer happens        |
+
+A 32-bit address bus reaches 4 GiB. That is not a coincidence: `2^32`
+bytes is exactly the reason 32-bit machines could not use more than four
+gigabytes of memory, and the reason a 64-bit machine's address space is
+stated as `2^64` rather than a round decimal number.
+
+The data bus width is why `int` was 16 bits on early machines, 32 on the
+machines you use, and why the C standard refuses to promise a size. Type
+sizes track whatever the machine finds convenient to move.
+
+<Eli5Block
+	topic="address-bus"
+	football="The number of seats in a stadium is decided by how many digits the ticket numbers have. Three digits is a thousand seats; four digits is ten thousand. Nobody can sit in a seat the ticket system cannot number, however much concrete is poured."
+	money="A bank's account numbers have ten digits, so the bank can hold ten billion accounts. That is a limit of the paperwork, not of the money. To open more, the bank must lengthen the number, and every form, card, and database column changes with it."
+/>
+
+<PointerSandbox />
+
+<TheoryBlock label="Why it matters for C" title="The type is a promise about representation, not a number">
+
+    `int` does not mean "a number". It means "a value the machine can
+    address and move in its native word, at least 16 bits". `size_t` means
+    "enough bits to index any object" — which is why it is 8 bytes here and
+    would be 4 on a 32-bit build. When you write `printf("%zu", sizeof x)`
+    you are asking the compiler to report its own decision.
+
+</TheoryBlock>
+
+## Sizes and layout, measured rather than assumed
+
+`sizeof` is evaluated by the compiler for the target, not by the machine
+you compiled on. That makes it the honest way to ask what your program
+actually gets.
+
+The program below answers three questions at once: how wide each
+fundamental type is, how the fixed-width types compare, and what padding
+does to a struct. It prints `CHAR_BIT` and two limits so the relationship
+between width and range sits next to the numbers.
+
+```c
+#include <limits.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
+struct plain {
+    char a;
+    int b;
+    char c;
+};
+
+struct packed_order {
+    char a;
+    char c;
+    int b;
+};
+
+int main(void) {
+    printf("type sizes on this target:\n");
+    printf("  %-10s %zu\n", "char", sizeof(char));
+    printf("  %-10s %zu\n", "short", sizeof(short));
+    printf("  %-10s %zu\n", "int", sizeof(int));
+    printf("  %-10s %zu\n", "long", sizeof(long));
+    printf("  %-10s %zu\n", "long long", sizeof(long long));
+    printf("  %-10s %zu\n", "float", sizeof(float));
+    printf("  %-10s %zu\n", "double", sizeof(double));
+    printf("  %-10s %zu\n", "void *", sizeof(void *));
+    printf("  %-10s %zu\n", "size_t", sizeof(size_t));
+    printf("\n");
+
+    printf("fixed-width types:\n");
+    printf("  %-10s %zu\n", "int8_t", sizeof(int8_t));
+    printf("  %-10s %zu\n", "int16_t", sizeof(int16_t));
+    printf("  %-10s %zu\n", "int32_t", sizeof(int32_t));
+    printf("  %-10s %zu\n", "int64_t", sizeof(int64_t));
+    printf("\n");
+
+    printf("CHAR_BIT = %d, INT_MAX = %d, UINT_MAX = %u\n\n",
+           CHAR_BIT, INT_MAX, UINT_MAX);
+
+    printf("struct plain { char; int; char; }\n");
+    printf("  size          = %zu\n", sizeof(struct plain));
+    printf("  offsetof a    = %zu\n", offsetof(struct plain, a));
+    printf("  offsetof b    = %zu\n", offsetof(struct plain, b));
+    printf("  offsetof c    = %zu\n", offsetof(struct plain, c));
+    printf("  gap after a   = %zu bytes\n",
+           offsetof(struct plain, b)
+               - (offsetof(struct plain, a) + sizeof(char)));
+    printf("  trailing pad  = %zu bytes\n\n",
+           sizeof(struct plain)
+               - (offsetof(struct plain, c) + sizeof(char)));
+
+    printf("struct packed_order { char; char; int; }\n");
+    printf("  size          = %zu\n", sizeof(struct packed_order));
+    printf("  offsetof b    = %zu\n",
+           offsetof(struct packed_order, b));
+    printf("  same fields, reordered, uses %zu fewer bytes\n",
+           sizeof(struct plain) - sizeof(struct packed_order));
+    return 0;
+}
+```
+
+## Expected output
+
+On a typical 64-bit macOS or Linux machine with a 64-bit `long`:
+
+```text
+type sizes on this target:
+  char       1
+  short      2
+  int        4
+  long       8
+  long long  8
+  float      4
+  double     8
+  void *     8
+  size_t     8
+
+fixed-width types:
+  int8_t     1
+  int16_t    2
+  int32_t    4
+  int64_t    8
+
+CHAR_BIT = 8, INT_MAX = 2147483647, UINT_MAX = 4294967295
+
+struct plain { char; int; char; }
+  size          = 12
+  offsetof a    = 0
+  offsetof b    = 4
+  offsetof c    = 8
+  gap after a   = 3 bytes
+  trailing pad  = 3 bytes
+
+struct packed_order { char; char; int; }
+  size          = 8
+  offsetof b    = 4
+  same fields, reordered, uses 4 fewer bytes
+```
+
+**These numbers are not universal.** Only two facts are guaranteed by the
+standard: `sizeof(char) == 1`, and the ordering
+`char <= short <= int <= long <= long long`. Everything else is a
+property of the target, which is why the heading says "on this target".
+
+The `long` row is the one worth memorising. On 64-bit Windows — the LLP64
+model — `long` is 4 bytes even though pointers are 8. On 64-bit macOS and
+Linux — LP64 — `long` is 8. Same silicon, different choice, which is why a
+file format that writes raw `long` values is not portable between them.
+`int32_t` and `int64_t` exist so that you never have to make that guess.
+
+Walk through `struct plain`: `a` sits at 0, then `b` cannot start until
+offset 4, so bytes 1–3 are a gap. `c` sits at 8, and the struct's
+alignment is 4, so the total rounds up to 12 — bytes 9–11 are trailing
+padding belonging to no field. Two sources of waste, one layout.
+
+`struct packed_order` puts both chars first, so there is only one gap,
+and the total lands on 8. Same three fields, four bytes saved, from
+ordering alone.
+
+## Common pitfalls
+
+### Assuming `sizeof(int) == 4`
+
+The standard promises at least 16 bits. A 16-bit embedded target will
+print 2, and a program that packs four bytes into an `int` corrupts memory
+there. Use `int32_t` when the width is part of the algorithm and plain
+`int` when it is just a convenient counter.
+
+### Assuming `sizeof(long) == sizeof(void *)`
+
+True on LP64 systems, false on 64-bit Windows. Passing a pointer to
+`printf("%ld")` warns on one and truncates on the other. Use `%p` for
+pointers and `%zu` for sizes, and let `-Wformat` check the pairing.
+
+### Forgetting trailing padding
+
+`sizeof(struct plain)` includes three bytes after `c` that no field
+occupies. A `memcmp` of two such structs compares those bytes too, and
+they are uninitialised — which is why comparing structs with `memcmp` is
+unreliable even when every field is equal.
+
+### Serialising a struct with `fwrite`
+
+Writing a struct as raw bytes writes the padding, which may contain
+anything, and the layout, which depends on the alignment rules of the
+compiler that built it. Size and meaning differ across builds. Serialise
+field by field, in a defined order, with defined widths.
+
+<LazyStudy href="/cpu/" fig="03.1" caption="The CPU, exploded">
+	<CPUExplodedView />
+</LazyStudy>
+
+<ExerciseCard
+	id="m03-struct-layout"
+	concept="struct alignment and padding"
+	prompt="Define three structs holding the same fields, char a, short b, int c, char d, in three different orders. Print one line per struct in exactly the form `order_a size=12 a=0 b=2 c=4 d=8` — the struct name, its sizeof, then offsetof for a, b, c, d in that order. Finish with a line of the form `smallest: NAME size=N` naming whichever ordering wastes the least padding."
+	starter="#include &lt;stddef.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;struct order_a &#123; char a; short b; int c; char d; &#125;;&#10;/* TODO: two more orderings, then print size and offsets */&#10;&#10;int main(void) &#123;&#10;    return 0;&#10;&#125;"
+	expectedStdout="order_a size=12 a=0 b=2 c=4 d=8&#10;order_b size=12 a=4 b=6 c=0 d=8&#10;order_c size=8 a=2 b=0 c=4 d=3&#10;smallest: order_c size=8&#10;"
+	hints={[
+		'offsetof takes the type and the field name, as in offsetof(struct order_a, b); print the result with %zu because it is a size_t.',
+		'Sort the fields from widest to narrowest, int then short then the two chars, and the total falls from 12 bytes to 8: only the int needs four-byte alignment.'
+	]}
+	solution="#include &lt;stddef.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;struct order_a &#123; char a; short b; int c; char d; &#125;;&#10;struct order_b &#123; int c; char a; short b; char d; &#125;;&#10;struct order_c &#123; short b; char a; char d; int c; &#125;;&#10;&#10;int main(void) &#123;&#10;    printf(&quot;order_a size=%zu a=%zu b=%zu c=%zu d=%zu\n&quot;, sizeof(struct order_a),&#10;           offsetof(struct order_a, a), offsetof(struct order_a, b),&#10;           offsetof(struct order_a, c), offsetof(struct order_a, d));&#10;    printf(&quot;order_b size=%zu a=%zu b=%zu c=%zu d=%zu\n&quot;, sizeof(struct order_b),&#10;           offsetof(struct order_b, a), offsetof(struct order_b, b),&#10;           offsetof(struct order_b, c), offsetof(struct order_b, d));&#10;    printf(&quot;order_c size=%zu a=%zu b=%zu c=%zu d=%zu\n&quot;, sizeof(struct order_c),&#10;           offsetof(struct order_c, a), offsetof(struct order_c, b),&#10;           offsetof(struct order_c, c), offsetof(struct order_c, d));&#10;&#10;    size_t sizes[] = &#123;sizeof(struct order_a), sizeof(struct order_b),&#10;                      sizeof(struct order_c)&#125;;&#10;    const char *names[] = &#123;&quot;order_a&quot;, &quot;order_b&quot;, &quot;order_c&quot;&#125;;&#10;    int best = 0;&#10;    for (int i = 1; i &lt; 3; i++) &#123;&#10;        if (sizes[i] &lt; sizes[best]) &#123;&#10;            best = i;&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;smallest: %s size=%zu\n&quot;, names[best], sizes[best]);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m03-quiz-addressing"
+	question="A machine has a 24-bit address bus and a 1-byte addressable unit. How much memory can it address, and what changes if the addressable unit becomes 4 bytes?"
+	options={[
+		'2^24 bytes = 16 MiB; with 4-byte units the same number of addresses covers 64 MiB',
+		'2^24 bytes = 16 MiB; with 4-byte units it still covers 16 MiB, but only every fourth byte',
+		'2^24 bytes = 24 MiB; with 4-byte units it covers 96 MiB',
+		'2^24 bytes = 16 MiB; with 4-byte units each address moves into the next byte, so 256 MiB'
+	]}
+	answer={0}
+	explanation="An address is just a number, so 24 bits give 2^24 = 16,777,216 distinct addresses. With one byte per address that is 16 MiB; with four bytes per address the same addresses cover 4 x 16 MiB = 64 MiB."
+/>
+
+<LectureReference lecture="Lecture 03 — Architecture 1" slides="4–18" />

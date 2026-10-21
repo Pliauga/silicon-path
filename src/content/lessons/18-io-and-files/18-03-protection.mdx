@@ -1,0 +1,272 @@
+---
+id: 18-03-protection
+title: Protection
+module: 18
+lecture: 'Lecture 18 — I/O & File Systems'
+slides: '31–45'
+estimatedMinutes: 16
+prerequisites: ['18-02-file-systems']
+tags: ['permissions', 'modes', 'access']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Nine bits and a rule about who is asking
+
+Every protection system answers the same question: may *this* subject perform
+*that* operation on *this* object? The Unix answer fits in nine bits stored in
+the inode. Three classes of user — owner, group, other — each get three
+permissions: read (4), write (2), execute (1).
+
+The classes are checked in order and the first match wins. If you are the
+owner, the owner bits decide, full stop; the group bits are never consulted,
+even when they would have granted more. That ordering is the single most
+misunderstood part of the model, and it is the reason a file with mode `0600`
+cannot be read by anyone but its owner no matter what group they are in.
+
+| Mode | Owner | Group | Other | Typical use |
+| --- | --- | --- | --- | --- |
+| `0600` | `rw-` | `---` | `---` | private key, personal note |
+| `0644` | `rw-` | `r--` | `r--` | ordinary document |
+| `0664` | `rw-` | `rw-` | `r--` | shared document |
+| `0755` | `rwx` | `r-x` | `r-x` | directory, program |
+| `0777` | `rwx` | `rwx` | `rwx` | almost always a mistake |
+
+The leading zero matters in C. `600` is a decimal literal; `0600` is octal and
+equals 384 decimal. Writing `chmod(path, 600)` by accident grants permissions
+that look nothing like what you intended, and it compiles without complaint.
+
+## What you'll be able to do
+
+- Read a mode as three octal digits and say what each class may do.
+- Check a permission bit in C by shifting and masking.
+- Explain why a directory needs execute permission to be entered.
+- Say what happens when a process's user is both owner and group member.
+
+## Directories are not files
+
+The three permission bits mean different things depending on what they are
+attached to, and this trips up almost everyone once.
+
+| Bit | On a file | On a directory |
+| --- | --- | --- |
+| `r` | read the contents | list the names in it |
+| `w` | modify the contents | create, delete, or rename entries |
+| `x` | execute it | traverse it — look up a name inside |
+
+A directory with `r` but not `x` lets you list the names and nothing else. A
+directory with `x` but not `r` lets you open a file whose name you already know,
+but hides the listing. And deleting a file requires write permission on the
+*directory*, not on the file — which is why you can delete a read-only file in a
+directory you own, and why you cannot delete a file in a directory you do not.
+
+<TheoryBlock label="Why it matters for C" title="The kernel checks, not your program">
+
+	When a program calls `open("/etc/shadow", O_RDONLY)`, the check happens inside
+	the kernel against the real user ID of the process. There is no way to talk your
+	way past it from user space, and no C code you can write changes the answer. That
+	is the point of a protection system: the enforcement is in a layer your program
+	cannot modify. A **setuid** binary is the one exception — it runs with the file
+	owner's ID instead of yours — and every setuid bug ever found is a bug in that
+	exception.
+
+</TheoryBlock>
+
+## Denying by default
+
+A protection system that decides *what to allow* grows a list of exceptions. A
+system that decides *what to deny* and then permits explicitly stays auditable:
+everything is forbidden unless a rule says otherwise. The Unix model is the
+second kind — no bits set means no access — and so is every firewall default.
+
+<Eli5Block
+	topic="permission-bits"
+	football="A stadium has three gates: players, staff, and the public. Your ticket says which gate you may use, and the steward checks the first matching gate only. If your ticket is a player's, you go through the players' gate even when the public gate is wide open."
+	money="A safe deposit box has three keys — the owner's, the branch manager's, and the auditor's. The bank checks the first key that matches you and stops. Holding an auditor's key does not help you if you are also the owner, because the owner's key is checked first and it is the only one that counts."
+/>
+
+## Checking the bits in C
+
+The program below implements the permission check the way the kernel does it —
+shift to the right class, mask the three bits, and ask whether the requested
+permission is present. It also computes a mode string and clears a single bit
+with a mask.
+
+```c
+#include <stdio.h>
+
+/* Permission bits as a plain integer: 3 bits each for owner, group, other.
+   The same low nine bits a real inode stores. */
+
+#define R_BIT 4u
+#define W_BIT 2u
+#define X_BIT 1u
+
+struct rule {
+    const char *name;
+    unsigned mode;   /* only the low 9 bits matter */
+};
+
+static int allowed(unsigned mode, int who, unsigned need) {
+    /* who: 0 owner, 1 group, 2 other. Shift 3 bits per class. */
+    unsigned shift = 3u * (unsigned)(2 - who);
+    unsigned bits = (mode >> shift) & 7u;
+    return (bits & need) == need;
+}
+
+static void describe(const struct rule *r) {
+    printf("%-10s 0%03o  ", r->name, r->mode);
+
+    static const char *who[] = {"owner", "group", "other"};
+    for (int i = 0; i < 3; i++) {
+        unsigned shift = 3u * (unsigned)(2 - i);
+        unsigned bits = (r->mode >> shift) & 7u;
+        printf("%s=%c%c%c ", who[i],
+               (bits & R_BIT) ? 'r' : '-',
+               (bits & W_BIT) ? 'w' : '-',
+               (bits & X_BIT) ? 'x' : '-');
+    }
+    printf("\n");
+}
+
+int main(void) {
+    const struct rule rules[] = {
+        {"private",  0600u},
+        {"script",   0755u},
+        {"shared",   0664u},
+        {"readonly", 0444u},
+        {"public",   0777u}
+    };
+    const size_t count = sizeof rules / sizeof rules[0];
+
+    for (size_t i = 0; i < count; i++) {
+        describe(&rules[i]);
+    }
+
+    printf("\ncan a stranger read each one?\n");
+    for (size_t i = 0; i < count; i++) {
+        printf("%-10s %s\n", rules[i].name,
+               allowed(rules[i].mode, 2, R_BIT) ? "yes" : "no");
+    }
+
+    printf("\ncan the owner run each one?\n");
+    for (size_t i = 0; i < count; i++) {
+        printf("%-10s %s\n", rules[i].name,
+               allowed(rules[i].mode, 0, X_BIT) ? "yes" : "no");
+    }
+
+    printf("\nremoving the group write bit from 0664:\n");
+    unsigned shared = 0664u;
+    unsigned shift = 3u;           /* group class sits above the low 3 bits */
+    shared &= ~(W_BIT << shift);
+    printf("0664 -> 0%03o\n", shared);
+
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+private    0600  owner=rw- group=--- other=--- 
+script     0755  owner=rwx group=r-x other=r-x 
+shared     0664  owner=rw- group=rw- other=r-- 
+readonly   0444  owner=r-- group=r-- other=r-- 
+public     0777  owner=rwx group=rwx other=rwx 
+
+can a stranger read each one?
+private    no
+script     yes
+shared     yes
+readonly   yes
+public     yes
+
+can the owner run each one?
+private    no
+script     yes
+shared     no
+readonly   no
+public     yes
+
+removing the group write bit from 0664:
+0664 -> 0644
+```
+
+The last three lines are the interesting ones. `private` is readable by nobody
+but its owner, and the group and other columns stay empty no matter how many
+people share the owner's group. And `~` is what makes a bit-clearing mask: the
+complement of `0o020` inside a 32-bit `unsigned` is a word with every bit set
+except that one.
+
+One thing this program does not model: the kernel checks the owner class
+*first and only*. A real `access()` call would refuse the owner of `0600` even
+if they were also in a group granted read. The `allowed` function above is
+per-class, so it can answer "what would the group rule say"; the kernel asks a
+different question.
+
+<ExerciseCard
+	id="m18-umask"
+	concept="umask as bit clearing"
+	prompt="Write apply_umask(base, mask) that returns base with every bit the mask names cleared, then print the mode of a new file created under 0666 and a new directory created under 0777 for the masks 022, 027 and 077, as octal. Finish with a computed check that the strictest mask leaves nothing at all for group or other. Print exactly:&#10;umask 022 -&gt; file 0644 dir 0755&#10;umask 027 -&gt; file 0640 dir 0750&#10;umask 077 -&gt; file 0600 dir 0700&#10;077 leaves nothing for group or other: yes&#10;Nothing else."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;static unsigned apply_umask(unsigned base, unsigned mask) &#123;&#10;    /* TODO: return base with the masked bits cleared */&#10;    return base;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: print 0666 and 0777 under three umasks */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="umask 022 -&gt; file 0644 dir 0755&#10;umask 027 -&gt; file 0640 dir 0750&#10;umask 077 -&gt; file 0600 dir 0700&#10;077 leaves nothing for group or other: yes&#10;"
+	hints={[
+		'Clearing a bit is base & ~mask, and the mask is octal: 022 clears group and other write, 027 clears group write and all group and other bits that end in 7.',
+		'0666 with 022 gives 0644 and 0777 with 022 gives 0755; with 077 the file becomes 0600 and the directory 0700.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;/* A umask is a subtraction from a default: the kernel starts from 0666&#10; * (files) or 0777 (directories) and clears every bit the mask names. */&#10;&#10;#define FILE_BASE 0666u&#10;#define DIR_BASE 0777u&#10;&#10;static unsigned apply_umask(unsigned base, unsigned mask) &#123;&#10;    return base &amp; ~mask;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    const unsigned masks[] = &#123;0022u, 0027u, 0077u&#125;;&#10;&#10;    for (int i = 0; i &lt; 3; i++) &#123;&#10;        unsigned file = apply_umask(FILE_BASE, masks[i]);&#10;        unsigned dir = apply_umask(DIR_BASE, masks[i]);&#10;&#10;        printf(&quot;umask %03o -&gt; file %04o dir %04o\n&quot;, masks[i], file, dir);&#10;    &#125;&#10;&#10;    unsigned strictest = apply_umask(FILE_BASE, 0077u);&#10;    printf(&quot;077 leaves nothing for group or other: %s\n&quot;,&#10;           (strictest &amp; 0077u) == 0u ? &quot;yes&quot; : &quot;no&quot;);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Writing `chmod(path, 644)` instead of `0644`
+
+Without the leading zero, `644` is decimal and equals octal `1204`, which sets
+bits outside the permission field entirely. The call usually fails with
+`EINVAL` and occasionally does something surprising. Every mode literal in C
+starts with `0`, and the compiler will not warn you.
+
+### Expecting group permissions to add to owner permissions
+
+They do not stack. A process whose user is the file's owner is judged by the
+owner bits alone, so adding a group grant cannot give the owner more access.
+The corollary: when a program starts failing after a mode change, check which
+class it is being evaluated as before changing the bits again.
+
+### Believing `x` on a script is enough
+
+The `x` bit lets the kernel try to execute the file. For a shell script the
+kernel reads the `#!` line and runs the named interpreter, which then needs
+read permission on the script — and the interpreter must be readable by the
+same user. For a compiled binary only `x` is needed, because the kernel maps
+it directly.
+
+### Setting `0777` to "make it work"
+
+A world-writable file or directory in a shared location is a privilege
+escalation waiting to happen: anyone can replace the contents with something
+the owner will later execute. The correct fix is to give the specific group
+the specific bits, or to run the service as its own user.
+
+<QuizCard
+	id="m18-quiz-dir-x"
+	question="A directory has mode `0644` and contains `notes.txt` with mode `0644`. You are the owner. Can you read the file, can you list the directory, and what single bit fixes the problem?"
+	options={[
+		'You can read notes.txt if you know its name, but you cannot list the directory: listing reads the directory\'s entries, which needs the read bit, and reaching any file by name needs execute on its directory. The single bit to add is x on the directory (0744).',
+		'You can do neither, and the single bit to add is read on the directory, because without 0400 on the directory nothing inside it can be opened.',
+		'You can do both, because the file\'s own 0644 controls access and the directory\'s mode only matters for creating files.',
+		'You can list the directory but not read the file, and the fix is to add read on the directory for the group.'
+	]}
+	answer={0}
+	explanation="A directory's r bit lists names and its x bit permits traversal to the inodes those names point to; w allows creating and deleting entries. 0644 gives no traversal, so the file is unreachable even though the file's own bits allow reading it."
+/>
+
+<LectureReference lecture="Lecture 18 — I/O & File Systems" slides="31–45" />

@@ -1,0 +1,243 @@
+{
+  "source_file": "/Users/ep/Desktop/strip/CST1500_Week_2.pdf",
+  "sha256": "c3f063147888451971d080258bfa497b697fc3f23b2cad0b4a1a4f5d1dde39f6",
+  "page_count": 14,
+  "parser_used": "pypdfium2 5.14.0 (PDFium)",
+  "ocr_used": false,
+  "ocr_pages": [],
+  "page_map": [
+    {
+      "page": 1,
+      "char_start": 0,
+      "char_end": 2036,
+      "ocr": false
+    },
+    {
+      "page": 2,
+      "char_start": 2036,
+      "char_end": 3299,
+      "ocr": false
+    },
+    {
+      "page": 3,
+      "char_start": 3299,
+      "char_end": 4406,
+      "ocr": false
+    },
+    {
+      "page": 4,
+      "char_start": 4406,
+      "char_end": 5363,
+      "ocr": false
+    },
+    {
+      "page": 5,
+      "char_start": 5363,
+      "char_end": 6560,
+      "ocr": false
+    },
+    {
+      "page": 6,
+      "char_start": 6560,
+      "char_end": 7884,
+      "ocr": false
+    },
+    {
+      "page": 7,
+      "char_start": 7884,
+      "char_end": 9278,
+      "ocr": false
+    },
+    {
+      "page": 8,
+      "char_start": 9278,
+      "char_end": 10495,
+      "ocr": false
+    },
+    {
+      "page": 9,
+      "char_start": 10495,
+      "char_end": 11694,
+      "ocr": false
+    },
+    {
+      "page": 10,
+      "char_start": 11694,
+      "char_end": 12821,
+      "ocr": false
+    },
+    {
+      "page": 11,
+      "char_start": 12821,
+      "char_end": 13939,
+      "ocr": false
+    },
+    {
+      "page": 12,
+      "char_start": 13939,
+      "char_end": 15912,
+      "ocr": false
+    },
+    {
+      "page": 13,
+      "char_start": 15912,
+      "char_end": 17290,
+      "ocr": false
+    },
+    {
+      "page": 14,
+      "char_start": 17290,
+      "char_end": 17722,
+      "ocr": false
+    }
+  ],
+  "tables": [
+    {
+      "id": "table-op-p1-1",
+      "page": 1,
+      "format": "md",
+      "warnings": []
+    },
+    {
+      "id": "table-truth-p2",
+      "page": 2,
+      "format": "md",
+      "warnings": []
+    },
+    {
+      "id": "table-op-p2-3",
+      "page": 2,
+      "format": "md",
+      "warnings": []
+    },
+    {
+      "id": "table-statements-p6",
+      "page": 6,
+      "format": "md",
+      "warnings": []
+    }
+  ],
+  "figures": [
+    {
+      "id": "fig-001",
+      "page": 4,
+      "path": "images/fig-001.png",
+      "caption_if_any": "Figure 1 (Page 4)",
+      "bounds": [
+        72.00000762939453,
+        396.1217956542969,
+        252.4110107421875,
+        481.1160888671875
+      ]
+    },
+    {
+      "id": "fig-002",
+      "page": 4,
+      "path": "images/fig-002.png",
+      "caption_if_any": "Figure 2 (Page 4)",
+      "bounds": [
+        72.0,
+        249.37826538085938,
+        251.77682495117188,
+        354.219482421875
+      ]
+    },
+    {
+      "id": "fig-003",
+      "page": 5,
+      "path": "images/fig-003.png",
+      "caption_if_any": "Figure 3 (Page 5)",
+      "bounds": [
+        72.0,
+        337.2052917480469,
+        282.43756103515625,
+        606.4681396484375
+      ]
+    },
+    {
+      "id": "fig-004",
+      "page": 10,
+      "path": "images/fig-004.png",
+      "caption_if_any": "Figure 4 (Page 10)",
+      "bounds": [
+        71.99999237060547,
+        188.93572998046875,
+        488.1180114746094,
+        330.6134338378906
+      ]
+    }
+  ],
+  "warnings": [],
+  "stripped_elements": [
+    {
+      "page": 1,
+      "type": "page_number",
+      "content": "1"
+    },
+    {
+      "page": 2,
+      "type": "page_number",
+      "content": "2"
+    },
+    {
+      "page": 3,
+      "type": "page_number",
+      "content": "3"
+    },
+    {
+      "page": 4,
+      "type": "page_number",
+      "content": "4"
+    },
+    {
+      "page": 5,
+      "type": "page_number",
+      "content": "5"
+    },
+    {
+      "page": 6,
+      "type": "page_number",
+      "content": "6"
+    },
+    {
+      "page": 7,
+      "type": "page_number",
+      "content": "7"
+    },
+    {
+      "page": 8,
+      "type": "page_number",
+      "content": "8"
+    },
+    {
+      "page": 9,
+      "type": "page_number",
+      "content": "9"
+    },
+    {
+      "page": 10,
+      "type": "page_number",
+      "content": "10"
+    },
+    {
+      "page": 11,
+      "type": "page_number",
+      "content": "11"
+    },
+    {
+      "page": 12,
+      "type": "page_number",
+      "content": "12"
+    },
+    {
+      "page": 13,
+      "type": "page_number",
+      "content": "13"
+    },
+    {
+      "page": 14,
+      "type": "page_number",
+      "content": "14"
+    }
+  ]
+}

@@ -1,0 +1,339 @@
+---
+id: 13-02-algorithms
+title: Scheduling Algorithms
+module: 13
+lecture: 'Lecture 13 — Scheduling'
+slides: '15–32'
+estimatedMinutes: 21
+prerequisites: ['13-01-bursts']
+tags: ['scheduling', 'round-robin', 'algorithms']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import LazyStudy from '$lib/components/viz/LazyStudy.svelte';
+	import ProcessScheduler3D from '$lib/components/viz/ProcessScheduler3D.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The three that matter
+
+Every scheduling policy is a rule for choosing one process from the ready queue.
+Three rules cover the lecture and most of what real kernels approximate:
+
+| Policy | Rule | Strength | Weakness |
+| --- | --- | --- | --- |
+| FCFS | run in arrival order, no preemption | trivial, no starvation | long job blocks everything behind it |
+| SJF | shortest service time first | provably lowest average wait | needs to know the future |
+| Round robin | fixed quantum, then back of queue | responsive, fair | more context switches |
+
+SJF's weakness is the interesting one. It minimizes average waiting time — that
+is a theorem, not an opinion — but it needs each process's service time before it
+runs, which no kernel knows. Real systems *estimate* the next burst from the last
+one, and the estimate is wrong often enough that the guarantee evaporates.
+
+Round robin trades the optimum for something achievable. A **quantum** of a few
+milliseconds means no process waits long for its first slice, at the cost of
+switching more often.
+
+## What you'll be able to do
+
+- Simulate FCFS, SJF, and round robin over an array of process structs.
+- Compute waiting time as turnaround minus service, and average it correctly.
+- Explain why SJF is optimal yet unused, and why round robin wins anyway.
+- Predict how changing the quantum moves the average wait.
+
+<TheoryBlock label="Why it matters for C" title="Waiting time is turnaround minus service">
+
+	The definitions are easy to garble. Turnaround is finish time minus arrival; waiting is turnaround
+	minus service. For a process that arrives at 0, runs 10 ms, and finishes at 10 ms, turnaround is
+	10 and waiting is 0 — it never waited. Every average in this lesson uses those definitions, and if
+	your numbers disagree with a textbook, check which definition the textbook used before assuming
+	a bug.
+</TheoryBlock>
+
+<Eli5Block
+	topic="round-robin"
+	football="Everyone gets the ball for thirty seconds, then it goes to the next player in the circle. Nobody hogs it; everybody touches it often. Substituting on a fixed clock is fair but choppy, and if the clock is too short the team spends the match passing instead of shooting."
+	money="Each department gets the photocopier for ten minutes, then it moves to the next one on the list, and a department that is not finished rejoins the end of the queue. Nobody can monopolise the machine and nobody waits all day. Shorten the slot and the switch overhead starts to outweigh the copying."
+/>
+
+## Three policies, one workload
+
+```c
+#include <stdio.h>
+
+/* Three scheduling policies over the same five processes.
+   Arrival time is when a process becomes runnable.
+   Service time is how much CPU it needs, in milliseconds.
+   Waiting time is turnaround minus service, the standard definition. */
+
+#define COUNT 5
+
+struct process {
+    const char *name;
+    int arrival;
+    int service;
+};
+
+struct stats {
+    double avg_wait;
+    double avg_turnaround;
+};
+
+static struct stats summarise(int wait_total, int turn_total, int n) {
+    struct stats s;
+    s.avg_wait = (double)wait_total / n;
+    s.avg_turnaround = (double)turn_total / n;
+    return s;
+}
+
+/* First come, first served: arrival order, no preemption. */
+static struct stats fcfs(const struct process *p, int n) {
+    int clock = 0;
+    int wait_total = 0;
+    int turn_total = 0;
+
+    for (int i = 0; i < n; i++) {
+        if (clock < p[i].arrival) {
+            clock = p[i].arrival;           /* CPU idles until it arrives */
+        }
+        clock += p[i].service;
+        int turnaround = clock - p[i].arrival;
+        int wait = turnaround - p[i].service;
+
+        printf("  %-3s wait %3d ms  finish %3d ms\n", p[i].name, wait, clock);
+        wait_total += wait;
+        turn_total += turnaround;
+    }
+    return summarise(wait_total, turn_total, n);
+}
+
+/* Shortest job first, non-preemptive: at each decision point pick the
+   ready process with the smallest service time.                    */
+static struct stats sjf(const struct process *p, int n) {
+    int done[COUNT] = { 0 };
+    int clock = 0;
+    int wait_total = 0;
+    int turn_total = 0;
+
+    for (int step = 0; step < n; step++) {
+        int pick = -1;
+        for (int i = 0; i < n; i++) {
+            if (done[i] || p[i].arrival > clock) {
+                continue;
+            }
+            if (pick < 0 || p[i].service < p[pick].service) {
+                pick = i;
+            }
+        }
+        if (pick < 0) {
+            clock++;                        /* nothing ready yet */
+            step--;
+            continue;
+        }
+
+        clock += p[pick].service;
+        int turnaround = clock - p[pick].arrival;
+        int wait = turnaround - p[pick].service;
+        done[pick] = 1;
+
+        printf("  %-3s wait %3d ms  finish %3d ms\n",
+               p[pick].name, wait, clock);
+        wait_total += wait;
+        turn_total += turnaround;
+    }
+    return summarise(wait_total, turn_total, n);
+}
+
+/* Round robin: each ready process runs at most `quantum` ms, then joins
+   the back of the queue. Waiting time is measured at completion.    */
+static struct stats round_robin(const struct process *p, int n, int quantum) {
+    int remaining[COUNT];
+    int clock = 0;
+    int wait_total = 0;
+    int turn_total = 0;
+    int finished = 0;
+
+    for (int i = 0; i < n; i++) {
+        remaining[i] = p[i].service;
+    }
+
+    while (finished < n) {
+        int ran_something = 0;
+
+        for (int i = 0; i < n; i++) {
+            if (remaining[i] <= 0 || p[i].arrival > clock) {
+                continue;
+            }
+            ran_something = 1;
+
+            int slice = remaining[i] < quantum ? remaining[i] : quantum;
+            clock += slice;
+            remaining[i] -= slice;
+
+            if (remaining[i] == 0) {
+                finished++;
+                int turnaround = clock - p[i].arrival;
+                int wait = turnaround - p[i].service;
+                wait_total += wait;
+                turn_total += turnaround;
+                printf("  %-3s wait %3d ms  finish %3d ms\n",
+                       p[i].name, wait, clock);
+            }
+        }
+
+        if (!ran_something) {
+            clock++;                        /* idle tick before next arrival */
+        }
+    }
+    return summarise(wait_total, turn_total, n);
+}
+
+int main(void) {
+    const struct process procs[COUNT] = {
+        { "P1", 0, 10 },
+        { "P2", 1, 4 },
+        { "P3", 2, 6 },
+        { "P4", 3, 2 },
+        { "P5", 4, 8 },
+    };
+
+    printf("workload:");
+    for (int i = 0; i < COUNT; i++) {
+        printf(" %s(arr %d, svc %d)", procs[i].name,
+               procs[i].arrival, procs[i].service);
+    }
+    printf("\n");
+
+    printf("\nfirst come, first served:\n");
+    struct stats f = fcfs(procs, COUNT);
+
+    printf("\nshortest job first:\n");
+    struct stats s = sjf(procs, COUNT);
+
+    printf("\nround robin, quantum 4:\n");
+    struct stats r = round_robin(procs, COUNT, 4);
+
+    printf("\n%-10s %10s %15s\n", "policy", "avg wait", "avg turnaround");
+    printf("%-10s %10.1f %15.1f\n", "FCFS", f.avg_wait, f.avg_turnaround);
+    printf("%-10s %10.1f %15.1f\n", "SJF", s.avg_wait, s.avg_turnaround);
+    printf("%-10s %10.1f %15.1f\n", "RR (q=4)", r.avg_wait, r.avg_turnaround);
+    return 0;
+}
+```
+
+Three implementation notes. `step--` inside the SJF loop is how "the CPU idled"
+is expressed without a second clock advance: the step is retried after time moves
+on. The round-robin loop scans the array in index order each pass, which makes
+the policy deterministic — a real scheduler would use a FIFO queue and arrival
+ordering would matter.
+
+## Expected output
+
+```text
+workload: P1(arr 0, svc 10) P2(arr 1, svc 4) P3(arr 2, svc 6) P4(arr 3, svc 2) P5(arr 4, svc 8)
+
+first come, first served:
+  P1  wait   0 ms  finish  10 ms
+  P2  wait   9 ms  finish  14 ms
+  P3  wait  12 ms  finish  20 ms
+  P4  wait  17 ms  finish  22 ms
+  P5  wait  18 ms  finish  30 ms
+
+shortest job first:
+  P1  wait   0 ms  finish  10 ms
+  P4  wait   7 ms  finish  12 ms
+  P2  wait  11 ms  finish  16 ms
+  P3  wait  14 ms  finish  22 ms
+  P5  wait  18 ms  finish  30 ms
+
+round robin, quantum 4:
+  P2  wait   3 ms  finish   8 ms
+  P4  wait   9 ms  finish  14 ms
+  P3  wait  16 ms  finish  24 ms
+  P5  wait  16 ms  finish  28 ms
+  P1  wait  20 ms  finish  30 ms
+
+policy       avg wait  avg turnaround
+FCFS             11.2            17.2
+SJF              10.0            16.0
+RR (q=4)         12.8            18.8
+```
+
+The result that surprises people: **round robin has the worst average waiting
+time here**, 12.8 against SJF's 10.0. It is still the policy real systems use.
+Average wait is the wrong metric when the goal is responsiveness — round robin's
+longest single wait is 20 ms, while FCFS makes P5 sit for 18 ms behind four
+processes and would make it sit far longer with a bigger workload.
+
+Every number above is a pure function of the table. There is no clock in this
+program and no thread; it is arithmetic over structs, so it prints the same thing
+every time on every machine. That is exactly why scheduling is worth simulating
+before you trust a policy.
+
+## Common pitfalls
+
+### Comparing policies on a workload that flatters one
+
+SJF wins on this workload because the shortest jobs happen to arrive late. Reverse
+the arrival order — all jobs ready at time 0, shortest last — and the gap widens.
+Reshuffle so the longest job arrives first and SJF's advantage shrinks. Any claim
+that one policy is better needs the workload stated with it.
+
+### Forgetting the idle case
+
+If nothing has arrived when the clock reaches its next value, the CPU must idle.
+FCFS handles it with `clock = p[i].arrival`; SJF and round robin need an explicit
+tick. Skip that and the simulation invents work that cannot happen, and the
+numbers look plausible while being wrong.
+
+### Using completion time as waiting time
+
+`finish - arrival` is turnaround. Waiting is `turnaround - service`. The summary
+table above is the one to sanity-check: if a process finished at 10 having
+arrived at 0 and needing 10, its wait must be 0, not 10. If your table shows 10,
+the subtraction is missing.
+
+### Hardcoding COUNT into the loops but not into the arrays
+
+`int done[COUNT]` and `int remaining[COUNT]` are fine here because the arrays are
+fixed. Pass a larger `n` and both overflow. In real code the arrays are allocated
+from `n`, or `n` is asserted against `COUNT` at the top of the function.
+
+<LazyStudy href="/scheduler/" fig="13.2" caption="CPU scheduling, one process at a time">
+	<ProcessScheduler3D />
+</LazyStudy>
+
+<ExerciseCard
+	id="sched-quantum-sweep"
+	concept="round robin quantum"
+	prompt="Run round robin with quanta 1, 2, 4 and 8 over the five processes P1(0,10), P2(1,4), P3(2,6), P4(3,2), P5(4,8), each pair being arrival and service time in milliseconds. Use a FIFO ready queue: queue everything that arrives at time 0, and after each slice append every process whose arrival time is now or earlier, then re-queue the running process if it still has work; when the queue is empty, jump the clock to the next arrival. Waiting time is completion - arrival - service. Print exactly:&#10;&#10;quantum 1 avg wait 13.80&#10;quantum 2 avg wait 12.80&#10;quantum 4 avg wait 12.80&#10;quantum 8 avg wait 13.60&#10;&#10;Two decimals, no extra lines. The average falls as the quantum grows to 4 and rises again at 8, which is the honest answer for this workload: a bigger quantum trades scheduling overhead for convoying."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define COUNT 5&#10;&#10;struct process &#123;&#10;    const char *name;&#10;    int arrival;&#10;    int service;&#10;&#125;;&#10;&#10;static double avg_wait(int quantum) &#123;&#10;    /* TODO: remaining work, a FIFO queue of indices, a clock, and&#10;       completion times; returns the mean of finish - arrival - service */&#10;    (void)quantum;&#10;    return 0.0;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    static const int QUANTA[] = &#123;1, 2, 4, 8&#125;;&#10;    /* TODO: print one line per quantum with %.2f */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="quantum 1 avg wait 13.80&#10;quantum 2 avg wait 12.80&#10;quantum 4 avg wait 12.80&#10;quantum 8 avg wait 13.60&#10;"
+	hints={[
+		'Keep remaining[i] and finish[i]; the queue holds process indices, so head and tail into one array are enough. When the queue empties before every process finishes, set now to the next arrival instead of advancing it by one.',
+		'Append arrivals before the running process is re-queued, or the order changes and the numbers move. Waiting time can go negative if you forget to subtract both arrival and service: only the completion time counts the service.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;#define COUNT 5&#10;&#10;struct process &#123;&#10;    const char *name;&#10;    int arrival;&#10;    int service;&#10;&#125;;&#10;&#10;/* Round robin: a FIFO ready queue, arrivals appended as they happen, and a&#10; * process with work left re-queued behind them. Waiting time is&#10; * completion - arrival - service. */&#10;static double avg_wait(int quantum) &#123;&#10;    static const struct process PROCS[COUNT] = &#123;&#10;        &#123;&quot;P1&quot;, 0, 10&#125;, &#123;&quot;P2&quot;, 1, 4&#125;, &#123;&quot;P3&quot;, 2, 6&#125;, &#123;&quot;P4&quot;, 3, 2&#125;, &#123;&quot;P5&quot;, 4, 8&#125;,&#10;    &#125;;&#10;    int remaining[COUNT];&#10;    int finish[COUNT] = &#123;0&#125;;&#10;    int queue[COUNT * 64];&#10;    int head = 0;&#10;    int tail = 0;&#10;    int next_arrival = 0;&#10;    int now = 0;&#10;    int done = 0;&#10;&#10;    for (int i = 0; i &lt; COUNT; i++) &#123;&#10;        remaining[i] = PROCS[i].service;&#10;    &#125;&#10;    while (next_arrival &lt; COUNT &amp;&amp; PROCS[next_arrival].arrival == 0) &#123;&#10;        queue[tail++] = next_arrival++;&#10;    &#125;&#10;&#10;    while (done &lt; COUNT) &#123;&#10;        if (head == tail) &#123;&#10;            if (next_arrival &gt;= COUNT) &#123;&#10;                break;&#10;            &#125;&#10;            now = PROCS[next_arrival].arrival;&#10;            queue[tail++] = next_arrival++;&#10;            continue;&#10;        &#125;&#10;        int current = queue[head++];&#10;        int slice = remaining[current] &lt; quantum ? remaining[current] : quantum;&#10;        now += slice;&#10;        remaining[current] -= slice;&#10;        while (next_arrival &lt; COUNT &amp;&amp; PROCS[next_arrival].arrival &lt;= now) &#123;&#10;            queue[tail++] = next_arrival++;&#10;        &#125;&#10;        if (remaining[current] &gt; 0) &#123;&#10;            queue[tail++] = current;&#10;        &#125; else &#123;&#10;            finish[current] = now;&#10;            done++;&#10;        &#125;&#10;    &#125;&#10;&#10;    int total = 0;&#10;    for (int i = 0; i &lt; COUNT; i++) &#123;&#10;        total += finish[i] - PROCS[i].arrival - PROCS[i].service;&#10;    &#125;&#10;    return (double)total / (double)COUNT;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    static const int QUANTA[] = &#123;1, 2, 4, 8&#125;;&#10;&#10;    for (size_t i = 0; i &lt; sizeof QUANTA / sizeof QUANTA[0]; i++) &#123;&#10;        printf(&quot;quantum %d avg wait %.2f\n&quot;, QUANTA[i], avg_wait(QUANTA[i]));&#10;    &#125;&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="sched-algo-quiz-1"
+	question="SJF provably minimizes average waiting time, yet no general-purpose kernel uses exact SJF. Give the two reasons."
+	options={[
+		'The scheduler cannot know the next burst length in advance, so exact SJF would require a prediction, and always favouring short jobs starves long ones indefinitely',
+		'SJF is only optimal for a single core, so kernels with more than one core cannot use it',
+		'SJF requires preemption to be implemented, and preemption is too expensive for a general-purpose kernel',
+		'SJF needs the total service time of every process at fork time, which the kernel does not have room to store'
+	]}
+	answer={0}
+	explanation="Optimality assumes known burst lengths, which a real scheduler only has as a guess, and the shortest-first rule has no fairness guarantee, so long jobs can wait forever."
+/>
+
+<LectureReference lecture="Lecture 13 — Scheduling" slides="15–32" />

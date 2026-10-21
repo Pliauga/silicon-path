@@ -1,0 +1,250 @@
+---
+id: 02-02-negative-numbers
+title: Negative Numbers
+module: 2
+lecture: 'Lecture 02 — Data Representation 2'
+slides: '18–32'
+estimatedMinutes: 16
+prerequisites: ['02-01-bases']
+tags: ['twos-complement', 'signed', 'overflow']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import BitToggle from '$lib/components/viz/BitToggle.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## There is no minus sign in the hardware
+
+A register holds bits. There is no bit-shaped minus sign, no separate
+place to store "this one is negative". Every machine you will use
+therefore encodes negative numbers as a *bit pattern* that happens to
+behave correctly under addition — and the specific scheme is called
+**two's complement**.
+
+The rule is short. To negate a value, invert every bit and add one.
+
+`42` is `00101010`. Inverted, `11010101`. Plus one, `11010110`. That is
+`-42`. The leftmost bit is now `1`, which is how you can tell at a glance
+that the sign is negative — but that bit is not special-cased. It falls
+out of the arithmetic.
+
+## What you'll be able to do
+
+- Write the two's complement of any 8-, 16-, or 32-bit value by hand.
+- Explain why the range is asymmetric: `-128` to `127` for a signed byte.
+- Predict what `UINT_MAX + 1` does and why it is not undefined behaviour.
+- Say why negating `INT_MIN` is the one negation that has no answer.
+
+## Why not sign-and-magnitude
+
+The obvious encoding is to reserve the top bit for the sign and store the
+magnitude below it. It works for printing, and fails for arithmetic.
+
+| Encoding          | `+0` | `-0` | `1 + (-1)` needs | Addition circuit |
+| ----------------- | ---- | ---- | ---------------- | ---------------- |
+| Sign and magnitude | `0000 0000` | `1000 0000` | special case | compare signs, subtract the smaller |
+| Ones' complement  | `0000 0000` | `1111 1111` | special case | end-around carry |
+| Two's complement  | `0000 0000` | none | plain add | plain add |
+
+Sign-and-magnitude has two zeros and needs a subtraction circuit as well
+as an addition circuit. Two's complement has one zero, and `+` works on
+negative numbers with no modification at all: `42 + (-42)` is
+`00101010 + 11010110`, which carries out of the top bit and leaves
+`00000000`. The carry out is discarded, and the answer is right.
+
+That single property — one adder, no special cases — is why every
+mainstream processor, and therefore every C implementation you are
+likely to meet, uses it.
+
+<Eli5Block
+	topic="twos-complement"
+	football="Instead of a separate column for 'goals against', the league writes a debt as the number that would bring the total back to zero. Thirty goals of debt is recorded as the score which, added to thirty, rolls the counter over to nil. No minus sign is ever written down."
+	money="A bank with a four-digit ledger has no minus sign. A balance of minus forty is stored as 9960, because adding forty to 9960 wraps past 9999 back to zero. The ledger only needs addition, and the statement reinterprets the top range as debt."
+/>
+
+<TheoryBlock label="Why it matters for C" title="The standard permits, the machine delivers">
+
+	The C standard does not mandate two's complement. It permits three
+	encodings for signed integers, and leaves signed overflow undefined
+	rather than wrapping. Since C23, two's complement is the only
+	representation the standard allows — but the *overflow* rule did not
+	change along with it. Unsigned arithmetic wraps; signed arithmetic that
+	overflows remains undefined behaviour, and a compiler is allowed to
+	assume it never happens.
+</TheoryBlock>
+
+## The ranges
+
+An `n`-bit two's complement value runs from `-2^(n-1)` to `2^(n-1) - 1`.
+The asymmetry is unavoidable: there are `2^n` patterns, zero takes one of
+them, and the remaining `2^n - 1` split unevenly because they are odd.
+
+| Type        | Bits | Minimum | Maximum     |
+| ----------- | ---- | ------- | ----------- |
+| `int8_t`    | 8    | `-128`  | `127`       |
+| `uint8_t`   | 8    | `0`     | `255`       |
+| `int16_t`   | 16   | `-32768` | `32767`    |
+| `int32_t`   | 32   | `-2147483648` | `2147483647` |
+| `uint32_t`  | 32   | `0`     | `4294967295` |
+
+The most negative value has no positive counterpart. `128` is not
+representable in eight bits, so negating `-128` would need to produce
+`128` and cannot. In C terms, `-INT_MIN` is signed overflow, hence
+undefined. That is not a quirk of the hardware; it is arithmetic running
+out of patterns.
+
+C defines unsigned arithmetic as modular: it wraps, with no undefined
+behaviour. That gives a portable way to compute a magnitude without
+triggering UB — negate in `unsigned` and convert back. The program below
+uses exactly that trick.
+
+<BitToggle initial={214} label="The top bit set means negative" />
+
+Flip the top bit of that byte and read the signed interpretation. The
+unsigned reading changes by 128 in one direction; the signed reading
+changes by 256, jumping across zero. That jump is the price of having no
+separate sign bit.
+
+## Seeing the bits
+
+Timing or printf-ing a signed value tells you the decimal answer. Copying
+the raw bits tells you the encoding, and the encoding is the lesson.
+
+```c
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+
+static void print_bits32(uint32_t bits) {
+    for (int bit = 31; bit >= 0; bit--) {
+        printf("%u", (unsigned)((bits >> bit) & 1u));
+        if (bit % 8 == 0 && bit != 0) {
+            printf(" ");
+        }
+    }
+}
+
+int main(void) {
+    int positive = 42;
+    int negative = -42;
+
+    printf(" %d = ", positive);
+    print_bits32((uint32_t)positive);
+    printf("\n%d = ", negative);
+    print_bits32((uint32_t)negative);
+    printf("\n\n");
+
+    unsigned int umax = UINT_MAX;
+    printf("UINT_MAX     = %u\n", umax);
+    printf("UINT_MAX + 1 = %u\n\n", umax + 1u);
+
+    uint8_t small = 255u;
+    printf("uint8_t 255 + 1 = %u\n\n", (unsigned)(uint8_t)(small + 1u));
+
+    /* Negating INT_MIN is not representable, so signed arithmetic would
+     * overflow. Unsigned negation is well defined, and on two's complement
+     * it lands on the same bit pattern. */
+    unsigned int magnitude = 0u - (unsigned)INT_MIN;
+    printf("INT_MIN                = %d\n", INT_MIN);
+    printf("0u - (unsigned)INT_MIN = %u\n", magnitude);
+    printf("(int)that              = %d\n", (int)magnitude);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+ 42 = 00000000 00000000 00000000 00101010
+-42 = 11111111 11111111 11111111 11010110
+
+UINT_MAX     = 4294967295
+UINT_MAX + 1 = 0
+
+uint8_t 255 + 1 = 0
+
+INT_MIN                = -2147483648
+0u - (unsigned)INT_MIN = 2147483648
+(int)that              = -2147483648
+```
+
+Read the first two lines by column. `-42` is not `42` with a flag set —
+every bit differs. Inverting `00101010` gives `11010101`, and adding one
+gives `11010110`. The whole pattern participates in the encoding.
+
+`UINT_MAX + 1` prints `0` because unsigned arithmetic is defined to wrap.
+That is not a bug and not UB: it is the standard telling you exactly what
+happens.
+
+The last three lines are the interesting ones. `0u - (unsigned)INT_MIN`
+computes the magnitude in unsigned arithmetic, where it is perfectly
+well defined and gives `2147483648`. Converting that back to `int` is
+implementation-defined in general, and on this machine it lands back on
+`-2147483648`: the value that has no positive counterpart, so the round
+trip is a no-op.
+
+## Common pitfalls
+
+### Negating `INT_MIN`
+
+`int x = -2147483648; int y = -x;` is signed overflow, so undefined. On
+most machines `y` is silently still negative, and the sign test in
+`if (y < 0)` reasons about a value that cannot exist. The fix is to do the
+arithmetic in unsigned and decide consciously what an out-of-range result
+should mean.
+
+### Assuming signed overflow wraps
+
+Unsigned wraps. Signed does not have to. Compilers exploit this: a loop
+`for (int i = 0; i <= n; i++)` over `INT_MAX` can be optimised into an
+infinite loop, because the compiler may assume `i` never overflows. If
+you need wrap-around, use an unsigned type.
+
+### Comparing signed against unsigned
+
+`if (x < sizeof(buf))` mixes `int` and `size_t`. The `int` is converted to
+unsigned first, so a negative `x` becomes a huge positive number and the
+comparison is wrong. This is `-Wsign-compare`, and it is worth turning on
+even if your build does not use `-Wextra`.
+
+### Reading `%d` as a bit pattern
+
+`printf("%d", (uint8_t)200)` prints `200`, because the value promotes to
+`int` first. `printf("%d", (int8_t)200)` prints `-56`. The conversion and
+the promotion decide the answer, not the storage width. Be explicit about
+which you mean.
+
+<ExerciseCard
+	id="m02-neg-range"
+	concept="signed limits and two's complement"
+	prompt="For each signed type - int8_t, int16_t, int32_t - print one line with the minimum, the maximum, and the bit pattern of -1. Then re-derive the minimum as 0u - (unsigned)MAX - 1 and print whether it agrees. Use exactly this format: &quot;int8_t min=-128 max=127 -1=0xff&quot; - one line per type - then a final line &quot;check: 1&quot; when the re-derivation agrees (or &quot;check: 0&quot; when it does not)."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;int main(void) &#123;&#10;    /* TODO: one line per signed type, in the exact format the prompt shows */&#10;    /* TODO: then the &quot;check:&quot; line proving 0u - MAX - 1 gives the minimum */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="int8_t min=-128 max=127 -1=0xff&#10;int16_t min=-32768 max=32767 -1=0xffff&#10;int32_t min=-2147483648 max=2147483647 -1=0xffffffff&#10;check: 1&#10;"
+	hints={[
+		'Print in hexadecimal so the sign bit is visible: 0xff, 0xffff, 0xffffffff.',
+		'0u - (unsigned)MAX - 1 wraps in unsigned arithmetic and lands exactly on the two\'s-complement minimum.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;int main(void) &#123;&#10;    printf(&quot;int8_t min=%d max=%d -1=0x%02x\n&quot;, INT8_MIN, INT8_MAX, (unsigned)(uint8_t)-1);&#10;    printf(&quot;int16_t min=%d max=%d -1=0x%04x\n&quot;, INT16_MIN, INT16_MAX, (unsigned)(uint16_t)-1);&#10;    printf(&quot;int32_t min=%ld max=%ld -1=0x%08lx\n&quot;, (long)INT32_MIN, (long)INT32_MAX,&#10;           (unsigned long)(uint32_t)-1);&#10;    printf(&quot;check: %d\n&quot;, INT32_MIN == 0u - (unsigned)INT32_MAX - 1);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="m02-quiz-wrap"
+	question="An unsigned 8-bit counter holds 250. You add 10. What does it hold, and would the answer be defined if the counter were a signed int8_t?"
+	options={[
+		'4 — and a signed int8_t would wrap to -6, which is equally well defined',
+		'4 — unsigned wraps modulo 256, while a signed int8_t would have undefined behaviour',
+		'260 — the counter widens to int before the wrap is applied',
+		'250 — the overflow is discarded, so the value stays put'
+	]}
+	answer={1}
+	explanation="Unsigned arithmetic is defined modulo 2^N, so 250 + 10 = 260 - 256 = 4. Signed overflow has no such rule: the C standard calls it undefined behaviour, which is why the compiler may assume it never happens."
+/>
+
+<LectureReference lecture="Lecture 02 — Data Representation 2" slides="18–32" />

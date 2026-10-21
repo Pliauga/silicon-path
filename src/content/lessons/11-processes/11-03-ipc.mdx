@@ -1,0 +1,208 @@
+---
+id: 11-03-ipc
+title: Inter-Process Communication
+module: 11
+lecture: 'Lecture 11 — Processes'
+slides: '31–45'
+estimatedMinutes: 17
+prerequisites: ['11-02-fork-exec']
+tags: ['ipc', 'pipes', 'processes']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Separate memory means separate everything
+
+Module 11-01 established that `fork` copies the address space. That is a
+protection win and a communication problem: a child that computes an answer has
+no way to hand it back through a variable. The kernel provides channels for
+exactly this, and the lecture calls them **inter-process communication** (IPC).
+
+The mechanisms, roughly in order of cost:
+
+| Mechanism | Scope | Data copied? | Typical use |
+| --- | --- | --- | --- |
+| pipe | related processes | yes, through the kernel | shell pipelines |
+| FIFO (named pipe) | any processes | yes | simple daemons |
+| shared memory | any processes | no — mapped into both | highest throughput |
+| socket | same or different machines | yes | networks, Lecture 20 |
+| signal | any | one integer, no payload | notification, not data |
+
+Shared memory is fastest because it copies nothing: both processes map the same
+physical pages. Everything else goes through the kernel, which is correct and
+slower. That trade is the whole design space.
+
+## What you'll be able to do
+
+- Name the five IPC mechanisms and the cost trade between them.
+- Explain why shared memory is fastest and when that speed is a trap.
+- Create a pipe, close the unused ends, and say what happens if you do not.
+- Read a byte stream and place the terminator `read` will not give you.
+
+<TheoryBlock label="Why it matters for C" title="A pipe is two file descriptors, and descriptors are inherited">
+
+	`pipe()` fills a two-element array: `fds[0]` is the read end, `fds[1]` is the write end. Both are
+	ordinary descriptors — you can `read` and `write` them, and they survive `exec`. That last fact is
+	why `ls | grep txt` works: the shell builds the pipe, then execs both programs with the
+	descriptors already in place.
+</TheoryBlock>
+
+<Eli5Block
+	topic="ipc"
+	football="Two managers in separate offices cannot shout through the wall, so they use the internal mail slot. One drops a note in, the other pulls it out. Neither can reach into the other's office, and the slot is the only thing they share. That slot is a pipe: a channel the building owns, not a hole in the wall."
+	money="Two companies with separate books settle transactions through the clearing house. Neither opens the other's ledger; the clearing house moves the message and keeps the record. That is the kernel's role in IPC — the parties never share memory, they share a channel."
+/>
+
+## A pipe between a parent and its child
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <stdio.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main(void) {
+    int fds[2];
+    if (pipe(fds) != 0) {
+        perror("pipe");
+        return 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return 1;
+    }
+
+    if (pid == 0) {
+        /* Child writes. It never needs the read end, so close it —
+           otherwise the reader would never see end-of-file. */
+        close(fds[0]);
+
+        const char *msg = "42 degrees";
+        ssize_t n = write(fds[1], msg, strlen(msg));
+        if (n < 0) {
+            perror("write");
+            _exit(1);
+        }
+        close(fds[1]);
+        _exit(0);
+    }
+
+    /* Parent reads. */
+    close(fds[1]);
+
+    char buf[64];
+    ssize_t n = read(fds[0], buf, sizeof buf - 1);
+    if (n < 0) {
+        perror("read");
+        return 1;
+    }
+    buf[n] = '\0';
+
+    printf("parent received %zd bytes: %s\n", n, buf);
+
+    close(fds[0]);
+    if (waitpid(pid, NULL, 0) < 0) {
+        perror("waitpid");
+        return 1;
+    }
+    return 0;
+}
+```
+
+The two `close` calls are not tidiness. Each process closes the end it does not
+use, so that when the writer finishes, every write end is closed and the reader
+sees end-of-file. Leave the parent's copy of `fds[1]` open and the parent's
+`read` blocks forever waiting for a writer that is really itself.
+
+`buf[n] = '\0'` is also mandatory. `read` does not terminate the data — it gives
+you bytes. Every string operation after it needs a terminator you placed.
+
+`pipe()`, `fork()`, `read()`, and `waitpid()` are POSIX. **`fork()` does not
+exist on Windows**, and neither do anonymous pipes created this way; Windows has
+`CreatePipe` plus `ReadFile` on a pair of handles. The idea transfers — a
+kernel-owned channel between two processes — but not one line of the code.
+
+## Expected output
+
+```text
+parent received 10 bytes: 42 degrees
+```
+
+Ten is `strlen("42 degrees")`. The child wrote exactly those bytes and closed its
+end; the parent's `read` returned 10, not 64, because a pipe read returns what is
+available.
+
+If the child had written 100 bytes, the parent's single `read` with a 63-byte
+buffer would return 63 and the rest would still be in the pipe. A pipe is a byte
+stream, not a message queue — the boundary between writes is not preserved. Code
+that needs messages has to frame them itself: a length prefix, or a delimiter,
+and a loop.
+
+## Common pitfalls
+
+### Leaving the write end open and hanging forever
+
+The reader blocks until every write descriptor is closed. `fork` duplicates the
+descriptors, so both processes hold both ends. Close the unused end in each, and
+close the write end when done. A hang in pipe code is almost always an
+unclosed descriptor, not a slow writer.
+
+### Assuming one `read` gets one `write`
+
+Pipes do not preserve write boundaries, and a single read may return less than
+was written — or, if the writer wrote twice quickly, the concatenation of both.
+Never parse a pipe as though each `read` were a message. Read until a delimiter
+or a known length.
+
+### Writing more than the pipe buffer can hold
+
+A pipe holds a bounded number of bytes (`PIPE_BUF` is at least 512 on POSIX).
+Writing far more than that with no reader blocks until space frees up. If both
+processes write before either reads, and the buffer fills, both block forever.
+That is a deadlock, and module 15 gives it a name.
+
+### Using a pipe between unrelated processes
+
+An anonymous pipe only exists in the processes that inherited it through `fork`.
+Two programs started separately cannot open one. That is what a named pipe
+(`mkfifo`) or a socket is for.
+
+<ExerciseCard
+	id="ipc-pipe-reverse"
+	concept="a pipe is a byte queue"
+	prompt="Model the pipe instead of calling it: a fixed capacity of 8 bytes, a write that appends and returns how many bytes moved, and a read that removes and returns how many it actually got. Send &quot;abc&quot; through it, read exactly three bytes, reverse them in place, then print exactly:&#10;&#10;wrote 3 bytes&#10;read 3 bytes&#10;reversed: cba&#10;pipe empty: yes&#10;&#10;The last line must come from the queue depth after the read, and the reversal must happen in the buffer, not in the printf."
+	starter="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;#define CAP 8&#10;&#10;struct pipe_buf &#123;&#10;    char data[CAP];&#10;    size_t head;&#10;    size_t count;&#10;&#125;;&#10;&#10;static size_t pipe_write(struct pipe_buf *p, const char *src, size_t n) &#123;&#10;    /* TODO: copy until the buffer is full, return the bytes moved */&#10;    (void)p; (void)src; (void)n;&#10;    return 0;&#10;&#125;&#10;&#10;static size_t pipe_read(struct pipe_buf *p, char *dst, size_t n) &#123;&#10;    /* TODO: remove up to n bytes, return the bytes moved */&#10;    (void)p; (void)dst; (void)n;&#10;    return 0;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    /* TODO: write abc, read three bytes, reverse them, print the four lines */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="wrote 3 bytes&#10;read 3 bytes&#10;reversed: cba&#10;pipe empty: yes&#10;"
+	hints={[
+		'A ring buffer only needs a head index and a count: the slot to write is (head + count) mod CAP, and a read takes data[head] and advances head mod CAP. Both functions return the number of bytes they actually moved.',
+		'Write returns 3 and read returns 3 only if the queue held the bytes. Swap buf[i] with buf[got - 1 - i] for the first half, terminate with buf[got] = 0, and print the queue count as the last line.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;#include &lt;string.h&gt;&#10;&#10;/* A pipe is a byte queue with two ends. Model it with a ring buffer so the&#10; * exercise needs no syscalls: write appends, read removes, and read returns&#10; * the count it actually moved. */&#10;&#10;#define CAP 8&#10;&#10;struct pipe_buf &#123;&#10;    char data[CAP];&#10;    size_t head;&#10;    size_t count;&#10;&#125;;&#10;&#10;static size_t pipe_write(struct pipe_buf *p, const char *src, size_t n) &#123;&#10;    size_t moved = 0;&#10;&#10;    while (moved &lt; n &amp;&amp; p-&gt;count &lt; CAP) &#123;&#10;        size_t slot = (p-&gt;head + p-&gt;count) % CAP;&#10;        p-&gt;data[slot] = src[moved];&#10;        p-&gt;count++;&#10;        moved++;&#10;    &#125;&#10;    return moved;&#10;&#125;&#10;&#10;static size_t pipe_read(struct pipe_buf *p, char *dst, size_t n) &#123;&#10;    size_t moved = 0;&#10;&#10;    while (moved &lt; n &amp;&amp; p-&gt;count &gt; 0) &#123;&#10;        dst[moved] = p-&gt;data[p-&gt;head];&#10;        p-&gt;head = (p-&gt;head + 1) % CAP;&#10;        p-&gt;count--;&#10;        moved++;&#10;    &#125;&#10;    return moved;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    struct pipe_buf pipe = &#123;0&#125;;&#10;    char buf[CAP];&#10;    const char *message = &quot;abc&quot;;&#10;    size_t written = pipe_write(&amp;pipe, message, strlen(message));&#10;    size_t got = pipe_read(&amp;pipe, buf, 3);&#10;&#10;    printf(&quot;wrote %zu bytes\n&quot;, written);&#10;    printf(&quot;read %zu bytes\n&quot;, got);&#10;&#10;    if (got != 3) &#123;&#10;        printf(&quot;short read, nothing to reverse\n&quot;);&#10;        return 0;&#10;    &#125;&#10;    for (size_t i = 0; i &lt; got / 2; i++) &#123;&#10;        char tmp = buf[i];&#10;        buf[i] = buf[got - 1 - i];&#10;        buf[got - 1 - i] = tmp;&#10;    &#125;&#10;    buf[got] = '\0';&#10;    printf(&quot;reversed: %s\n&quot;, buf);&#10;    printf(&quot;pipe empty: %s\n&quot;, pipe.count == 0 ? &quot;yes&quot; : &quot;no&quot;);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+<QuizCard
+	id="ipc-quiz-1"
+	question="A parent forks a child and both keep all pipe descriptors open. The child writes 5 bytes and does not close its write end. The parent then calls read. What does the parent's read do?"
+	options={[
+		'It returns the 5 bytes that are already in the pipe. A later read blocks forever instead of returning 0, because read reports end of file only when every write end is closed, and the child still holds one open',
+		'It returns 0 immediately, because the child never signalled that it finished writing',
+		'It blocks on the first call and never returns the 5 bytes, because the child never closed the write end',
+		'It returns -1 with EAGAIN, since the pipe is empty from the parent side'
+	]}
+	answer={0}
+	explanation="read returns available bytes first and only reports EOF when all write ends are closed; leaving the child write end open turns the end of the stream into an indefinite block."
+/>
+
+<LectureReference lecture="Lecture 11 — Processes" slides="31–45" />

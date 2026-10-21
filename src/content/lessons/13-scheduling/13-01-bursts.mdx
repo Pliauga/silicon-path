@@ -1,0 +1,176 @@
+---
+id: 13-01-bursts
+title: CPU Bursts
+module: 13
+lecture: 'Lecture 13 — Scheduling'
+slides: '2–14'
+estimatedMinutes: 13
+prerequisites: ['12-03-concurrency-models']
+tags: ['scheduling', 'cpu-burst', 'throughput']
+hasExercise: false
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## A process does not run continuously
+
+A running process alternates between two states: computing (**CPU burst**) and
+waiting for something (**I/O burst**). Typing in an editor is one millisecond of
+CPU work followed by hundreds of milliseconds waiting for a key. Compiling is
+tens of milliseconds of CPU per file, with short reads in between.
+
+This matters because the scheduler's job depends entirely on the shape of those
+bursts. A workload of long CPU bursts and a workload of many short ones want
+opposite policies.
+
+Two measurements describe the shape:
+
+- **Average burst time** — how long a run lasts before blocking.
+- **CPU utilization** — what fraction of wall time the process is actually on a
+  core rather than waiting.
+
+A process that is 62% CPU and 38% waiting leaves the core idle 38% of the time it
+exists. Multiply that across every process and you get the number the scheduler
+is trying to improve.
+
+## What you'll be able to do
+
+- Define a CPU burst and an I/O burst and tell which one a blocked process is in.
+- Measure a workload's burst shape from per-process CPU and I/O times.
+- Compute CPU share and say what an idle percentage costs.
+- Explain why many small `write` calls change a program's scheduling behaviour.
+
+<TheoryBlock label="Why it matters for C" title="Your I/O calls are where the burst ends">
+
+	Every `read`, `fwrite`, `fclose`, and `printf` that actually flushes is a point where your process
+	blocks and the OS picks someone else. A program that does 10,000 tiny `write` calls has 10,000
+	bursts instead of one long one — and spends its life waiting rather than computing. Buffering with
+	`setvbuf` or writing in larger chunks is a scheduling decision as much as an I/O one.
+</TheoryBlock>
+
+## Measuring the shape
+
+The table below is a synthetic trace — a fixed set of processes with their CPU and
+I/O time. Real traces come from the scheduler's accounting, but the arithmetic is
+identical and the numbers are deterministic.
+
+<Eli5Block
+	topic="cpu-burst"
+	football="A striker does not sprint for ninety minutes. They make a run, then jog back, then stand and watch. Performance is measured in those short sprints with recovery between them, and the manager plans substitutions around how long each sprint is. A CPU burst is a sprint; the waiting is the jog back."
+	money="A shop does not take payment continuously. There is a burst of customers at the till, then a gap while stock is fetched from the back. Staffing has to cover the bursts, and the gaps are not idle waste — they are when the stock arrives. Scheduling is the business of covering bursts without paying for the gaps."
+/>
+
+```c
+#include <stdio.h>
+
+/* A CPU burst is the stretch a process runs before it blocks on I/O.
+   Real traces alternate: burst, wait, burst, wait. This table is one. */
+
+struct burst {
+    const char *name;
+    int cpu_ms;
+    int io_ms;
+};
+
+static void print_table(const struct burst *rows, size_t count) {
+    int cpu_total = 0;
+    int io_total = 0;
+
+    printf("%-8s %8s %8s\n", "process", "cpu(ms)", "io(ms)");
+    printf("%-8s %8s %8s\n", "-------", "-------", "------");
+
+    for (size_t i = 0; i < count; i++) {
+        printf("%-8s %8d %8d\n", rows[i].name, rows[i].cpu_ms, rows[i].io_ms);
+        cpu_total += rows[i].cpu_ms;
+        io_total += rows[i].io_ms;
+    }
+
+    printf("%-8s %8d %8d\n", "total", cpu_total, io_total);
+    printf("\ncpu share = %d%%\n",
+           (int)(100L * cpu_total / (cpu_total + io_total)));
+}
+
+int main(void) {
+    const struct burst rows[] = {
+        { "editor", 12, 3 },
+        { "build",  45, 5 },
+        { "browser", 8, 22 },
+        { "music",   2, 18 },
+        { "indexer", 30, 9 },
+    };
+    const size_t count = sizeof rows / sizeof rows[0];
+
+    print_table(rows, count);
+    return 0;
+}
+```
+
+`sizeof rows / sizeof rows[0]` is the standard way to get an array length, and
+the reason `count` must be computed rather than hardcoded: change the initialiser
+and the loop still ends in the right place.
+
+## Expected output
+
+```text
+process   cpu(ms)   io(ms)
+-------   -------   ------
+editor         12        3
+build          45        5
+browser         8       22
+music           2       18
+indexer        30        9
+total          97       57
+
+cpu share = 62%
+```
+
+Read the shape, not just the total. `build` is a long burst — 45 ms of pure CPU
+with almost no waiting, so it wants a core to itself and gains from a scheduler
+that does not preempt it constantly. `music` is the opposite: 2 ms of work then
+18 ms of waiting, so it wants to get in, run immediately, and get out. Those two
+processes pull the policy in different directions, which is why no single
+scheduler is best for everything.
+
+The 62% is integer division of `100 * 97 / 154`. It is truncated, not rounded —
+scheduling math is usually about relative comparison, not precision.
+
+## Common pitfalls
+
+### Treating the average burst as representative
+
+Averages hide the distribution. A workload with bursts of 1 ms and 100 ms can
+average 50 ms, but the scheduler's behaviour on the 1 ms case is what determines
+whether the UI feels responsive. Look at the spread, not just the mean.
+
+### Forgetting that waiting is not free
+
+I/O time is not "off" time — the process still occupies a PCB, a PID, and
+memory while blocked. A thousand processes blocked on disk is not zero load; it
+is a thousand sets of resources the kernel must track.
+
+### Using this table as a real trace
+
+These numbers are invented for determinism. Real traces on your machine will look
+different, and the analysis — long bursts versus short — is what transfers, not
+the specific milliseconds.
+
+<QuizCard
+	id="bursts-quiz-1"
+	question="Two processes each need 100 ms of total CPU. Process A does it as one 100 ms burst; process B as ten 10 ms bursts separated by 90 ms of I/O. Which one benefits more from a preemptive scheduler, and why?"
+	options={[
+		'Process B benefits more. With preemption its 10 ms bursts start within about one quantum, while without it they wait behind A for up to 100 ms; A still uses exactly 100 ms of CPU either way',
+		'Process A benefits more, because preemption lets its long burst be split into pieces that finish sooner',
+		'Both benefit equally, because total CPU time is 100 ms for each process and makespan depends only on total work',
+		'Neither benefits, because a 90 ms I/O gap means B is never runnable when the CPU is free'
+	]}
+	answer={0}
+	explanation="Preemption bounds how long a runnable process waits behind a long burst, so the process with short, frequent bursts gains responsiveness while the long-burst process keeps the same total CPU time."
+/>
+
+<LectureReference lecture="Lecture 13 — Scheduling" slides="2–14" />

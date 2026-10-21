@@ -1,0 +1,290 @@
+---
+id: 08-03-pipelining
+title: Pipelining
+module: 8
+lecture: 'Lecture 08 — Control & Microprogramming'
+slides: '35–49'
+estimatedMinutes: 17
+prerequisites: ['08-02-fetch-decode-execute']
+tags: ['pipeline', 'hazards', 'throughput']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## Doing three things at once, badly, and it still works
+
+The three-state loop is wasteful. While the ALU executes, the fetch unit
+sits idle. While the fetch unit reads memory, the ALU sits idle. At any
+instant most of the processor is doing nothing, and the clock can only
+tick as fast as the slowest stage.
+
+**Pipelining** fixes that by splitting the work into stages and letting
+different instructions occupy different stages at the same time. It is
+exactly the assembly line: each station does one thing, and a new item
+enters every cycle.
+
+The result is not that instructions complete faster. It is that they
+complete more often.
+
+## What you'll be able to do
+
+- Explain the difference between latency and throughput in a pipeline.
+- Compute the cycles for n instructions in a k-stage pipeline.
+- Recognise a data hazard and say what a bubble costs.
+- Say why forwarding removes a stall without removing the dependency.
+
+## Five stages
+
+The classic decomposition splits instruction execution into five parts.
+
+| Stage | Name    | Work                              |
+| ----- | ------- | --------------------------------- |
+| IF    | fetch   | read the instruction at `pc`      |
+| ID    | decode  | work out what it means            |
+| EX    | execute | do the arithmetic                 |
+| MEM   | memory  | load or store, if needed          |
+| WB    | write back | put the result in a register   |
+
+An instruction still takes five cycles from start to finish. That has not
+changed. What changes is that a *new* instruction starts every cycle, so
+the steady-state rate is one completed instruction per cycle instead of
+one every five.
+
+| Instructions | Unpipelined | Pipelined | Speedup |
+| ------------ | ----------- | --------- | ------- |
+| 1            | 5           | 5         | 1.00×   |
+| 10           | 50          | 14        | 3.57×   |
+| 100          | 500         | 104       | 4.81×   |
+| 1000         | 5,000       | 1,004     | 4.98×   |
+
+The formula behind the middle column is `n + (k − 1)`: n cycles to issue
+every instruction, plus k − 1 for the last one to drain out. The `− 1` is
+why short programs see poor speedup and long ones approach the stage
+count.
+
+<TheoryBlock label="Why it matters for C" title="Latency and throughput are different questions">
+
+	A pipeline does not make any single instruction faster. If you time one
+	`a + b`, it takes exactly as long as before. What improves is how many
+	you can do per second. This is the distinction between latency and
+	throughput, and it explains why a compiler will unroll a loop to hide
+	latency but never to reduce the number of adds.
+</TheoryBlock>
+
+<Eli5Block
+	topic="pipelining"
+	football="Pipelining is a training drill where the ball moves down the line: one player traps, the next passes, the next shoots. Nobody does three jobs, and a ball still takes three players to reach the goal — but a new ball can start every second."
+	money="Pipelining is a car wash with separate soap, rinse, and dry bays. One car still takes all three bays end to end. Because each bay works on a different car, a finished car comes out every few minutes instead of every half hour."
+/>
+
+## Counting cycles, not seconds
+
+The model below computes the cost of a five-stage pipeline arithmetically.
+It counts cycles, which is a number that does not change between
+machines, and it shows what a stall does to that count.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* A five-stage pipeline as arithmetic, not timing. Each instruction
+ * occupies one stage per cycle; a stall inserts a bubble. What we count
+ * is cycles — a number that is identical on every machine. */
+
+#define STAGES 5u
+#define MAX_INS 16u
+
+enum { IF, ID, EX, MEM, WB };
+static const char *const STAGE_NAME[] = {"IF", "ID", "EX", "MEM", "WB"};
+
+struct pipelined {
+    unsigned issue[MAX_INS]; /* cycle each instruction enters IF */
+    unsigned drain;          /* cycle the last one leaves WB */
+    unsigned bubbles;
+};
+
+/* Fill and drain: with no hazards, n instructions take n + (stages - 1)
+ * cycles. That constant is the entire cost model. */
+static struct pipelined run_pipeline(unsigned n) {
+    struct pipelined p;
+    for (unsigned i = 0; i < MAX_INS; i++) {
+        p.issue[i] = 0;
+    }
+    p.drain = 0;
+    p.bubbles = 0;
+    for (unsigned i = 0; i < n && i < MAX_INS; i++) {
+        p.issue[i] = i + 1u; /* one new instruction per cycle */
+    }
+    p.drain = n + (STAGES - 1u);
+    return p;
+}
+
+/* A load followed closely by a consumer cannot proceed: the value does
+ * not exist until MEM finishes. Without forwarding each such pair costs
+ * one bubble. */
+static struct pipelined run_with_hazard(unsigned n, int forwarding) {
+    struct pipelined p;
+    for (unsigned i = 0; i < MAX_INS; i++) {
+        p.issue[i] = 0;
+    }
+    p.drain = 0;
+    p.bubbles = 0;
+
+    unsigned cycle = 0;
+    for (unsigned i = 0; i < n && i < MAX_INS; i++) {
+        p.issue[i] = cycle + 1u;
+        cycle++;
+        if (!forwarding && i % 3u == 2u) {
+            p.bubbles++;
+            cycle++; /* the dependent instruction waits one cycle */
+        }
+    }
+    p.drain = cycle + (STAGES - 1u);
+    return p;
+}
+
+static void report(const char *name, unsigned n, unsigned cycles,
+                   unsigned bubbles) {
+    printf("%-23s %2u instructions  %3u cycles  %.2f cycles/instr",
+           name, n, cycles, (double)cycles / (double)n);
+    if (bubbles > 0u) {
+        printf("  (%u bubbles)", bubbles);
+    }
+    printf("\n");
+}
+
+int main(void) {
+    printf("stages: %u (%s %s %s %s %s)\n", STAGES, STAGE_NAME[0],
+           STAGE_NAME[1], STAGE_NAME[2], STAGE_NAME[3], STAGE_NAME[4]);
+    printf("steady-state throughput: one instruction per cycle\n\n");
+
+    const unsigned N = 10u;
+
+    report("no pipeline", N, N * STAGES, 0u);
+
+    struct pipelined ok = run_pipeline(N);
+    report("pipelined, clean", N, ok.drain, ok.bubbles);
+
+    struct pipelined fwd = run_with_hazard(N, 1);
+    report("hazard, forwarded", N, fwd.drain, fwd.bubbles);
+
+    struct pipelined stall = run_with_hazard(N, 0);
+    report("hazard, none", N, stall.drain, stall.bubbles);
+
+    printf("\nissue cycle per instruction (clean):");
+    for (unsigned i = 0; i < N; i++) {
+        printf(" %u", ok.issue[i]);
+    }
+    printf("\nissue cycle per instruction (stall):");
+    for (unsigned i = 0; i < N; i++) {
+        printf(" %u", stall.issue[i]);
+    }
+    printf("\n");
+
+    printf("\nspeedup over unpipelined:\n");
+    printf("  %3u instructions: %.2fx\n", N,
+           (double)(N * STAGES) / (double)ok.drain);
+    printf("  %3u instructions: %.2fx\n", 100u,
+           (double)(100u * STAGES) / (double)(100u + STAGES - 1u));
+    printf("  %3u instructions: %.2fx (ceiling is %u)\n", 1000u,
+           (double)(1000u * STAGES) / (double)(1000u + STAGES - 1u), STAGES);
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+stages: 5 (IF ID EX MEM WB)
+steady-state throughput: one instruction per cycle
+
+no pipeline             10 instructions   50 cycles  5.00 cycles/instr
+pipelined, clean        10 instructions   14 cycles  1.40 cycles/instr
+hazard, forwarded       10 instructions   14 cycles  1.40 cycles/instr
+hazard, none            10 instructions   17 cycles  1.70 cycles/instr  (3 bubbles)
+
+issue cycle per instruction (clean): 1 2 3 4 5 6 7 8 9 10
+issue cycle per instruction (stall): 1 2 3 5 6 7 9 10 11 13
+
+speedup over unpipelined:
+   10 instructions: 3.57x
+  100 instructions: 4.81x
+  1000 instructions: 4.98x (ceiling is 5)
+```
+
+Read the issue-cycle lines together. The clean pipeline issues at
+1, 2, 3, 4, 5, and so on — one per cycle, no gaps. The stalled one issues
+at 1, 2, 3, then 5: instruction four had to wait a cycle, and every
+instruction behind it inherits the delay. Three bubbles turn 10 issue
+cycles into 13, and the drain brings the total to 17.
+
+That is the cost of a hazard: it is paid once by one instruction and
+inherited by all of them.
+
+<ExerciseCard
+	id="m08-bubble-cost"
+	concept="pipeline hazard cost"
+	prompt="Change the hazard model so a forwarded dependency costs one bubble and an unforwarded one costs two. A hazard appears every third instruction. Over N = 10 instructions and 5 stages, print one line per configuration in exactly this form (the name is left-aligned in 16 columns):&#10;&#10;clean            bubbles=0 cycles=14&#10;forwarded only   bubbles=3 cycles=17&#10;unforwarded only bubbles=6 cycles=20&#10;both             bubbles=4 cycles=18&#10;&#10;&quot;both&quot; alternates the pairs: the first hazard is forwarded, the second unforwarded, the third forwarded. Then print `forwarded never worse: yes` or `no`, decided by comparing the two computed cycle totals, not by hardcoding the word."
+	starter="#include &lt;stdio.h&gt;&#10;&#10;#define STAGES 5u&#10;#define N 10u&#10;&#10;enum config &#123; CLEAN, FORWARDED, UNFORWARDED, BOTH &#125;;&#10;&#10;int main(void) &#123;&#10;    /* TODO: a hazard every third instruction; forwarded costs 1 bubble,&#10;       unforwarded costs 2. Total = N + bubbles + (STAGES - 1). */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="clean            bubbles=0 cycles=14&#10;forwarded only   bubbles=3 cycles=17&#10;unforwarded only bubbles=6 cycles=20&#10;both             bubbles=4 cycles=18&#10;forwarded never worse: yes&#10;"
+	hints={[
+		'Total cycles are N + bubbles + (STAGES - 1): the issue cycles, the bubbles inserted, and the drain. Only the bubble count differs between the four configurations.',
+		'Walk i from 0 to N - 1, act when i mod 3 is 2, and add 1 or 2 bubbles; for BOTH keep a counter of how many hazards you have seen and use its parity to pick the cheaper one. Print each line with a 16-column left-aligned name, then bubbles and cycles.'
+	]}
+	solution="#include &lt;stdio.h&gt;&#10;&#10;#define STAGES 5u&#10;#define N 10u&#10;&#10;enum config &#123; CLEAN, FORWARDED, UNFORWARDED, BOTH &#125;;&#10;&#10;/* A hazard appears every third instruction. A forwarded dependency costs&#10; * one bubble, an unforwarded one costs two. */&#10;static unsigned bubbles_for(enum config cfg) &#123;&#10;    unsigned bubbles = 0;&#10;    unsigned hazards = 0;&#10;&#10;    for (unsigned i = 0; i &lt; N; i++) &#123;&#10;        if (i % 3u != 2u) &#123;&#10;            continue;&#10;        &#125;&#10;        switch (cfg) &#123;&#10;        case CLEAN: break;&#10;        case FORWARDED: bubbles += 1u; break;&#10;        case UNFORWARDED: bubbles += 2u; break;&#10;        case BOTH: bubbles += (hazards % 2u == 0u) ? 1u : 2u; break;&#10;        &#125;&#10;        hazards++;&#10;    &#125;&#10;    return bubbles;&#10;&#125;&#10;&#10;int main(void) &#123;&#10;    static const char *const NAMES[] = &#123;&quot;clean&quot;, &quot;forwarded only&quot;,&#10;                                        &quot;unforwarded only&quot;, &quot;both&quot;&#125;;&#10;    static const enum config CFGS[] = &#123;CLEAN, FORWARDED, UNFORWARDED, BOTH&#125;;&#10;    unsigned forwarded_cycles = 0;&#10;    unsigned unforwarded_cycles = 0;&#10;&#10;    for (unsigned i = 0; i &lt; sizeof CFGS / sizeof CFGS[0]; i++) &#123;&#10;        unsigned bubbles = bubbles_for(CFGS[i]);&#10;        unsigned cycles = N + bubbles + (STAGES - 1u);&#10;        if (CFGS[i] == FORWARDED) &#123;&#10;            forwarded_cycles = cycles;&#10;        &#125;&#10;        if (CFGS[i] == UNFORWARDED) &#123;&#10;            unforwarded_cycles = cycles;&#10;        &#125;&#10;        printf(&quot;%-16s bubbles=%u cycles=%u\n&quot;, NAMES[i], bubbles, cycles);&#10;    &#125;&#10;&#10;    printf(&quot;forwarded never worse: %s\n&quot;,&#10;           forwarded_cycles &lt;= unforwarded_cycles ? &quot;yes&quot; : &quot;no&quot;);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Saying a pipeline makes instructions faster
+
+It does not. A single instruction still takes five cycles. The speedup is
+throughput — five times as many instructions complete per unit time at
+steady state — and the distinction matters when you profile: a
+latency-bound loop with a dependency chain gets almost no benefit from a
+deeper pipeline.
+
+### Forgetting the fill and drain cost
+
+Ten instructions take 14 cycles, not 10. The last four cycles are the
+final instruction finishing its stages. For very short programs — a
+function called once — this overhead can dominate, and it is why
+pipelines are not free at the boundaries of a program.
+
+### Assuming forwarding removes the hazard
+
+Forwarding removes the *stall*, not the *dependency*. The second
+instruction still needs the first one's result; it just gets it from a
+wire instead of from a register write. If the dependency chain is long
+enough, the pipeline still has to wait, and that is a latency problem no
+amount of forwarding fixes.
+
+### Thinking a bubble is wasted work
+
+A bubble is a cycle in which a stage does nothing, usually implemented by
+gating the write-back signal. It is not an error and it does not corrupt
+anything — it is the hardware declining to guess. The alternative, using
+a value that is not ready, produces a wrong answer much more expensively.
+
+<QuizCard
+	id="m08-quiz-pipeline"
+	question="A five-stage pipeline executes 100 independent instructions with no hazards. How many cycles does it take, and what is the per-instruction cost at steady state?"
+	options={[
+		'104 cycles: 100 issue cycles plus 4 to fill and drain. At steady state one instruction completes every cycle, not every five',
+		'500 cycles: each instruction still occupies all five stages, so five cycles per instruction is unavoidable',
+		'100 cycles: full overlap means the fill and drain cost nothing once the pipeline is full',
+		'104 cycles, and at steady state each instruction still costs five cycles because it visits five stages'
+	]}
+	answer={0}
+	explanation="With no hazards a pipeline issues one instruction per cycle, so n instructions take n + (stages - 1) = 104 cycles; the latency of one instruction is still five cycles, but the throughput is one per cycle."
+/>
+
+<LectureReference lecture="Lecture 08 — Control & Microprogramming" slides="35–49" />

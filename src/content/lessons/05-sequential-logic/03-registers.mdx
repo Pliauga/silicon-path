@@ -1,0 +1,242 @@
+---
+id: 05-03-registers
+title: Registers
+module: 5
+lecture: 'Lecture 05 — Sequential Logic'
+slides: '35–48'
+estimatedMinutes: 14
+prerequisites: ['05-02-counters', '03-02-registers-buses']
+tags: ['registers', 'shift', 'bitwise']
+hasExercise: true
+hasQuiz: true
+---
+
+<script>
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import ExerciseCard from '$lib/components/lesson/ExerciseCard.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## One flip-flop is one bit; a register is a row of them
+
+A register is n flip-flops sharing a clock. They all sample at the same
+instant, so they change together — which is exactly what you want if the
+n bits are meant to represent one number. Eight flip-flops sharing a
+clock hold one byte; thirty-two hold one `int` on the machine you are
+reading this on.
+
+The shared clock is the important part. If each bit sampled at a
+different time, a value read mid-update could contain some old bits and
+some new ones. That hybrid is not a number the program ever computed.
+Keeping all n bits on one edge is what makes a register *atomic* from the
+circuit's point of view.
+
+## What you'll be able to do
+
+- Explain why the flip-flops in a register share one clock.
+- Model a shift register and trace bits moving through it.
+- Use `<<`, `>>`, and `|` to move bits without losing the ones you need.
+- Tell a shift apart from a rotate.
+
+## Shifting, rotating, and losing bits
+
+A **shift register** moves its contents one position per edge and admits
+a new bit at one end. The bit pushed off the far end is gone unless
+something is holding it. A **rotate** wires that bit back into the near
+end, so the pattern circulates forever instead of draining away.
+
+| Operation    | Admits        | Far end bit |
+| ------------ | ------------- | ----------- |
+| shift left   | new bit at 0  | discarded   |
+| shift right  | new bit at 7  | discarded   |
+| rotate left  | the outgoing bit | re-enters at 0 |
+| rotate right | the outgoing bit | re-enters at 7 |
+
+The distinction sounds academic until you meet it in C. `x << 1` is a
+shift: the top bit is gone. Rotating needs `(x << 1) | (x >> 7)`, written
+carefully, and on signed types the right-shift half is implementation-
+defined, which is why portable rotate code uses unsigned values.
+
+<TheoryBlock label="Why it matters for C" title="These operators are the hardware, spelled differently">
+
+	`x << 3` compiles to a shift instruction, and on most cores that
+	instruction runs in one cycle — the same cost as an add. This is why
+	bit-packing is worth doing in C: `flags = (a << 4) | b` is not a
+	trick, it is a single register write. You will use this in module 19
+	when reading a file header, where four fields share one byte.
+</TheoryBlock>
+
+<Eli5Block
+	topic="shift-register"
+	football="A shift register is a row of substitutes' chairs. Every minute the manager taps the whole row on the shoulder at once: each player moves one seat left, and the player at the end walks off unless the manager catches them and sends them back round."
+	money="A shift register is a conveyor of coins passing a fixed counter. Each step moves every coin one place; the coin at the far end drops into the tray. A rotate is the same conveyor bent into a loop, so the coin that drops off reappears at the start."
+/>
+
+## Tracing a shift register
+
+The model below keeps the eight bits in one byte, which is exactly how the
+hardware holds them. `shift_in` captures the outgoing bit *before*
+shifting, because after the shift it is no longer there.
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+/* An 8-bit shift register in a single byte. Each clock edge moves every
+ * bit one place left and admits one new bit at the bottom (bit 0). A bit
+ * shifted out of bit 7 falls off the end unless it is captured first. */
+
+struct shiftreg {
+    uint8_t bits;
+    uint8_t last_out; /* what fell off the top on the previous edge */
+};
+
+static void shift_in(struct shiftreg *r, uint8_t newbit) {
+    r->last_out = (uint8_t)((r->bits >> 7) & 1u);
+    r->bits = (uint8_t)((r->bits << 1) | (newbit & 1u));
+}
+
+/* A rotate wires the top bit back into the bottom, so nothing is lost. */
+static void rotate_left(struct shiftreg *r) {
+    uint8_t out = (uint8_t)((r->bits >> 7) & 1u);
+    r->bits = (uint8_t)((r->bits << 1) | out);
+    r->last_out = out;
+}
+
+/* The same bits, MSB first, so the reader can see the movement. */
+static void print_bits(uint8_t v) {
+    for (int i = 7; i >= 0; i--) {
+        putchar(((v >> (unsigned)i) & 1u) ? '1' : '0');
+        if (i == 4) {
+            putchar(' ');
+        }
+    }
+}
+
+int main(void) {
+    struct shiftreg r = {0u, 0u};
+    const uint8_t stream[8] = {1, 0, 1, 1, 0, 0, 1, 0};
+
+    printf("edge  in  register   out\n");
+    for (size_t i = 0; i < sizeof stream; i++) {
+        shift_in(&r, stream[i]);
+        printf("%4zu   %u  ", i + 1, (unsigned)stream[i]);
+        print_bits(r.bits);
+        printf("   %u\n", (unsigned)r.last_out);
+    }
+
+    /* A parallel load stores all eight bits at once instead of shifting. */
+    struct shiftreg p = {0u, 0u};
+    p.bits = 0xC3u;
+    printf("\nparallel load: ");
+    print_bits(p.bits);
+    printf("  (0x%02X, %u)\n", (unsigned)p.bits, (unsigned)p.bits);
+
+    /* Rotate: the bit that falls off the top re-enters at the bottom. */
+    r.bits = 0x81u;
+    printf("before rotate: ");
+    print_bits(r.bits);
+    printf("\n");
+    for (int i = 0; i < 3; i++) {
+        rotate_left(&r);
+        printf("  rotate %d:    ", i + 1);
+        print_bits(r.bits);
+        printf("   carried out %u\n", (unsigned)r.last_out);
+    }
+    return 0;
+}
+```
+
+## Expected output
+
+```text
+edge  in  register   out
+   1   1  0000 0001   0
+   2   0  0000 0010   0
+   3   1  0000 0101   0
+   4   1  0000 1011   0
+   5   0  0001 0110   0
+   6   0  0010 1100   0
+   7   1  0101 1001   0
+   8   0  1011 0010   0
+
+parallel load: 1100 0011  (0xC3, 195)
+before rotate: 1000 0001
+  rotate 1:    0000 0011   carried out 1
+  rotate 2:    0000 0110   carried out 0
+  rotate 3:    0000 1100   carried out 0
+```
+
+Every `out` column in the shift table is `0`, because the register was
+empty at the start and the incoming stream is only eight bits long — a
+bit needs eight edges to reach the top. If you ran four more edges you
+would see non-zero values there. That is not a bug in the trace; it is
+the register's latency, and it is the same reason a pipeline takes
+several cycles to fill.
+
+The rotate section behaves differently. `0x81` is `1000 0001`, so the top
+bit is 1 on the first rotate and it reappears at the bottom: `0000 0011`.
+Nothing is ever lost, which is why rotates are used to move bits between
+two halves of a value without a temporary variable.
+
+<ExerciseCard
+	id="m05-shift-capture"
+	concept="shift register capture order"
+	prompt="Start the register at 0xB5 and shift it left eight times. Capture each bit that falls off bit 7 before the shift, and reassemble those bits into a new byte by pushing each one in at the top. Print exactly `stream=10110101 collected=0xad bits=10101101` — the eight captured bits in the order they came out, the reassembled byte as two lowercase hex digits, and that byte's bits from bit 7 down — then `reverse ok: 1` once you have checked that the reassembled bits are the stream reversed."
+	starter="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;int main(void) &#123;&#10;    uint8_t bits = 0xB5;&#10;    uint8_t collected = 0;&#10;    /* TODO: eight edges; capture bit 7 before shifting it out */&#10;    return 0;&#10;&#125;&#10;"
+	expectedStdout="stream=10110101 collected=0xad bits=10101101&#10;reverse ok: 1&#10;"
+	hints={[
+		'Capture first, then shift: uint8_t out = (bits >> 7) & 1u; and only afterwards bits = (bits << 1) & 0xFFu. After the shift, bit 7 holds the new bit instead.',
+		'Pushing a bit in at the top is collected = (collected >> 1) | (out << 7), so the first bit out ends up in bit 7 and the last one in bit 0.'
+	]}
+	solution="#include &lt;stdint.h&gt;&#10;#include &lt;stdio.h&gt;&#10;&#10;int main(void) &#123;&#10;    uint8_t bits = 0xB5;&#10;    uint8_t collected = 0;&#10;    char stream[9];&#10;&#10;    for (int edge = 0; edge &lt; 8; edge++) &#123;&#10;        uint8_t out = (uint8_t)((bits &gt;&gt; 7) &amp; 1u); /* capture before shifting */&#10;        stream[edge] = (char)('0' + out);&#10;        collected = (uint8_t)((collected &gt;&gt; 1) | (uint8_t)(out &lt;&lt; 7));&#10;        bits = (uint8_t)((bits &lt;&lt; 1) &amp; 0xFFu);&#10;    &#125;&#10;    stream[8] = '\0';&#10;&#10;    char out_bits[9];&#10;    for (int i = 0; i &lt; 8; i++) &#123;&#10;        out_bits[i] = (char)('0' + ((collected &gt;&gt; (7 - i)) &amp; 1u));&#10;    &#125;&#10;    out_bits[8] = '\0';&#10;&#10;    printf(&quot;stream=%s collected=0x%02x bits=%s\n&quot;, stream, (unsigned)collected,&#10;           out_bits);&#10;&#10;    int ok = 1;&#10;    for (int i = 0; i &lt; 8; i++) &#123;&#10;        if (out_bits[i] != stream[7 - i]) &#123;&#10;            ok = 0;&#10;        &#125;&#10;    &#125;&#10;    printf(&quot;reverse ok: %d\n&quot;, ok);&#10;    return 0;&#10;&#125;&#10;"
+/>
+
+## Common pitfalls
+
+### Reading the outgoing bit after shifting
+
+```c
+r->bits = (uint8_t)((r->bits << 1) | newbit);
+r->last_out = (uint8_t)((r->bits >> 7) & 1u);   /* wrong: this is the new bit */
+```
+
+After `<< 1`, bit 7 holds the *new* bit, not the one that fell off. Capture
+first, then shift — the order in `shift_in` is deliberate.
+
+### Shifting a signed value right
+
+Right-shifting a negative `int` is implementation-defined: some machines
+fill with zeros, some replicate the sign bit. The C standard permits
+either. Do arithmetic on `uint32_t` and convert at the boundaries; then
+`>>` is defined exactly once and both behaviours disappear.
+
+### Shifting by the width of the type
+
+`x << 32` on a 32-bit `uint32_t` is undefined behaviour, not zero. If the
+shift count comes from a variable, mask it: `x << (n & 31u)`. This bites
+in real code more often than the textbook examples suggest.
+
+### Forgetting that a parallel load is not a shift
+
+Loading `0xC3` into a register writes all eight bits at the same edge.
+Shifting into it takes eight edges and only works if you feed the bits in
+the right order. Confusing the two is how a serial protocol gets its bytes
+backwards.
+
+<QuizCard
+	id="m05-quiz-rotate"
+	question="A register holds 0x81 and is rotated left once. What is the new value, and what would it have been if the operation had been a plain shift left?"
+	options={[
+		'0x03 rotated, 0x02 shifted',
+		'0x02 rotated, 0x03 shifted',
+		'0x03 rotated, 0x03 shifted',
+		'0x82 rotated, 0x82 shifted'
+	]}
+	answer={0}
+	explanation="0x81 is 1000 0001. A plain left shift loses the top bit and gives 0000 0010 = 0x02; a rotate feeds that bit back into bit 0, so the result is 0000 0011 = 0x03."
+/>
+
+<LectureReference lecture="Lecture 05 — Sequential Logic" slides="35–48" />

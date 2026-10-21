@@ -1,0 +1,166 @@
+---
+id: 10-01-what-is-an-os
+title: What Is an OS?
+module: 10
+lecture: 'Lecture 10 — Operating Systems'
+slides: '3–16'
+estimatedMinutes: 14
+prerequisites: ['09-03-multicore']
+tags: ['os', 'resources', 'abstraction']
+hasExercise: false
+hasQuiz: true
+---
+
+<script>
+	import TheoryBlock from '$lib/components/lesson/TheoryBlock.svelte';
+	import Eli5Block from '$lib/components/lesson/Eli5Block.svelte';
+	import LectureReference from '$lib/components/lesson/LectureReference.svelte';
+	import QuizCard from '$lib/components/lesson/QuizCard.svelte';
+</script>
+
+## The program that is not running
+
+A C program on disk is bytes. It has an entry point, some machine code, and a
+list of symbols, but it has no clock, no memory, and no screen. Something has to
+give it all three. That something is the operating system.
+
+The OS is the layer between your program and the hardware. It owns the physical
+resources — CPU cycles, RAM pages, disk blocks, network packets — and it hands
+them out to programs that ask. The lecture calls this the **resource manager**
+role. The other role, which we take up in the next lesson, is **abstraction**:
+turning a disk into files, and a CPU into processes.
+
+## What you'll be able to do
+
+- Say what an operating system owns and what it hands out.
+- Name the four jobs a kernel does, and where each one reappears in this course.
+- Explain why the OS is invisible in a correct program and obvious in a failing one.
+- Read `sysconf` values to watch the OS describe its own limits.
+
+<TheoryBlock label="Why it matters for C" title="Every pointer you dereference goes through this layer">
+
+	When your program reads `*p`, the hardware needs a physical address. What it has is a virtual
+	one, and the OS built the table that translates between them. You never see the translation,
+	which is exactly the point: the OS is invisible until it fails.
+</TheoryBlock>
+
+## What a kernel has to do
+
+Four jobs cover almost everything:
+
+| Job | What it means | Where you meet it |
+| --- | --- | --- |
+| CPU scheduling | decide which ready program runs next | Lecture 13 |
+| Memory management | map virtual addresses to physical frames | Lectures 16, 17 |
+| I/O and files | turn devices into readable, writable streams | Lecture 18 |
+| Protection | stop one program from reading another's memory | Lecture 19 |
+
+The last one is what makes the others possible. If any program could write any
+address, scheduling would be pointless — one bug would end the machine.
+
+## The resources are finite and countable
+
+You can ask the OS how much of a resource it will give you, and the answer comes
+back as a number. `sysconf()` is that question. It is not a system call in the
+strict sense — the C library often has the answer cached — but it reports values
+the kernel decided at boot.
+
+These numbers differ between machines. Yours will not match the ones below
+exactly, and that is the point: the OS is telling you its own configuration, not
+a constant from the C standard.
+
+<Eli5Block
+	topic="resource-manager"
+	football="The referee does not play. They own the pitch, the ball, and the clock, and they decide who gets to touch the ball and for how long. Every player asks; nobody takes. That is the operating system's job — it holds the resources and hands them out on request."
+	money="A bank does not spend your money. It holds the ledger, decides who may move what, and refuses a withdrawal that would break the rules. The building and the cash are secondary. The ledger and the authority are the product — that is what an operating system gives a program."
+/>
+
+## Asking the OS about itself
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <stdio.h>
+#include <unistd.h>
+
+int main(void) {
+    long page_size = sysconf(_SC_PAGESIZE);
+    long open_max = sysconf(_SC_OPEN_MAX);
+    long ticks = sysconf(_SC_CLK_TCK);
+
+    printf("memory page size    = %ld bytes\n", page_size);
+    printf("max open files      = %ld\n", open_max);
+    printf("clock ticks/second  = %ld\n", ticks);
+
+    /* One page holds this many ints, whatever the platform's page size is. */
+    printf("ints per page       = %ld\n", page_size / (long)sizeof(int));
+    return 0;
+}
+```
+
+`unistd.h` and `sysconf()` are POSIX, not ISO C. On Windows there is no
+equivalent and this program does not build; the closest thing is
+`GetSystemInfo()` from `windows.h`. Compile it with:
+
+```text
+gcc -std=c11 -Wall -Wextra os-resources.c -o os-resources
+```
+
+## Expected output
+
+On the 64-bit Mac used to verify this lesson:
+
+```text
+memory page size    = 16384 bytes
+max open files      = 1048575
+clock ticks/second  = 100
+ints per page       = 4096
+```
+
+Read the first line carefully: 16384 bytes, not the 4096 you may have seen
+quoted in older material. Apple Silicon uses 16 KiB pages; most x86-64 Linux
+systems use 4 KiB. Both are correct for their machine. `ints per page` divides
+out to 4096 here only because `sizeof(int)` is 4 and the page is 16 KiB.
+
+That is the resource manager answering a direct question. The page size is not
+an abstraction you are meant to reason about day to day, but it is the unit the
+kernel allocates in, and it explains why a `malloc` of one byte still consumes
+thousands.
+
+## Common pitfalls
+
+### Assuming a page is 4096 bytes
+
+Almost every blog post and textbook says 4096. That is the x86 default, not a
+law. Code that hardcodes it will allocate a buffer that is four times too small
+on Apple Silicon and silently misalign file I/O. Ask `sysconf(_SC_PAGESIZE)` and
+store the answer in a variable.
+
+### Treating a failed call as a crash
+
+A refused request returns `-1` and sets `errno`. The program keeps running. If
+you do not check the return value you will treat a refused request as success,
+which is how programs end up reading garbage. We look at that pattern in the
+next lesson, and again in module 18.
+
+### Confusing the OS with the shell
+
+Bash, zsh, and PowerShell are ordinary programs that ask the kernel to start
+other programs. They are not the operating system. The kernel is the part still
+running when the shell exits. This distinction matters in module 11, when a
+process is orphaned and keeps running after the terminal that started it is gone.
+
+<QuizCard
+	id="os-what-quiz-1"
+	question="Your program calls sysconf(_SC_PAGESIZE) and gets 16384, but a tutorial told you a page is 4096 bytes. Which number should your code use?"
+	options={[
+		'Use 16384. sysconf reports the page size of the machine the program is actually running on, and a page size from a tutorial describes the machine the tutorial ran on',
+		'Use 4096. Pages are defined by the architecture and every machine you will ever run on uses 4 KB pages',
+		'Use neither: page size only matters inside the kernel, so any value works in user space',
+		'Use 16384/4096 = 4, because the system page is four hardware pages'
+	]}
+	answer={0}
+	explanation="The page size is a runtime property of the operating system, which is why the portable answer is to ask at run time and why a hardcoded 4096 breaks on a machine with 16 KB pages."
+/>
+
+<LectureReference lecture="Lecture 10 — Operating Systems" slides="3–16" />
