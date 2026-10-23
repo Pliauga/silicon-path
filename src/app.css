@@ -1,0 +1,975 @@
+@import 'tailwindcss';
+
+/* ---------------------------------------------------------------------------
+   Fonts — "Editorial Void" (DESIGN.md §1.2). Self-hosted through @fontsource,
+   so there is still no CDN and no network at runtime.
+   Goudy Old Style is the Typekit face in the reference; Sorts Mill Goudy is
+   the open Goudy Old Style revival. It publishes 400 and 400-italic only, so
+   headings stay at weight 400 (as DESIGN.md specifies for titles) and bold
+   inline text is synthesised by the browser.
+   --------------------------------------------------------------------------- */
+@import '@fontsource/sorts-mill-goudy/latin-400.css';
+@import '@fontsource/sorts-mill-goudy/latin-400-italic.css';
+@import '@fontsource/sorts-mill-goudy/latin-ext-400.css';
+@import '@fontsource/inter/latin-400.css';
+@import '@fontsource/inter/latin-400-italic.css';
+@import '@fontsource/inter/latin-600.css';
+@import '@fontsource/inter/latin-700.css';
+@import '@fontsource/courier-prime/latin-400.css';
+@import '@fontsource/courier-prime/latin-400-italic.css';
+@import '@fontsource/courier-prime/latin-700.css';
+@import '@fontsource/courier-prime/latin-ext-400.css';
+
+/* ---------------------------------------------------------------------------
+   Design tokens — DESIGN.md §1.1. One light theme only for this pass.
+   `data-theme="dark"` resolves to the same values, so the (hidden) theme
+   toggle and any stored preference are harmless no-ops until the secondary
+   "Vibe" dark mode is designed.
+
+   Raw brand hexes are kept exact. Where a brand colour is used for *small
+   text* on ivory it fails WCAG AA (agents.md §9: 4.5:1), so a darkened `-ink`
+   sibling carries the text role and the exact hex keeps fills, hairlines and
+   large display type:
+     clay  #D97757 on ivory-med 2.69:1  → clay-ink  #A8492A 4.95:1
+     cyan  #44A6E4 on ivory-med 2.31:1  → cyan-ink  #1F6E9F 4.77:1
+     teal  #2B8272 on ivory-med 3.98:1  → teal-ink  #236B5D 5.42:1
+     olive #859900 on ivory-med 2.76:1  → olive-ink #506000 4.58:1
+     gray  #87867F on ivory-med 3.15:1  → muted     #6B6A65 4.67:1
+   --------------------------------------------------------------------------- */
+:root,
+:root[data-theme='light'] {
+	/* Canvas & surfaces */
+	--background-color: #f5f2eb; /* cream paper */
+	--color-ivory: #f5f2eb;
+	--color-ivory-med: #ede9df;
+	--color-ivory-dark: #e4dfd3;
+	--rubin-ivory: #f5f2eb;
+	--rubin-paper: #f0ece1; /* code / blueprint surface: warm paper, never white */
+	--rubin-warm-tint: #f3e6d5; /* clay-edged callouts */
+	--rubin-ivory-med: #ede9df;
+	--rubin-ivory-dark: #e4dfd3;
+	--tone: #f5f2eb;
+
+	/* Ink */
+	--rubin-slate: #2b2520;
+	--rubin-dark-gray: #5e554b;
+	--rubin-gray: #8a8274;
+	--rubin-muted: #645a4f;
+
+	/* Accents */
+	--rubin-clay: #d97757;
+	--rubin-clay-hover: #e08a6c;
+	--rubin-clay-ink: #963f23;
+	--rubin-cyan: #44a6e4;
+	--rubin-cyan-ink: #175f8e;
+	--rubin-riso: #5e7edf;
+	--rubin-teal: #2b8272;
+	--rubin-teal-ink: #1f6254;
+	--rubin-clay-code: #ad3914; /* 4.58:1 on grid line + wash, 5.28:1 on paper #f0ece1 */
+	--rubin-cyan-code: #11659a; /* 4.61:1, 5.31:1 */
+	--rubin-teal-code: #0c6d5b; /* 4.60:1, 5.30:1 */
+	--rubin-olive-code: #5a670b; /* 4.57:1, 5.26:1 */
+	--syntax-operator: #859900;
+	--rubin-olive-ink: #506000;
+
+	/* Generative-art inks */
+	--art-ink-primary: #3a332c;
+	--art-ink-faint: rgba(58, 51, 44, 0.7);
+	--art-ink-mist: rgba(66, 58, 50, 0.4);
+
+	/* Semantic aliases consumed by existing components. */
+	--bg-base: #f5f2eb;
+	--bg-raised: var(--rubin-ivory-med);
+	--bg-overlay: var(--rubin-ivory-dark);
+	--border-subtle: rgba(138, 130, 116, 0.45);
+	--border-strong: var(--rubin-gray);
+
+	--text-primary: var(--rubin-slate);
+	--text-secondary: var(--rubin-dark-gray);
+	--text-muted: var(--rubin-muted);
+	--text-inverse: var(--rubin-ivory);
+
+	/* `--accent` is the terracotta *fill* (buttons, bars); text on it is slate
+	   (5.33:1). `--accent-ink` is the AA-safe terracotta for text and links. */
+	--accent: var(--rubin-clay);
+	--accent-hover: var(--rubin-clay-hover);
+	--accent-ink: var(--rubin-clay-ink);
+	--accent-muted: rgba(217, 119, 87, 0.16);
+	--accent-text: var(--rubin-slate);
+
+	--success: var(--rubin-teal-ink);
+	--warning: #8a5a12;
+	--error: #a8321f;
+
+	/* Syntax — shared by Shiki (src/lib/utils/shiki-theme.js) and CodeMirror.
+	   Keywords/functions cyan, numbers/variables terracotta, strings teal. */
+	/* Code inks: the brightest shade of each DESIGN.md hue that still clears
+	   4.5:1 on the blueprint surface, worst case (active-line wash over a grid
+	   line). Raw clay/cyan/teal measure 2.96 / 2.55 / 4.39:1 on ivory. */
+	--syntax-keyword: var(--rubin-cyan-code);
+	--syntax-string: var(--rubin-teal-code);
+	--syntax-number: var(--rubin-clay-code);
+	--syntax-comment: var(--rubin-muted);
+	--syntax-func: var(--rubin-cyan-code);
+	--syntax-type: var(--rubin-clay-code);
+	--syntax-op: var(--rubin-olive-code);
+
+	--focus-ring: var(--rubin-slate);
+
+	/* Responsive type scale — DESIGN.md §1.2. */
+	--font-size-base: 15px;
+	--font-size-prose: 16px;
+
+	/* Blueprint surface: pale cyan graph paper on ivory. The cell equals the code
+	   line-height, so every grid square holds exactly one line of text. */
+	--code-size: 14px;
+	--code-weight: 500;
+	--blueprint-cell: 22px;
+	--blueprint-line: rgba(186, 61, 21, 0.05);
+	--blueprint-grid:
+		linear-gradient(var(--blueprint-line) 1px, transparent 1px),
+		linear-gradient(90deg, var(--blueprint-line) 1px, transparent 1px);
+	--blueprint-border: 1px solid #d5d0c5;
+	--line-height-base: 1.5;
+	--letter-spacing-base: 0;
+
+	/* Elevation and chrome: the dark block swaps these. */
+	--shadow-card: 0 4px 24px rgba(0, 0, 0, 0.03);
+	--shadow-card-hover: 0 8px 30px rgba(0, 0, 0, 0.06);
+	--hairline-hover: rgba(138, 130, 116, 0.2);
+	--glass-bg: rgba(237, 233, 223, 0.82);
+	--glass-edge: rgba(138, 130, 116, 0.6);
+	--scroll-thumb: rgba(138, 130, 116, 0.35);
+	--code-paper: #f0ece1;
+
+	color-scheme: light;
+}
+
+/* ---------------------------------------------------------------------------
+   Dark Academia (night reading). Espresso paper, parchment ink, one terracotta.
+   Same token names as the light block, so every utility and component re-themes
+   without a per-component override. Every text pairing is >= 4.5:1 (measured:
+   slate 14.2, dark-gray 6.9, muted 6.3 on ivory-med; code inks >= 5.2 worst case).
+   The raw `gray` (#78716c, 3.65:1) is kept for hairlines and decoration only.
+   --------------------------------------------------------------------------- */
+:root[data-theme='dark'] {
+	--background-color: #141210;
+	--color-ivory: #141210;
+	--color-ivory-med: #1c1917;
+	--color-ivory-dark: #262320;
+	--color-paper: #181614;
+	--color-warm-tint: #221b17;
+	--color-slate: #ebe7df;
+	--color-dark-gray: #a8a29e;
+	--color-gray: #78716c;
+	--color-clay: #e07a5f;
+	--color-clay-hover: #e58f78;
+	--color-clay-ink: #ec8e73;
+	--color-cyan: #5ba8d6;
+	--color-cyan-ink: #6db6e2;
+	--color-riso: #7f9be8;
+	--color-teal: #48a995;
+	--color-teal-ink: #5dbba6;
+
+	--rubin-ivory: #141210;
+	--rubin-paper: #181614;
+	--rubin-warm-tint: #221b17;
+	--rubin-ivory-med: #1c1917;
+	--rubin-ivory-dark: #262320;
+	--tone: #141210;
+
+	--rubin-slate: #ebe7df;
+	--rubin-dark-gray: #a8a29e;
+	--rubin-gray: #78716c;
+	--rubin-muted: #a09a93;
+
+	--rubin-clay: #e07a5f;
+	--rubin-clay-hover: #e58f78;
+	--rubin-clay-ink: #ec8e73;
+	--rubin-cyan: #5ba8d6;
+	--rubin-cyan-ink: #6db6e2;
+	--rubin-riso: #7f9be8;
+	--rubin-teal: #48a995;
+	--rubin-teal-ink: #5dbba6;
+	--rubin-clay-code: #ee8d72;
+	--rubin-cyan-code: #6db6e2;
+	--rubin-teal-code: #5dbba6;
+	--rubin-olive-code: #a9bc4a;
+	--syntax-operator: #b7c95a;
+	--rubin-olive-ink: #b2c455;
+
+	--art-ink-primary: #d9d3c7;
+	--art-ink-faint: rgba(217, 211, 199, 0.7);
+	--art-ink-mist: rgba(217, 211, 199, 0.4);
+
+	--bg-base: #141210;
+	--border-subtle: #332e2a;
+	--border-strong: #4a443f;
+
+	--accent-muted: rgba(224, 122, 95, 0.18);
+	/* Text on the terracotta fill flips to espresso: 6.33:1 (parchment on clay is 2.39:1). */
+	--accent-text: #141210;
+
+	--warning: #e0b060;
+	--error: #ee8a7b;
+
+	--blueprint-line: rgba(224, 122, 95, 0.05);
+	--blueprint-border: 1px solid #332e2a;
+	--code-paper: #181614;
+
+	--shadow-card: 0 4px 24px rgba(0, 0, 0, 0.32);
+	--shadow-card-hover: 0 10px 34px rgba(0, 0, 0, 0.45);
+	--hairline-hover: rgba(120, 113, 108, 0.35);
+	--glass-bg: rgba(28, 25, 23, 0.7);
+	--glass-edge: #332e2a;
+	--scroll-thumb: rgba(120, 113, 108, 0.5);
+
+	color-scheme: dark;
+}
+
+/* Same selector list as the token block above: a bare `:root` here would lose
+   on specificity to `:root[data-theme]` and the desktop size would never apply. */
+@media (min-width: 768px) {
+	:root,
+	:root[data-theme='dark'],
+	:root[data-theme='light'] {
+		--font-size-base: 16px;
+		--font-size-prose: 17px;
+		--line-height-base: 1.55;
+	}
+}
+
+/* ---------------------------------------------------------------------------
+   Density — a dial, not a fixed value (agents.md §5.1).
+   --------------------------------------------------------------------------- */
+:root {
+	--density-gutter: 3rem;
+	--density-block-gap: 1.5rem;
+	--density-row: 2.5rem;
+	--density-pad: 1.5rem;
+}
+
+:root[data-density='dense'] {
+	--density-gutter: 1.5rem;
+	--density-block-gap: 1rem;
+	--density-row: 2rem;
+	--density-pad: 1rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Tailwind theme.
+   `@theme` (not `inline`) for the raw brand colours: they are plain hexes that
+   generate `bg-ivory-med`, `text-slate`, `border-gray`, `bg-clay`, … The
+   semantic bridge below stays `inline` so utilities keep pointing at the
+   custom properties.
+   --------------------------------------------------------------------------- */
+@theme {
+	--color-ivory: #f5f2eb;
+	--color-paper: #f0ece1;
+	--color-warm-tint: #f3e6d5;
+	--color-ivory-med: #ede9df;
+	--color-ivory-dark: #e4dfd3;
+	--color-slate: #2b2520;
+	--color-dark-gray: #5e554b;
+	--color-gray: #8a8274;
+	--color-clay: #d97757;
+	--color-clay-hover: #e08a6c;
+	--color-clay-ink: #963f23;
+	--color-cyan: #44a6e4;
+	--color-cyan-ink: #175f8e;
+	--color-riso: #5e7edf;
+	--color-teal: #2b8272;
+	--color-teal-ink: #1f6254;
+}
+
+@theme inline {
+	--color-base: var(--bg-base);
+	--color-raised: var(--bg-raised);
+	--color-overlay: var(--bg-overlay);
+	--color-subtle: var(--border-subtle);
+	--color-strong: var(--border-strong);
+
+	--color-primary-text: var(--text-primary);
+	--color-secondary-text: var(--text-secondary);
+	--color-muted-text: var(--text-muted);
+	--color-inverse-text: var(--text-inverse);
+
+	--color-accent: var(--accent);
+	--color-accent-hover: var(--accent-hover);
+	--color-accent-muted: var(--accent-muted);
+	--color-accent-text: var(--accent-text);
+
+	--color-success: var(--success);
+	--color-warning: var(--warning);
+	--color-error: var(--error);
+
+	--font-display: 'Sorts Mill Goudy', 'Goudy Old Style', Georgia, serif;
+	--font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+	--font-mono: 'Courier Prime', Courier, 'Courier New', monospace;
+
+	/* Inter scale ("warm developer": Notion / Read.cv density). */
+	--text-display: 6.25rem;
+	--text-display--line-height: 1.05;
+	--text-display--letter-spacing: -0.01em;
+	--text-h1: 2.5rem;
+	--text-h1--line-height: 1.15;
+	--text-h1--letter-spacing: 0.005em;
+	--text-h2: 1.875rem;
+	--text-h2--line-height: 1.25;
+	--text-h2--letter-spacing: 0.005em;
+	--text-h3: 1.375rem;
+	--text-h3--line-height: 1.3;
+	--text-h3--letter-spacing: 0.005em;
+	--text-body: 1rem;
+	--text-body--line-height: 1.55;
+	--text-small: 0.875rem;
+	--text-small--line-height: 1.5;
+	--text-code: 0.8125rem;
+	--text-code--line-height: 1.6;
+	--text-micro: 0.75rem;
+	--text-micro--line-height: 1.4;
+	--text-micro--letter-spacing: 0.02em;
+
+	/* Anti-SaaS doctrine: 0px everywhere, 4px on input controls only. */
+	--radius-sm: 0px;
+	--radius-md: 0px;
+	--radius-lg: 0px;
+	--radius-input: 0px;
+	--radius-card: 0px;
+
+	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+	/* Soft spring: overshoots ~4% then settles. Used by card lift and route arrival. */
+	--ease-out-back: cubic-bezier(0.34, 1.56, 0.64, 1);
+	/* Paper tooth: a static SVG feTurbulence tile with the 2% opacity baked into the rect,
+	   so it can sit in a normal background-image stack. Rasterised once per element. */
+	--paper-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E");
+	--dur-fast: 200ms;
+	--dur-base: 200ms;
+	--dur-slow: 320ms;
+}
+
+/* Classes that appear only inside MDX/lesson prose still need scanning. */
+@source '../src/content/**/*.mdx';
+@source './lib/components/**/*.svelte';
+
+/* ---------------------------------------------------------------------------
+   Base layer
+   --------------------------------------------------------------------------- */
+@layer base {
+	*,
+	*::before,
+	*::after {
+		box-sizing: border-box;
+		/* Hard rule: the only rounded corners are input controls. */
+		box-shadow: none;
+	}
+
+	html {
+		-webkit-text-size-adjust: 100%;
+		scroll-behavior: smooth;
+		background-color: var(--color-ivory);
+	}
+
+	body {
+		margin: 0;
+		min-height: 100dvh;
+		background-color: var(--color-ivory);
+		color: var(--text-primary);
+		font-family: var(--font-sans);
+		font-size: var(--font-size-base);
+		line-height: var(--line-height-base);
+		letter-spacing: var(--letter-spacing-base);
+		text-rendering: optimizeLegibility;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	/* Typographic craft: no one-word last lines in paragraphs, balanced display headings. */
+	p {
+		text-wrap: pretty;
+	}
+
+	h1,
+	h2 {
+		text-wrap: balance;
+	}
+
+	/* Headings: Sorts Mill Goudy (one weight, 400). Body stays Inter. */
+	h1,
+	h2,
+	h3 {
+		font-family: var(--font-display);
+		font-weight: 400;
+	}
+
+	/* Focus: 2px slate ring with 2px offset. Never silently removed. */
+	:focus-visible {
+		outline: 2px solid var(--focus-ring);
+		outline-offset: 2px;
+	}
+
+	::selection {
+		background-color: var(--accent-muted);
+		color: var(--text-primary);
+	}
+
+	code,
+	kbd,
+	samp,
+	pre {
+		font-family: var(--font-mono);
+		font-size: var(--text-code);
+		font-variant-ligatures: none;
+		letter-spacing: 0;
+	}
+
+	a {
+		color: inherit;
+		text-decoration: none;
+	}
+
+	hr {
+		border: 0;
+		border-top: 1px solid var(--rubin-gray);
+	}
+
+	/* Inputs are square too: the Premium Textbook rule is 0px radius everywhere. */
+	input,
+	textarea,
+	select {
+		border-radius: var(--radius-input);
+		font-family: var(--font-mono);
+	}
+
+	/* Motion is opt-out, not opt-in. */
+	@media (prefers-reduced-motion: reduce) {
+		html {
+			scroll-behavior: auto;
+		}
+
+		*,
+		*::before,
+		*::after {
+			animation-duration: 0.01ms !important;
+			animation-iteration-count: 1 !important;
+			transition-duration: 0.01ms !important;
+			transition-delay: 0ms !important;
+			scroll-behavior: auto !important;
+		}
+	}
+}
+
+/* ---------------------------------------------------------------------------
+   The scroll shell: native CSS scroll snapping, no scrollbars (DESIGN.md §2.1).
+   --------------------------------------------------------------------------- */
+@utility no-scrollbar {
+	-ms-overflow-style: none;
+	scrollbar-width: none;
+
+	&::-webkit-scrollbar {
+		display: none;
+	}
+}
+
+/* ---------------------------------------------------------------------------
+   Staggered fade (DESIGN.md §3.1). `src/lib/actions/inview.ts` adds
+   `.is-in-view` once a section crosses the 10% threshold. The artwork arrives
+   first (250ms delay), the text only after the eye has rested on it (1s).
+   Nothing is hidden until the action has run, so a failed script never
+   leaves a blank page.
+   --------------------------------------------------------------------------- */
+.fade-art,
+.fade-text {
+	opacity: 0;
+	transition: opacity 2s ease;
+}
+
+.fade-art {
+	transition-delay: 0.25s;
+}
+
+.fade-text {
+	transition-delay: 1s;
+}
+
+.fade-art.is-in-view,
+.fade-text.is-in-view {
+	opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.fade-art,
+	.fade-text {
+		opacity: 1;
+		transition: none;
+	}
+}
+
+/* Editorial hero: clamp(20px, 10vh, 100px), wide tracking, optically centred
+   (DESIGN.md §1.2 note on the 4vh letter-spacing overhang). */
+.hero-title {
+	font-family: var(--font-display);
+	font-size: clamp(2.75rem, 10vh, 6.25rem);
+	font-weight: 400;
+	line-height: 1.2;
+	letter-spacing: 0.04em;
+	text-wrap: balance;
+}
+
+.hero-subtitle {
+	font-family: var(--font-sans);
+	font-size: clamp(1rem, 2.4vh, 1.375rem);
+	font-weight: 400;
+	line-height: 1.4;
+	letter-spacing: 0;
+}
+
+/* The Malevich square — ivory-med on alabaster, nothing inside it. */
+.malevich-square {
+	width: 23vh;
+	height: 23vh;
+	background-color: var(--rubin-ivory-med);
+}
+
+@media (max-width: 820px) {
+	.malevich-square {
+		width: 18vh;
+		height: 18vh;
+	}
+}
+
+/* ---------------------------------------------------------------------------
+   Lesson prose — Goudy Old Style at 22px / 1.5 on desktop (DESIGN.md §1.2),
+   68ch measure. Plain class rather than a typography plugin so every value is
+   a design token. Weight 400 headings: hierarchy comes from size and space.
+   --------------------------------------------------------------------------- */
+.prose-path {
+	max-width: 68ch;
+	color: var(--text-primary);
+	font-family: var(--font-sans);
+	font-size: var(--font-size-prose);
+	line-height: 1.65;
+	letter-spacing: 0;
+}
+
+.prose-path > * + * {
+	margin-top: 1em;
+}
+
+/* The first block sits directly under the lesson header, so it drops its own
+   top margin (the h2 margin would otherwise stack on the header gap). */
+.prose-path > :first-child > :first-child {
+	margin-top: 0;
+}
+
+/* Goudy headings over Inter prose; hierarchy comes from size and space. */
+.prose-path h2,
+.prose-path h3 {
+	font-family: var(--font-display);
+	font-weight: 400;
+}
+
+.prose-path h2 {
+	margin-top: 2em;
+	margin-bottom: 0.5em;
+	color: var(--text-primary);
+	font-size: var(--text-h2);
+	line-height: 1.3;
+	letter-spacing: 0.005em;
+	font-weight: 400;
+}
+
+.prose-path h3 {
+	margin-top: 1.5em;
+	margin-bottom: 0.4em;
+	color: var(--text-primary);
+	font-size: var(--text-h3);
+	line-height: 1.4;
+	font-weight: 400;
+}
+
+.prose-path p {
+	margin-block: 0;
+}
+
+.prose-path strong {
+	color: var(--text-primary);
+	font-weight: 700;
+}
+
+.prose-path a {
+	color: var(--accent-ink);
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-decoration-color: var(--rubin-gray);
+	text-underline-offset: 1.5px;
+	transition: text-decoration-color var(--dur-fast) ease;
+}
+
+.prose-path a:hover {
+	text-decoration-color: var(--accent-ink);
+}
+
+.prose-path ul,
+.prose-path ol {
+	padding-left: 1.25rem;
+	margin-block: 0;
+}
+
+.prose-path li + li {
+	margin-top: 0.25em;
+}
+
+.prose-path li::marker {
+	color: var(--rubin-gray);
+}
+
+/* Inline code: a bone tint, no outline. */
+.prose-path code:not(pre code) {
+	padding: 0.05em 0.3em;
+	background-color: var(--rubin-ivory-med);
+	color: var(--text-primary);
+	font-size: 0.8em;
+}
+
+/* Code blocks: the shared "blueprint" surface (see @utility blueprint) — graph
+   paper on ivory-med with a 1px stone hairline. Never wraps: it scrolls
+   horizontally instead. Shiki's inline styles are overridden so the grid
+   shows through and CodeMirror matches exactly. */
+.prose-path pre {
+	box-sizing: border-box;
+	max-width: 100%;
+	margin-block: 2rem;
+	overflow-x: auto;
+	/* Vertical padding stays one grid cell so lines sit on the graph paper;
+	   the sides are tighter so a 78-column line fits the 68ch column. */
+	padding: var(--blueprint-cell) 0.875rem;
+	background-color: var(--code-paper) !important;
+	background-image: var(--blueprint-grid) !important;
+	background-size: var(--blueprint-cell) var(--blueprint-cell) !important;
+	background-attachment: local !important;
+	border: var(--blueprint-border);
+	color: var(--text-primary) !important;
+	font-family: var(--font-mono);
+	font-size: 0.8rem;
+	font-weight: var(--code-weight);
+	line-height: var(--blueprint-cell);
+	white-space: pre;
+	/* Only the rare over-long line scrolls; the bar is a faint hairline, not a slab. */
+	scrollbar-width: thin;
+	scrollbar-color: var(--scroll-thumb) transparent;
+}
+
+.prose-path pre code {
+	display: block;
+	font: inherit;
+	line-height: inherit;
+}
+
+.prose-path blockquote {
+	margin-inline: 0;
+	padding-left: 1.25rem;
+	border-left: 1px solid var(--rubin-gray);
+	color: var(--text-secondary);
+	font-style: italic;
+}
+
+.prose-path table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: var(--text-small);
+}
+
+.prose-path th,
+.prose-path td {
+	padding: 0.5rem 0.75rem;
+	border-bottom: 1px solid var(--border-subtle);
+	text-align: left;
+}
+
+.prose-path th {
+	color: var(--text-primary);
+	font-weight: 700;
+}
+
+/* ---------------------------------------------------------------------------
+   Utilities
+   --------------------------------------------------------------------------- */
+/* Blueprint surface shared by Shiki blocks and the CodeMirror editor. Grid
+   lines are a 5% terracotta tint on the warm paper: visible, yet every syntax ink keeps
+   >= 4.5:1 even under the active-line wash (4.55-4.59 worst case). */
+@utility blueprint {
+	background-color: var(--code-paper);
+	background-image: var(--blueprint-grid);
+	background-size: var(--blueprint-cell) var(--blueprint-cell);
+	background-attachment: local;
+	border: var(--blueprint-border);
+}
+
+@utility section-shell {
+	padding-inline: var(--density-gutter);
+}
+
+/* A 1px hairline in the structural stone grey — never a box border. */
+@utility hairline {
+	border: 0;
+	border-bottom: 1px solid var(--rubin-gray);
+}
+
+/* Callout: an editorial aside on bone (ivory-med) with a soft shadow, a paper-grain tooth and a
+   tactile hover: it lifts 2px on a soft spring while the shadow deepens. */
+@utility callout {
+	background-color: var(--rubin-ivory-med);
+	background-image: var(--paper-grain);
+	background-size: 180px 180px;
+	padding: 1.25rem 1.5rem;
+	/* No box outline: the soft shadow and ivory-med tint lift the card. A transparent
+	   1px border keeps the layout stable so a faint hairline can appear on hover. */
+	border: 1px solid transparent;
+	border-radius: var(--radius-card);
+	box-shadow: var(--shadow-card);
+	transition:
+		transform 0.5s var(--ease-out-back),
+		box-shadow 0.5s var(--ease-out-back),
+		background-color 200ms var(--ease-out),
+		border-color 200ms var(--ease-out);
+
+	&:hover {
+		border-color: var(--hairline-hover);
+	}
+}
+
+/* Lift only where a hover exists, motion is welcome, and the card holds no code editor
+   (a transform would re-anchor CodeMirror's fixed-position tooltips and make a card the
+   reader is typing in bob under the pointer). `.exercise-card` opts a card in or out by hand. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+	.callout:hover:not(:has(.cm-editor)),
+	.exercise-card:hover:not(:has(.cm-editor)),
+	.index-row[data-available='true']:hover {
+		transform: translateY(-2px);
+		box-shadow: var(--shadow-card-hover);
+	}
+}
+
+/* Homepage module index row: same physics as a card, on a hairline list. The row is
+   transparent at rest; on hover it takes the paper tint so the deeper shadow has a face. */
+.index-row {
+	position: relative;
+	background-image: none;
+	transition:
+		transform 0.5s var(--ease-out-back),
+		box-shadow 0.5s var(--ease-out-back),
+		background-color 200ms var(--ease-out);
+}
+
+.index-row[data-available='true']:hover {
+	z-index: 1;
+	background-color: var(--rubin-ivory-med);
+	background-image: var(--paper-grain);
+	background-size: 180px 180px;
+}
+
+/* Clay-edged aside ("In plain English", "Why it matters"): warm tint with a
+   3px terracotta rule on the leading edge. */
+@utility callout-clay {
+	background-color: var(--rubin-warm-tint);
+	border-left: 3px solid var(--color-clay);
+	border-radius: 0 var(--radius-card) var(--radius-card) 0;
+}
+
+/* Mechanical, tactile button face (DESIGN.md §3.3). */
+@utility btn-editorial {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	border: 0;
+	border-radius: 0;
+	background-color: var(--rubin-ivory-med);
+	color: var(--text-secondary);
+	font-family: var(--font-mono);
+	font-size: 0.8125rem;
+	line-height: 1;
+	padding: 0.625rem 0.875rem;
+	cursor: pointer;
+	transition:
+		background-color 0.2s ease,
+		color 0.2s ease;
+
+	&:hover:not(:disabled) {
+		background-color: var(--rubin-ivory-dark);
+		color: var(--text-primary);
+	}
+
+	&:active:not(:disabled) {
+		transform: translateY(1px);
+	}
+
+	&:disabled {
+		cursor: not-allowed;
+		opacity: 0.5;
+	}
+}
+
+/* Terracotta primary: the one coloured action on a card (Run / Check). */
+@utility btn-clay {
+	background-color: var(--rubin-clay);
+	color: var(--accent-text);
+
+	&:hover:not(:disabled) {
+		background-color: var(--rubin-clay-hover);
+		color: var(--accent-text);
+	}
+}
+
+/* ==========================================================================
+   Premium Interactions (owner-approved exception, AGENTS.md §5.1)
+   Film grain, glass chrome, magnetic buttons, prose reveal, route transitions.
+   Every motion here is disabled under prefers-reduced-motion: reduce.
+   ========================================================================== */
+
+/* Fixed film grain: static SVG feTurbulence tile at 3% opacity. It paints once
+   (no animation), never takes pointer events, and sits above the page only. */
+.film-grain {
+	position: fixed;
+	inset: 0;
+	z-index: 100;
+	pointer-events: none;
+	opacity: 0.03;
+	/* Own compositor layer: the tile is rasterised once, scrolling never repaints it. */
+	will-change: transform;
+	transform: translateZ(0);
+	contain: strict;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+	background-size: 220px 220px;
+}
+
+/* Dark: the film grain would lighten espresso into grey, so it is half as strong. */
+:root[data-theme='dark'] .film-grain {
+	opacity: 0.018;
+}
+
+/* Frosted chrome: the rail and the mobile top bar. */
+.glass-surface {
+	background-color: var(--glass-bg);
+	-webkit-backdrop-filter: blur(24px) saturate(1.15);
+	backdrop-filter: blur(24px) saturate(1.15);
+	will-change: transform;
+	transform: translateZ(0);
+}
+
+/* Glass edge: a 1px warm hairline, a notch stronger than the 45% page hairlines, so the
+   pane reads as a sheet of glass rather than a flat tint. */
+.glass-edge-r {
+	border-right: 1px solid var(--glass-edge);
+}
+
+/* Magnetic buttons: pull via `translate`, spring back with a small overshoot. */
+.btn-clay {
+	will-change: translate;
+	transition:
+		background-color 0.2s ease,
+		color 0.2s ease,
+		translate 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.btn-clay.is-magnetic {
+	transition:
+		background-color 0.2s ease,
+		color 0.2s ease,
+		translate 0.12s ease-out;
+}
+
+/* Scroll reveal for lesson paragraphs. */
+.reveal-p {
+	opacity: 0.2;
+	translate: 0 10px;
+	transition:
+		opacity 0.9s var(--ease-out),
+		translate 0.9s var(--ease-out);
+}
+
+.reveal-p.is-revealed {
+	opacity: 1;
+	translate: 0 0;
+}
+
+/* Route transitions: a page turn. The old page lets go quickly; the new one arrives from
+   slightly behind (scale 0.98) and out of focus (blur 4px) and settles on a soft spring.
+   Only opacity, transform and filter animate, all compositor-side. */
+@keyframes page-out {
+	to {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+}
+
+@keyframes page-in {
+	from {
+		opacity: 0;
+		transform: scale(0.98);
+		filter: blur(4px);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1);
+		filter: blur(0);
+	}
+}
+
+::view-transition-group(root) {
+	animation: none;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+	animation: none;
+	mix-blend-mode: normal;
+}
+
+::view-transition-old(page-body) {
+	animation: page-out 160ms var(--ease-out) both;
+}
+
+::view-transition-new(page-body) {
+	transform-origin: 50% 12%;
+	animation: page-in 520ms var(--ease-out-back) 60ms both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.btn-clay {
+		will-change: auto;
+		transition:
+			background-color 0.2s ease,
+			color 0.2s ease;
+		translate: none !important;
+	}
+
+	.reveal-p {
+		opacity: 1;
+		translate: none;
+		transition: none;
+	}
+
+	::view-transition-group(*),
+	::view-transition-old(*),
+	::view-transition-new(*) {
+		animation: none !important;
+	}
+}
+
+/* Dark Academia: explicit surface overrides named in the spec. The token swap above
+   already re-themes these through variables; they are repeated here so the rail and
+   code surfaces keep their exact dark treatment if a variable is ever re-pointed. */
+:root[data-theme='dark'] .blueprint {
+	background-color: #181614;
+	background-image:
+		linear-gradient(rgba(224, 122, 95, 0.05) 1px, transparent 1px),
+		linear-gradient(90deg, rgba(224, 122, 95, 0.05) 1px, transparent 1px);
+	border: 1px solid #332e2a;
+}
+
+:root[data-theme='dark'] .rail {
+	background: rgba(28, 25, 23, 0.7);
+	border-right: 1px solid #332e2a;
+}

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-density="comfortable" data-analogy="football">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="color-scheme" content="light" />
+		<meta name="theme-color" content="#f5f2eb" />
+		<meta
+			name="description"
+			content="Silicon Path — learn C alongside the computer systems theory that makes it make sense."
+		/>
+		%sveltekit.head%
+		<script>
+			// Theme before first paint: a stored choice wins, then the OS preference,
+			// then light. Mirrors initialTheme() in src/lib/stores/settings.svelte.ts.
+			(function () {
+				try {
+					var theme = localStorage.getItem('silicon-path:theme');
+					if (theme !== 'dark' && theme !== 'light') {
+						theme =
+							window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+								? 'dark'
+								: 'light';
+					}
+					document.documentElement.setAttribute('data-theme', theme);
+					var scheme = document.querySelector('meta[name="color-scheme"]');
+					if (scheme) scheme.setAttribute('content', theme);
+					var chrome = document.querySelector('meta[name="theme-color"]');
+					if (chrome) chrome.setAttribute('content', theme === 'dark' ? '#141210' : '#f5f2eb');
+					var density = localStorage.getItem('silicon-path:density');
+					if (density === 'comfortable' || density === 'dense') {
+						document.documentElement.setAttribute('data-density', density);
+					}
+					var analogy = localStorage.getItem('silicon-path:analogy');
+					if (analogy === 'football' || analogy === 'money') {
+						document.documentElement.setAttribute('data-analogy', analogy);
+					}
+				} catch (error) {
+					// Private browsing or a blocked storage API: keep the defaults.
+				}
+			})();
+		</script>
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>
