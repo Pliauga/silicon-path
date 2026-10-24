@@ -1,5 +1,7 @@
 # Silicon Path
 
+![Silicon Path Technical Manual](static/images/technical-manual-cover.jpg)
+
 A C course and a computer-systems course that run on your own laptop. No account, no API key, no wifi once it's installed.
 
 ## Why this exists

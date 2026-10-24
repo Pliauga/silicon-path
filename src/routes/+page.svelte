@@ -178,10 +178,15 @@
 			<ArrowRight size={16} strokeWidth={1.5} aria-hidden="true" class="shrink-0 text-dark-gray" />
 		</a>
 
-		<footer class="mt-10 flex items-center gap-2">
+		<footer class="mt-10 flex flex-wrap items-center gap-x-2 gap-y-1">
 			<Clock size={13} strokeWidth={1.5} aria-hidden="true" class="text-muted-text" />
 			<p class="text-small text-muted-text">
 				Built as a personal learning project. Progress stays on this device.
+				<a
+					href={resolve('/about')}
+					class="text-slate underline decoration-gray/60 underline-offset-4 transition-colors duration-200 hover:text-clay-ink"
+					>Why it exists</a
+				>.
 			</p>
 		</footer>
 	</div>

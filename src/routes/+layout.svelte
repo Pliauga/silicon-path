@@ -128,6 +128,16 @@
 		});
 
 		navigation.push({
+			value: 'about',
+			label: 'About Silicon Path',
+			hint: '/about',
+			onSelect: () => {
+				paletteOpen = false;
+				window.location.assign('/about');
+			}
+		});
+
+		navigation.push({
 			value: 'viz-cpu',
 			label: 'Visualization: CPU package',
 			hint: '/cpu',
