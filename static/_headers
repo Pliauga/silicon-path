@@ -1,0 +1,8 @@
+# Cross-origin isolation for static hosts (Netlify / Cloudflare Pages style).
+# Emception's SharedArrayBuffer stdin channel needs both headers on every route.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+
+/emception/cdn/*.wasm
+  Content-Type: application/wasm
