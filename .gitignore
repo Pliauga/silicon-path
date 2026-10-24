@@ -30,7 +30,3 @@ playwright-report/
 .tools/
 .cache/
 .shots/
-.dsh-vision-toolkit/
-.dsh-vision-router/
-# Any other local AI-tooling scratch folders
-.dsh-*/
