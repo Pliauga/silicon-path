@@ -130,6 +130,8 @@ pnpm test       unit tests
 
 ## For the curious
 
-It's SvelteKit with Svelte 5, TypeScript, Tailwind and CodeMirror. Lessons are MDX files in `src/content`. Worksheet exercises are typed data in `src/lib/content/worksheets`. `AGENTS.md` is the project rulebook, `andragogy.md` is the teaching theory behind it, and `PEDAGOGY_AUDIT.md` is a critique of where the app still lets you passively read instead of recall, with a fix list.
+It's built with SvelteKit, Svelte 5, TypeScript, Tailwind, and CodeMirror 6. Lessons are written in MDX and live in `src/content`. The worksheet exercises are typed data in `src/lib/content/worksheets`. The warm "editorial" design system is documented in `DESIGN.md`.
 
-Private project, not published.
+The C compiler uses Emception, which compiles real Clang to WebAssembly so it can run entirely in the browser without a backend. 
+
+This is a personal project I built to help my classmates pass. It's not published or monetised.
