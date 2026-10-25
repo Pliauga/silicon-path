@@ -1,25 +1,12 @@
 <script lang="ts">
 	import { disposeObject3D } from '$lib/utils/three-dispose';
-	import { fetchPremiumAsset } from '$lib/utils/progressive-assets';
+	import { loadEnvironment, PREMIUM_HDRIS } from '$lib/utils/three-environment';
 	import { getContext, onMount } from 'svelte';
 	import { asset as resolveAsset } from '$app/paths';
 	import { STUDY_FRAME, type StudyFrame } from './frame-mode';
 	import type * as Three from 'three';
 	import { createBloom, type Bloom } from '$lib/utils/bloom';
 	import { createParallax, type Parallax } from '$lib/utils/parallax';
-
-	/**
-	 * Optional CDN HDRI, pinned to a commit and verified by SRI.
-	 *
-	 * The commit-pinned jsDelivr snapshot is immutable, and the SRI hash makes
-	 * tampering detectable. jsDelivr sends CORS + CORP headers, which the COEP
-	 * policy requires. `fetchPremiumAsset` caps the whole request at 1.5 s; on
-	 * any failure the bundled studio HDRI is used instead, and if that fails too
-	 * the procedural key/fill/rim rig below still lights the model.
-	 */
-	const PREMIUM_HDRI_URL =
-		'https://cdn.jsdelivr.net/gh/mrdoob/three.js@9b4a2ac29c63ccb43fd51c5661f2f873ac2c39b8/examples/textures/equirectangular/venice_sunset_1k.hdr';
-	const PREMIUM_HDRI_SRI = 'sha384-qF8CTgbo5SXaZBRQulYjWlJOqUPse8sQwxwCL6OI1UMbv+Rg3g/zV3xuimvIjRrU';
 
 	type Layer = {
 		index: string;
@@ -393,23 +380,15 @@
 
 		const initialise = async () => {
 			try {
-				const [
-					threeModule,
-					gltfModule,
-					dracoModule,
-					ktx2Module,
-					hdrModule,
-					gsapModule,
-					scrollTriggerModule
-				] = await Promise.all([
-					import('three'),
-					import('three/examples/jsm/loaders/GLTFLoader.js'),
-					import('three/examples/jsm/loaders/DRACOLoader.js'),
-					import('three/examples/jsm/loaders/KTX2Loader.js'),
-					import('three/examples/jsm/loaders/HDRLoader.js'),
-					import('gsap'),
-					import('gsap/ScrollTrigger')
-				]);
+				const [threeModule, gltfModule, dracoModule, ktx2Module, gsapModule, scrollTriggerModule] =
+					await Promise.all([
+						import('three'),
+						import('three/examples/jsm/loaders/GLTFLoader.js'),
+						import('three/examples/jsm/loaders/DRACOLoader.js'),
+						import('three/examples/jsm/loaders/KTX2Loader.js'),
+						import('gsap'),
+						import('gsap/ScrollTrigger')
+					]);
 
 				if (disposed || !canvasHost || !sectionEl) return;
 
@@ -461,64 +440,22 @@
 
 				loadPercent = 12;
 
-				const pmrem = new THREE.PMREMGenerator(renderer);
-				const hdrLoader = new hdrModule.HDRLoader();
-
-				// Progressive enhancement: the CDN HDRI is optional. Every network
-				// failure has already resolved to null inside fetchPremiumAsset. On a
-				// miss we keep the bundled studio HDRI; if decoding/loading that fails
-				// too, the procedural key/fill/rim rig below still lights the model.
-				const premiumHdri = await fetchPremiumAsset(PREMIUM_HDRI_URL, 1500, {
-					signal: loadAbort.signal,
-					integrity: PREMIUM_HDRI_SRI
+				// Progressive enhancement: the shared helper tries the commit-pinned
+				// CDN HDRI, then the bundled studio HDRI, then leaves the procedural
+				// key/fill/rim rig below as the final fallback. The teardown signal
+				// cancels the CDN request if this component unmounts mid-fetch.
+				const environment = await loadEnvironment(renderer, scene, loadAbort.signal, () => disposed, {
+					premium: PREMIUM_HDRIS.veniceSunset,
+					fallbackUrl: url('hdri/studio_small_08_1k.hdr'),
+					intensity: 0.92,
+					label: 'CPUExplodedView'
 				});
 				if (disposed) {
-					pmrem.dispose();
+					environment?.texture.dispose();
 					return;
 				}
+				environmentTexture = environment?.texture ?? null;
 
-				let hdr: Three.DataTexture | null = null;
-				if (premiumHdri) {
-					try {
-						hdr = hdrLoader.createDataTexture(premiumHdri);
-					} catch (environmentError) {
-						console.warn('[CPUExplodedView] Premium HDRI could not be decoded.', environmentError);
-					}
-				}
-				if (!hdr) {
-					try {
-						hdr = await hdrLoader.loadAsync(url('hdri/studio_small_08_1k.hdr'));
-					} catch (environmentError) {
-						console.warn(
-							'[CPUExplodedView] Fallback HDRI failed to load; using procedural lighting.',
-							environmentError
-						);
-					}
-				}
-
-				if (hdr) {
-					if (disposed) {
-						hdr.dispose();
-						pmrem.dispose();
-						return;
-					}
-					try {
-						hdr.mapping = THREE.EquirectangularReflectionMapping;
-						environmentTexture = pmrem.fromEquirectangular(hdr).texture;
-						scene.environment = environmentTexture;
-						scene.environmentIntensity = 0.92;
-					} catch (environmentError) {
-						console.warn(
-							'[CPUExplodedView] HDRI environment generation failed; using procedural lighting.',
-							environmentError
-						);
-					} finally {
-						hdr.dispose();
-					}
-				}
-				pmrem.dispose();
-
-				if (disposed) return;
 				loadPercent = 24;
 
 				// Key: warm, slightly lower and wider so it rakes across the heat spreader and die.

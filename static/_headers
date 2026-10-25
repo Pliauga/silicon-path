@@ -41,12 +41,12 @@
 #
 # 5. `https://cdn.jsdelivr.net` is the only third-party origin. It is listed by
 #    exact host — never a wildcard — in `connect-src` only, because the
-#    progressive-asset pilot fetches a pinned, SRI-verified three.js example HDRI
-#    with `fetch()`. `connect-src` handles the CDN fetch, not `img-src`: no image
-#    element loads from the CDN, so granting it to `img-src` would be unused
-#    authority. The CPU study falls back to its bundled studio HDRI (then to the
-#    procedural key/fill/rim rig) if the request fails or exceeds its 1.5 s
-#    budget. jsDelivr sends `Access-Control-Allow-Origin: *` and
+#    progressive-enhancement scenes fetch commit-pinned, SRI-verified three.js
+#    example HDRIs with `fetch()`. `connect-src` handles the CDN fetch, not
+#    `img-src`: no image element loads from the CDN, so granting it to `img-src`
+#    would be unused authority. Every study falls back to its bundled studio HDRI
+#    (then to the procedural key/fill/rim rig) if the request fails or exceeds its
+#    1.5 s budget. jsDelivr sends `Access-Control-Allow-Origin: *` and
 #    `Cross-Origin-Resource-Policy: cross-origin`, so the CORS fetch also
 #    satisfies the COEP pair below.
 #

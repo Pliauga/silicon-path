@@ -4,6 +4,7 @@
 	import { asset as resolveAsset } from '$app/paths';
 	import type * as Three from 'three';
 	import { createBloom, type Bloom } from '$lib/utils/bloom';
+	import { loadEnvironment, PREMIUM_HDRIS } from '$lib/utils/three-environment';
 	import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 
 	type Props = {
@@ -102,6 +103,7 @@
 		if (!canvasHost || !sectionEl) return;
 
 		let disposed = false;
+		const loadAbort = new AbortController();
 		let renderer: Three.WebGLRenderer;
 		let bloom: Bloom | null = null;
 		let scene: Three.Scene;
@@ -420,11 +422,10 @@
 				const THREE = await import('three');
 				threeModule = THREE;
 				cameraTarget = new THREE.Vector3();
-				const [gsapModule, scrollModule, hdrModule, gltfModule, dracoModule, ktx2Module] =
+				const [gsapModule, scrollModule, gltfModule, dracoModule, ktx2Module] =
 					await Promise.all([
 						import('gsap'),
 						import('gsap/ScrollTrigger'),
-						import('three/addons/loaders/HDRLoader.js'),
 						import('three/addons/loaders/GLTFLoader.js'),
 						import('three/addons/loaders/DRACOLoader.js'),
 						import('three/addons/loaders/KTX2Loader.js')
@@ -523,17 +524,20 @@
 				}
 
 				loadPercent = 44;
-				const hdr = await withTimeout(
-					new Promise<Three.DataTexture>((resolve, reject) => {
-						new hdrModule.HDRLoader().load(HDRI_URL, resolve, undefined, reject);
-					}),
-					20000
-				);
-				if (disposed) return;
-				hdr.mapping = THREE.EquirectangularReflectionMapping;
-				environmentTexture = hdr;
-				scene.environment = hdr;
-				scene.environmentIntensity = 1;
+				// Progressive enhancement: CDN HDRI, then the bundled studio HDRI, then
+				// the procedural rig already in the scene. The teardown signal cancels the
+				// CDN request if the hero unmounts during the fetch.
+				const loadedEnvironment = await loadEnvironment(renderer, scene, loadAbort.signal, () => disposed, {
+					premium: PREMIUM_HDRIS.veniceSunset,
+					fallbackUrl: HDRI_URL,
+					intensity: 1,
+					label: 'HomeHero'
+				});
+				if (disposed) {
+					loadedEnvironment?.texture.dispose();
+					return;
+				}
+				environmentTexture = loadedEnvironment?.texture;
 				loadPercent = 58;
 
 				const draco = new dracoModule.DRACOLoader().setDecoderPath(decoderPath('draco/draco_decoder.js'));
@@ -779,6 +783,7 @@
 		load();
 
 		return () => {
+			loadAbort.abort();
 			disposed = true;
 			for (const cleanup of cleanups) cleanup();
 			teardownMotion();

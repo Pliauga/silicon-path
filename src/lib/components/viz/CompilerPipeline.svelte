@@ -5,6 +5,7 @@
 	import { asset as resolveAsset } from '$app/paths';
 	import type * as Three from 'three';
 	import { createBloom, type Bloom } from '$lib/utils/bloom';
+	import { loadEnvironment, PREMIUM_HDRIS } from '$lib/utils/three-environment';
 	import { createParallax, type Parallax } from '$lib/utils/parallax';
 	import { warmEnvironment, WARM_AMBIENT } from '$lib/utils/warm-environment';
 
@@ -181,6 +182,7 @@
 
 	onMount(() => {
 		let disposed = false;
+		const loadAbort = new AbortController();
 		let renderer: Three.WebGLRenderer | null = null;
 		let bloom: Bloom | null = null;
 		let scene: Three.Scene | null = null;
@@ -465,7 +467,6 @@
 					gltfModule,
 					dracoModule,
 					ktx2Module,
-					hdrModule,
 					gsapModule,
 					scrollTriggerModule
 				] = await Promise.all([
@@ -473,7 +474,6 @@
 					import('three/examples/jsm/loaders/GLTFLoader.js'),
 					import('three/examples/jsm/loaders/DRACOLoader.js'),
 					import('three/examples/jsm/loaders/KTX2Loader.js'),
-					import('three/examples/jsm/loaders/HDRLoader.js'),
 					import('gsap'),
 					import('gsap/ScrollTrigger')
 				]);
@@ -527,29 +527,22 @@
 
 				loadPercent = 12;
 
-				const pmrem = new THREE.PMREMGenerator(renderer);
-				const hdrLoader = new hdrModule.HDRLoader();
-
-				try {
-					const hdr = await hdrLoader.loadAsync(url('hdri/studio_small_08_1k.hdr'));
-					if (disposed) {
-						hdr.dispose();
-						pmrem.dispose();
-						return;
-					}
-					hdr.mapping = THREE.EquirectangularReflectionMapping;
-					warmEnvironment(hdr); // tint the studio HDRI toward the warm room before PMREM filtering
-					environmentTexture = pmrem.fromEquirectangular(hdr).texture;
-					scene.environment = environmentTexture;
-					scene.environmentIntensity = 0.84; // fallback for materials without an envMap (ground, rings)
-					hdr.dispose();
-				} catch (environmentError) {
-					console.warn('[CompilerPipeline] HDRI environment failed to load.', environmentError);
-				} finally {
-					pmrem.dispose();
+				// Neutral studio cyclorama, warmed before PMREM so the ivory-and-clay
+				// room keeps its current tint. `prepareHdr` runs for both the CDN and
+				// bundled tiers, so the fallback stays colour-matched.
+				const environment = await loadEnvironment(renderer, scene, loadAbort.signal, () => disposed, {
+					premium: PREMIUM_HDRIS.monochromeStudio,
+					fallbackUrl: url('hdri/studio_small_08_1k.hdr'),
+					intensity: 0.84,
+					label: 'CompilerPipeline',
+					prepareHdr: warmEnvironment
+				});
+				if (disposed) {
+					environment?.texture.dispose();
+					return;
 				}
+				environmentTexture = environment?.texture ?? null;
 
-				if (disposed) return;
 				loadPercent = 24;
 
 				// Key: warm and low, raking across the belt so the brass and the gear teeth catch it.
@@ -822,6 +815,7 @@
 		void initialise();
 
 		return () => {
+			loadAbort.abort();
 			disposed = true;
 			parallax?.destroy();
 			window.clearTimeout(refreshTimer);

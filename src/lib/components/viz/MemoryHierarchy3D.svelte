@@ -5,6 +5,7 @@
 	import { STUDY_FRAME, type StudyFrame } from './frame-mode';
 	import type * as Three from 'three';
 	import { createBloom, type Bloom } from '$lib/utils/bloom';
+	import { loadEnvironment, PREMIUM_HDRIS } from '$lib/utils/three-environment';
 	import { createParallax, type Parallax } from '$lib/utils/parallax';
 
 	type Level = {
@@ -204,6 +205,7 @@
 
 	onMount(() => {
 		let disposed = false;
+		const loadAbort = new AbortController();
 		let renderer: Three.WebGLRenderer | null = null;
 		let bloom: Bloom | null = null;
 		let scene: Three.Scene | null = null;
@@ -679,7 +681,6 @@
 					gltfModule,
 					dracoModule,
 					ktx2Module,
-					hdrModule,
 					gsapModule,
 					scrollTriggerModule
 				] = await Promise.all([
@@ -687,7 +688,6 @@
 					import('three/examples/jsm/loaders/GLTFLoader.js'),
 					import('three/examples/jsm/loaders/DRACOLoader.js'),
 					import('three/examples/jsm/loaders/KTX2Loader.js'),
-					import('three/examples/jsm/loaders/HDRLoader.js'),
 					import('gsap'),
 					import('gsap/ScrollTrigger')
 				]);
@@ -741,28 +741,20 @@
 
 				loadPercent = 12;
 
-				const pmrem = new THREE.PMREMGenerator(renderer);
-				const hdrLoader = new hdrModule.HDRLoader();
-
-				try {
-					const hdr = await hdrLoader.loadAsync(url('hdri/studio_small_08_1k.hdr'));
-					if (disposed) {
-						hdr.dispose();
-						pmrem.dispose();
-						return;
-					}
-					hdr.mapping = THREE.EquirectangularReflectionMapping;
-					environmentTexture = pmrem.fromEquirectangular(hdr).texture;
-					scene.environment = environmentTexture;
-					scene.environmentIntensity = 0.92;
-					hdr.dispose();
-				} catch (environmentError) {
-					console.warn('[MemoryHierarchy3D] HDRI environment failed to load.', environmentError);
-				} finally {
-					pmrem.dispose();
+				// Dark, coloured studio: the cyan/blue practicals in ferndale read as
+				// instrument lighting on the PCB instead of a generic white room.
+				const environment = await loadEnvironment(renderer, scene, loadAbort.signal, () => disposed, {
+					premium: PREMIUM_HDRIS.ferndaleStudio,
+					fallbackUrl: url('hdri/studio_small_08_1k.hdr'),
+					intensity: 0.98,
+					label: 'MemoryHierarchy3D'
+				});
+				if (disposed) {
+					environment?.texture.dispose();
+					return;
 				}
+				environmentTexture = environment?.texture ?? null;
 
-				if (disposed) return;
 				loadPercent = 24;
 
 				// Key: low and from the right so it rakes along the PCB, picking the
@@ -1020,6 +1012,7 @@
 		void initialise();
 
 		return () => {
+			loadAbort.abort();
 			disposed = true;
 			parallax?.destroy();
 			window.clearTimeout(refreshTimer);
