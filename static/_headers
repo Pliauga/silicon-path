@@ -7,7 +7,7 @@
 # `pnpm dev` and `pnpm preview`; the full policy below arrives with this file.
 #
 # ---------------------------------------------------------------------------
-# Content-Security-Policy — the three things to know before editing it
+# Content-Security-Policy — the four things to know before editing it
 # ---------------------------------------------------------------------------
 #
 # 1. `'unsafe-eval'` is load-bearing, not an oversight. Emception evaluates its
@@ -33,10 +33,16 @@
 #    channel that cannot execute script. The value of this policy is the strict
 #    `script-src`, `object-src` and `base-uri`.
 #
+# 4. `connect-src` allows `blob:` because `GLTFLoader` hands embedded textures to
+#    `ImageBitmapLoader` as `blob:` URLs and loads them with `fetch`. Without it the
+#    models render untextured, with a console violation per texture. A blob URL is
+#    same-origin and can only be minted by this page's own script, so it reaches no
+#    new host. Found by the `securitypolicyviolation` smoke test (src/csp.smoke.test.ts).
+#
 # It is deliberately NOT a nonce-based policy: there is no server to mint a
 # nonce per response on a fully prerendered site.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' 'sha256-4Iplerk1vABbnBkP3b6Us2kJ5bGXVyQvWC3iWW9hWh0=' 'sha256-C9KVLw7LicqtDZ5Kgl7OA25Xl9CTR73JEnbjH7/z4tw=' 'sha256-DHBmRQm+HQElyXXAAGdR0J4jeMeX136bd9vz7CXxkqs=' 'sha256-F7EzAjuaWq8UAQ86mRYfNqAfk8w1m5oQ2i7tQxm8S8I=' 'sha256-hjJW5OFbAmS7W30AUPaxJanBldwuHzqUFQR1fRQ5L/Y=' 'sha256-vmZDs/FGWKzHDUWLWdQzW/AEbX6gibbdQLvKbgXOEmo='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; media-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' 'sha256-4Iplerk1vABbnBkP3b6Us2kJ5bGXVyQvWC3iWW9hWh0=' 'sha256-C9KVLw7LicqtDZ5Kgl7OA25Xl9CTR73JEnbjH7/z4tw=' 'sha256-DHBmRQm+HQElyXXAAGdR0J4jeMeX136bd9vz7CXxkqs=' 'sha256-F7EzAjuaWq8UAQ86mRYfNqAfk8w1m5oQ2i7tQxm8S8I=' 'sha256-hjJW5OFbAmS7W30AUPaxJanBldwuHzqUFQR1fRQ5L/Y=' 'sha256-vmZDs/FGWKzHDUWLWdQzW/AEbX6gibbdQLvKbgXOEmo='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' blob:; worker-src 'self' blob:; media-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin

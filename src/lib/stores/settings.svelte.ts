@@ -91,6 +91,10 @@ class SettingsStore {
 		this.theme = theme;
 	}
 
+	toggleDensity(): void {
+		this.density = this.density === 'dense' ? 'comfortable' : 'dense';
+	}
+
 	setDensity(density: Density): void {
 		this.density = density;
 	}

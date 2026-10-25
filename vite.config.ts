@@ -1,6 +1,7 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig, type Plugin } from 'vite';
+import { previewCspReader } from './scripts/preview-csp.mjs';
 
 /**
  * The Emception toolchain runs SharedArrayBuffer-backed stdin channels, which
@@ -34,10 +35,14 @@ function crossOriginIsolationPlugin(): Plugin {
 			});
 		},
 		configurePreviewServer(server) {
+			// `vite preview` serves build/, whose _headers carries the baked script hashes.
+			const readCsp = previewCspReader(server.config.root);
 			server.middlewares.use((_req, res, next) => {
 				for (const [name, value] of Object.entries(crossOriginIsolation)) {
 					res.setHeader(name, value);
 				}
+				const csp = readCsp();
+				if (csp) res.setHeader('Content-Security-Policy', csp);
 				next();
 			});
 		}

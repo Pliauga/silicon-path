@@ -70,7 +70,7 @@
 	     The body is far taller than the viewport, so its observer uses threshold 0
 	     — a 10% intersection ratio of a multi-screen element could never be reached. Previous / next live at the
 	     very end of the lesson, not between the title and the text. -->
-	<article class="mx-auto w-full max-w-[72ch] px-6 py-8 lg:px-12 lg:py-10">
+	<article class="mx-auto w-full max-w-[72ch] px-6 py-8 lg:px-(--density-gutter) lg:py-10">
 		<section use:inview>
 			<div class="fade-text">
 				<LessonHeader {lesson} {position} />
@@ -94,7 +94,7 @@
 		/>
 	</article>
 {:else}
-	<div class="mx-auto w-full max-w-[72ch] px-6 py-16 lg:px-12">
+	<div class="mx-auto w-full max-w-[72ch] px-6 py-16 lg:px-(--density-gutter)">
 		<h1 class="text-h1 text-slate">Lesson not found</h1>
 		<p class="mt-3 text-body text-dark-gray">
 			That lesson does not exist yet. The dashboard lists everything that is written.

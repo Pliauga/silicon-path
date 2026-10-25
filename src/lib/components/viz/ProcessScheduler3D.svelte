@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { disposeObject3D } from '$lib/utils/three-dispose';
 	import { getContext, onMount } from 'svelte';
 	import { STUDY_FRAME, type StudyFrame } from './frame-mode';
 	import { asset as resolveAsset } from '$app/paths';
@@ -1112,32 +1113,11 @@
 			if (renderer) {
 				bloom?.dispose();
 				bloom = null;
-				renderer.dispose();
 				renderer.forceContextLoss();
+				renderer.dispose();
 				renderer.domElement.remove();
 			}
-			if (modelRoot) {
-				// eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain bookkeeping of three.js objects, never rendered
-			const disposedTextures = new Set<Three.Texture>();
-				modelRoot.traverse((object) => {
-					const mesh = object as Three.Mesh;
-					if (!mesh.isMesh) return;
-					mesh.geometry?.dispose();
-					const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-					for (const material of materials) {
-						for (const value of Object.values(material)) {
-							if (value && typeof value === 'object' && 'isTexture' in value) {
-								const texture = value as Three.Texture;
-								if (texture !== environmentTexture && !disposedTextures.has(texture)) {
-									disposedTextures.add(texture);
-									texture.dispose();
-								}
-							}
-						}
-						material.dispose();
-					}
-				});
-			}
+			if (modelRoot) disposeObject3D(modelRoot, [environmentTexture]);
 			environmentTexture?.dispose();
 			keyLight?.shadow.map?.dispose();
 			controller = null;

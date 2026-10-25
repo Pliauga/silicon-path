@@ -57,7 +57,7 @@
 		{
 			'&': {
 				height: '100%',
-				fontSize: 'var(--code-size, 15px)',
+				fontSize: 'var(--code-size, 14px)',
 				fontWeight: 'var(--code-weight, 500)',
 				boxSizing: 'border-box',
 				// Same blueprint surface as the Shiki blocks (@utility blueprint).
@@ -69,22 +69,22 @@
 			'.cm-scroller': {
 				fontFamily: 'var(--font-mono, monospace)',
 				// One grid cell per line: the line-height equals --blueprint-cell.
-				lineHeight: 'var(--blueprint-cell, 24px)',
+				lineHeight: 'var(--blueprint-cell, 22px)',
 				overflow: 'auto',
 				backgroundImage: 'var(--blueprint-grid)',
-				backgroundSize: 'var(--blueprint-cell, 24px) var(--blueprint-cell, 24px)',
+				backgroundSize: 'var(--blueprint-cell, 22px) var(--blueprint-cell, 22px)',
 				backgroundAttachment: 'local'
 			},
-			'.cm-line': { padding: '0 var(--blueprint-cell, 24px) 0 0' },
+			'.cm-line': { padding: '0 var(--blueprint-cell, 22px) 0 0' },
 			'.cm-content': {
 				caretColor: 'var(--rubin-slate)',
-				padding: 'var(--blueprint-cell, 24px) 0'
+				padding: 'var(--blueprint-cell, 22px) 0'
 			},
 			'.cm-gutters': {
 				backgroundColor: 'transparent',
 				color: 'var(--text-muted)',
 				border: 'none',
-				paddingLeft: 'calc(var(--blueprint-cell, 24px) / 2)'
+				paddingLeft: 'calc(var(--blueprint-cell, 22px) / 2)'
 			},
 			'&.cm-focused': { outline: 'none' },
 			// 10% stone wash so the grid stays visible; syntax inks are contrast-checked

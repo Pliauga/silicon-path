@@ -49,7 +49,7 @@
 <!-- Section 2: resume + the 23-module index, set like a table of contents. -->
 <section
 	id="module-grid"
-	class="mx-auto w-full max-w-[72ch] px-6 py-12 lg:px-12"
+	class="mx-auto w-full max-w-[72ch] px-6 py-12 lg:px-(--density-gutter)"
 	use:inview={{ threshold: 0 }}
 	aria-labelledby="modules-heading"
 >
@@ -117,7 +117,7 @@
 						data-available={available}
 						aria-disabled={target ? undefined : 'true'}
 						class={[
-							'index-row group flex items-baseline gap-5 py-4',
+							'index-row group flex items-baseline gap-5',
 							available ? 'text-slate' : 'cursor-default text-muted-text'
 						].join(' ')}
 					>

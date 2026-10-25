@@ -21,20 +21,19 @@
 @import '@fontsource/courier-prime/latin-ext-400.css';
 
 /* ---------------------------------------------------------------------------
-   Design tokens — DESIGN.md §1.1. One light theme only for this pass.
-   `data-theme="dark"` resolves to the same values, so the (hidden) theme
-   toggle and any stored preference are harmless no-ops until the secondary
-   "Vibe" dark mode is designed.
+   Design tokens — DESIGN.md §1.1. The light values below are the default;
+   `:root[data-theme='dark']` further down overrides them, and ThemeToggle
+   (src/lib/components/shell/ThemeToggle.svelte) switches between the two.
 
    Raw brand hexes are kept exact. Where a brand colour is used for *small
    text* on ivory it fails WCAG AA (agents.md §9: 4.5:1), so a darkened `-ink`
    sibling carries the text role and the exact hex keeps fills, hairlines and
-   large display type:
-     clay  #D97757 on ivory-med 2.69:1  → clay-ink  #A8492A 4.95:1
-     cyan  #44A6E4 on ivory-med 2.31:1  → cyan-ink  #1F6E9F 4.77:1
-     teal  #2B8272 on ivory-med 3.98:1  → teal-ink  #236B5D 5.42:1
-     olive #859900 on ivory-med 2.76:1  → olive-ink #506000 4.58:1
-     gray  #87867F on ivory-med 3.15:1  → muted     #6B6A65 4.67:1
+   large display type. Contrast is against ivory-med #ede9df:
+     clay  #D97757 2.58:1  → clay-ink  #963F23 5.71:1
+     cyan  #44A6E4 2.21:1  → cyan-ink  #175F8E 5.65:1
+     teal  #2B8272 3.82:1  → teal-ink  #1F6254 5.91:1
+     olive #859900 2.64:1  → olive-ink #506000 5.75:1
+     gray  #8A8274 3.13:1  → muted     #645A4F 5.56:1
    --------------------------------------------------------------------------- */
 :root,
 :root[data-theme='light'] {
@@ -240,13 +239,22 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Density — a dial, not a fixed value (agents.md §5.1).
+   Density — a dial, not a fixed value (agents.md §5.1). DensityToggle
+   (src/lib/components/shell/DensityToggle.svelte) sets `data-density` on <html>.
+
+   Consumers (comfortable values match the pre-density look to within a pixel):
+     --density-gutter     page side padding at >= lg (.section-shell, lesson + home)
+     --density-block-gap  vertical rhythm between prose blocks and code blocks
+     --density-row        list rhythm: prose list items, homepage module rows
+     --density-pad        card padding (.callout)
+     --density-leading    prose line height; dense stays >= 1.5 (WCAG 1.4.12)
    --------------------------------------------------------------------------- */
 :root {
 	--density-gutter: 3rem;
 	--density-block-gap: 1.5rem;
 	--density-row: 2.5rem;
 	--density-pad: 1.5rem;
+	--density-leading: 1.65;
 }
 
 :root[data-density='dense'] {
@@ -254,6 +262,7 @@
 	--density-block-gap: 1rem;
 	--density-row: 2rem;
 	--density-pad: 1rem;
+	--density-leading: 1.55;
 }
 
 /* ---------------------------------------------------------------------------
@@ -330,7 +339,7 @@
 	--text-micro--line-height: 1.4;
 	--text-micro--letter-spacing: 0.02em;
 
-	/* Anti-SaaS doctrine: 0px everywhere, 4px on input controls only. */
+	/* Anti-SaaS doctrine: 0px everywhere, input controls included. */
 	--radius-sm: 0px;
 	--radius-md: 0px;
 	--radius-lg: 0px;
@@ -344,7 +353,7 @@
 	/* Paper tooth: a static SVG feTurbulence tile with the 2% opacity baked into the rect,
 	   so it can sit in a normal background-image stack. Rasterised once per element. */
 	--paper-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E");
-	--dur-fast: 200ms;
+	--dur-fast: 150ms;
 	--dur-base: 200ms;
 	--dur-slow: 320ms;
 }
@@ -549,12 +558,12 @@
 	color: var(--text-primary);
 	font-family: var(--font-sans);
 	font-size: var(--font-size-prose);
-	line-height: 1.65;
+	line-height: var(--density-leading);
 	letter-spacing: 0;
 }
 
 .prose-path > * + * {
-	margin-top: 1em;
+	margin-top: calc(var(--density-block-gap) * 0.7);
 }
 
 /* The first block sits directly under the lesson header, so it drops its own
@@ -618,7 +627,7 @@
 }
 
 .prose-path li + li {
-	margin-top: 0.25em;
+	margin-top: calc(var(--density-row) * 0.1);
 }
 
 .prose-path li::marker {
@@ -640,7 +649,7 @@
 .prose-path pre {
 	box-sizing: border-box;
 	max-width: 100%;
-	margin-block: 2rem;
+	margin-block: calc(var(--density-block-gap) * 1.3333);
 	overflow-x: auto;
 	/* Vertical padding stays one grid cell so lines sit on the graph paper;
 	   the sides are tighter so a 78-column line fits the 68ch column. */
@@ -723,7 +732,7 @@
 	background-color: var(--rubin-ivory-med);
 	background-image: var(--paper-grain);
 	background-size: 180px 180px;
-	padding: 1.25rem 1.5rem;
+	padding: calc(var(--density-pad) - 0.25rem) var(--density-pad);
 	/* No box outline: the soft shadow and ivory-med tint lift the card. A transparent
 	   1px border keeps the layout stable so a faint hairline can appear on hover. */
 	border: 1px solid transparent;
@@ -756,6 +765,7 @@
    transparent at rest; on hover it takes the paper tint so the deeper shadow has a face. */
 .index-row {
 	position: relative;
+	padding-block: calc(var(--density-row) * 0.4);
 	background-image: none;
 	transition:
 		transform 0.5s var(--ease-out-back),

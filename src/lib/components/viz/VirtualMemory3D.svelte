@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { disposeObject3D } from '$lib/utils/three-dispose';
 	import { getContext, onMount } from 'svelte';
 	import { asset } from '$app/paths';
 	import { STUDY_FRAME, type StudyFrame } from './frame-mode';
@@ -1847,42 +1848,13 @@
 
 		// The PMREM texture is shared by every PBR material (material.envMap) and by
 		// scene.environment, so it is skipped here and disposed exactly once below.
-// eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain bookkeeping of three.js objects, never rendered
-		const disposedTextures = new Set<Three.Texture>();
-// eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain bookkeeping of three.js objects, never rendered
-		const disposedMaterials = new Set<Three.Material>();
-		scene?.traverse((object) => {
-			const mesh = object as Three.Mesh;
-			if (mesh.geometry) mesh.geometry.dispose();
-			const materials = Array.isArray(mesh.material)
-				? mesh.material
-				: mesh.material
-					? [mesh.material]
-					: [];
-			for (const material of materials) {
-				if (disposedMaterials.has(material)) continue;
-				disposedMaterials.add(material);
-				for (const value of Object.values(material)) {
-					const texture = value as Three.Texture;
-					if (
-						texture &&
-						texture.isTexture &&
-						texture !== environmentTexture &&
-						!disposedTextures.has(texture)
-					) {
-						disposedTextures.add(texture);
-						texture.dispose();
-					}
-				}
-				material.dispose();
-			}
-		});
+if (scene) disposeObject3D(scene, [environmentTexture]);
 		for (const trail of trails) {
 			trail.ribbonGeometry.dispose();
 			trail.light.dispose();
 		}
 		if (scene) scene.environment = null;
-		if (haloTexture && !disposedTextures.has(haloTexture)) haloTexture.dispose();
+		haloTexture?.dispose();
 		haloTexture = null;
 		pageGlows = [];
 
@@ -1891,8 +1863,8 @@
 		keyLight?.shadow.map?.dispose();
 		bloom?.dispose();
 		bloom = null;
-		renderer?.dispose();
 		renderer?.forceContextLoss();
+		renderer?.dispose();
 		renderer?.domElement.remove();
 		delete (window as unknown as Record<string, unknown>).__vm3d;
 		renderer = null;

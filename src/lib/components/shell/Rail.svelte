@@ -7,6 +7,8 @@
 		House,
 		Menu,
 		Moon,
+		Rows3,
+		Rows4,
 		Sun,
 		TerminalSquare
 	} from '@lucide/svelte';
@@ -185,8 +187,8 @@
 		{/if}
 	</ol>
 
-	<!-- Dock: ivory-dark, hairline above, five unadorned icons. -->
-	<div class="flex h-[175px] shrink-0 flex-col border-t border-gray/40 bg-ivory-dark/70">
+	<!-- Dock: ivory-dark, hairline above, six unadorned icons. -->
+	<div class="flex h-[210px] shrink-0 flex-col border-t border-gray/40 bg-ivory-dark/70">
 		<a href={resolve('/')} aria-label="Home" title="Home" class={iconButton}>
 			<House size={16} strokeWidth={1.5} aria-hidden="true" />
 		</a>
@@ -217,6 +219,22 @@
 				<Moon size={16} strokeWidth={1.5} aria-hidden="true" />
 			{:else}
 				<Sun size={16} strokeWidth={1.5} aria-hidden="true" />
+			{/if}
+		</button>
+		<button
+			type="button"
+			onclick={() => settings.toggleDensity()}
+			aria-label="Dense spacing"
+			aria-pressed={settings.density === 'dense'}
+			title={settings.density === 'dense'
+				? 'Dense spacing is on. Click for comfortable.'
+				: 'Click for dense spacing.'}
+			class={iconButton}
+		>
+			{#if settings.density === 'dense'}
+				<Rows4 size={16} strokeWidth={1.5} aria-hidden="true" />
+			{:else}
+				<Rows3 size={16} strokeWidth={1.5} aria-hidden="true" />
 			{/if}
 		</button>
 	</div>

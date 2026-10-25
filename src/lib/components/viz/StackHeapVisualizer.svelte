@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { disposeObject3D } from '$lib/utils/three-dispose';
 	import { getContext, onMount } from 'svelte';
 	import { STUDY_FRAME, type StudyFrame } from './frame-mode';
 	import { asset as resolveAsset } from '$app/paths';
@@ -748,26 +749,12 @@
 				scrollTrigger?.kill();
 				scrollTween?.kill();
 
-				scene?.traverse((object) => {
-					const mesh = object as Three.Mesh;
-					if (mesh.geometry) mesh.geometry.dispose();
-					const materials = Array.isArray(mesh.material)
-						? mesh.material
-						: mesh.material
-							? [mesh.material]
-							: [];
-					for (const material of materials) {
-						const surface = material as Three.MeshStandardMaterial;
-						surface.map?.dispose();
-						surface.metalnessMap?.dispose();
-						surface.roughnessMap?.dispose();
-						surface.emissiveMap?.dispose();
-						material.dispose();
-					}
-				});
+				if (scene) disposeObject3D(scene, [environmentTexture]);
 				environmentTexture?.dispose();
 				bloom?.dispose();
 				bloom = null;
+				// Release the GPU context eagerly; dispose() alone leaves it alive until GC.
+				renderer?.forceContextLoss();
 				renderer?.dispose();
 				renderer?.domElement.remove();
 				document.documentElement.classList.remove('stack-heap');
@@ -929,7 +916,7 @@
 			'Helvetica Neue', 'Segoe UI', sans-serif;
 		--sh-font-heading: var(--font-display, 'Goudy Old Style'), 'Goudy Bookletter 1911', 'Sorts Mill Goudy',
 			Garamond, 'Iowan Old Style', Georgia, serif;
-		--sh-font-mono: 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+		--sh-font-mono: var(--font-mono);
 		--sh-radius: 0px;
 		--sh-ink: var(--color-slate);
 		--sh-soft: var(--color-dark-gray);
@@ -1358,8 +1345,8 @@
 
 	.readout__item .k {
 		font-family: var(--sh-font-mono);
-		font-size: 8px;
-		letter-spacing: 0.24em;
+		font-size: var(--text-micro, 0.75rem);
+		letter-spacing: 0.1em;
 		color: var(--sh-faint);
 	}
 

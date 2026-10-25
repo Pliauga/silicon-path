@@ -5,6 +5,7 @@
 	import { Menu, X } from '@lucide/svelte';
 	import { onMount } from 'svelte';
 	import Rail from '$lib/components/shell/Rail.svelte';
+	import DensityToggle from '$lib/components/shell/DensityToggle.svelte';
 	import ThemeToggle from '$lib/components/shell/ThemeToggle.svelte';
 	import Sidebar from '$lib/components/shell/Sidebar.svelte';
 	import { Dialog } from '$lib/components/ui/dialog';
@@ -295,7 +296,10 @@
 			<Menu size={18} strokeWidth={1.5} aria-hidden="true" />
 		</button>
 		<a href={resolve('/')} class="text-small text-slate">Silicon Path</a>
-		<ThemeToggle class="ml-auto" />
+		<div class="ml-auto flex items-center">
+			<DensityToggle />
+			<ThemeToggle />
+		</div>
 	</header>
 
 	<!-- Native window scrolling: no inner scroller and no scroll snapping, so long

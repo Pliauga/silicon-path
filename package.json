@@ -62,6 +62,7 @@
     "mdsvex": "^0.12.8",
     "prettier": "^3.9.10",
     "prettier-plugin-tailwindcss": "^0.8.1",
+    "puppeteer-core": "^25.16.0",
     "shiki": "^1.29.2",
     "svelte": "^5.57.2",
     "svelte-check": "^4.7.7",

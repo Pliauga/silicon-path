@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { disposeObject3D } from '$lib/utils/three-dispose';
 	import { getContext, onMount } from 'svelte';
 	import { STUDY_FRAME, type StudyFrame } from './frame-mode';
 	import { asset as resolveAsset } from '$app/paths';
@@ -917,32 +918,11 @@
 				renderer.setAnimationLoop(null);
 				bloom?.dispose();
 				bloom = null;
-				renderer.dispose();
 				renderer.forceContextLoss();
+				renderer.dispose();
 				renderer.domElement.remove();
 			}
-			if (scene) {
-				const textures = new Set<Three.Texture>();
-				scene.traverse((object) => {
-					const mesh = object as Three.Mesh;
-					if (!mesh.isMesh) return;
-					mesh.geometry?.dispose();
-					const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-					for (const material of materials) {
-						if (!material) continue;
-						for (const value of Object.values(material)) {
-							if (value && typeof value === 'object' && 'isTexture' in value) {
-								const texture = value as Three.Texture;
-								if (!textures.has(texture)) {
-									textures.add(texture);
-									texture.dispose();
-								}
-							}
-						}
-						material.dispose();
-					}
-				});
-			}
+			if (scene) disposeObject3D(scene, [environmentTexture]);
 			environmentTexture?.dispose();
 			environmentTarget?.dispose();
 			keyLight?.shadow.map?.dispose();

@@ -5,6 +5,7 @@
 	import { worksheetMeta } from '$lib/content/worksheets/meta';
 	import HandbookNav from './HandbookNav.svelte';
 	import ModuleNav from './ModuleNav.svelte';
+	import DensityToggle from './DensityToggle.svelte';
 	import ThemeToggle from './ThemeToggle.svelte';
 	import { lessonsInOrder } from '$lib/content';
 	import { progress } from '$lib/stores/progress.svelte';
@@ -135,7 +136,10 @@
 			<TerminalSquare size={15} strokeWidth={1.5} aria-hidden="true" />
 			<span>Playground</span>
 		</a>
-		<ThemeToggle />
+		<div class="flex items-center">
+			<ThemeToggle />
+			<DensityToggle />
+		</div>
 		<button
 			type="button"
 			onclick={() => onOpenCommand?.()}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { disposeObject3D } from '$lib/utils/three-dispose';
 	import { onMount } from 'svelte';
 	import { asset as resolveAsset } from '$app/paths';
 	import type * as Three from 'three';
@@ -782,20 +783,8 @@
 			for (const cleanup of cleanups) cleanup();
 			teardownMotion();
 			renderer?.setAnimationLoop(null);
-			if (modelRoot && threeModule) {
-				modelRoot.traverse((object) => {
-					if (!(object instanceof threeModule.Mesh)) return;
-					object.geometry.dispose();
-					const materials = Array.isArray(object.material) ? object.material : [object.material];
-					for (const material of materials) {
-						for (const value of Object.values(material)) {
-							// The shared environment is disposed once, below.
-							if (value instanceof threeModule.Texture && value !== environmentTexture) value.dispose();
-						}
-						material.dispose();
-					}
-				});
-			}
+			// The shared environment is disposed once, below.
+			if (modelRoot) disposeObject3D(modelRoot, [environmentTexture]);
 			environmentTexture?.dispose();
 			groundGeometry?.dispose();
 			groundMaterial?.dispose();
@@ -806,6 +795,8 @@
 			disposeLoaders?.();
 			bloom?.dispose();
 			bloom = null;
+			// Release the GPU context eagerly; dispose() alone leaves it alive until GC.
+			renderer?.forceContextLoss();
 			renderer?.dispose();
 			if (renderer?.domElement?.parentNode) renderer.domElement.remove();
 		};
