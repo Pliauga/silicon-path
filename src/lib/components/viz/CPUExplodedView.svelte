@@ -1,11 +1,25 @@
 <script lang="ts">
 	import { disposeObject3D } from '$lib/utils/three-dispose';
+	import { fetchPremiumAsset } from '$lib/utils/progressive-assets';
 	import { getContext, onMount } from 'svelte';
 	import { asset as resolveAsset } from '$app/paths';
 	import { STUDY_FRAME, type StudyFrame } from './frame-mode';
 	import type * as Three from 'three';
 	import { createBloom, type Bloom } from '$lib/utils/bloom';
 	import { createParallax, type Parallax } from '$lib/utils/parallax';
+
+	/**
+	 * Optional CDN HDRI, pinned to a commit and verified by SRI.
+	 *
+	 * The commit-pinned jsDelivr snapshot is immutable, and the SRI hash makes
+	 * tampering detectable. jsDelivr sends CORS + CORP headers, which the COEP
+	 * policy requires. `fetchPremiumAsset` caps the whole request at 1.5 s; on
+	 * any failure the bundled studio HDRI is used instead, and if that fails too
+	 * the procedural key/fill/rim rig below still lights the model.
+	 */
+	const PREMIUM_HDRI_URL =
+		'https://cdn.jsdelivr.net/gh/mrdoob/three.js@9b4a2ac29c63ccb43fd51c5661f2f873ac2c39b8/examples/textures/equirectangular/venice_sunset_1k.hdr';
+	const PREMIUM_HDRI_SRI = 'sha384-qF8CTgbo5SXaZBRQulYjWlJOqUPse8sQwxwCL6OI1UMbv+Rg3g/zV3xuimvIjRrU';
 
 	type Layer = {
 		index: string;
@@ -175,6 +189,7 @@
 
 	onMount(() => {
 		let disposed = false;
+		const loadAbort = new AbortController();
 		let renderer: Three.WebGLRenderer | null = null;
 		let bloom: Bloom | null = null;
 		let scene: Three.Scene | null = null;
@@ -449,23 +464,59 @@
 				const pmrem = new THREE.PMREMGenerator(renderer);
 				const hdrLoader = new hdrModule.HDRLoader();
 
-				try {
-					const hdr = await hdrLoader.loadAsync(url('hdri/studio_small_08_1k.hdr'));
+				// Progressive enhancement: the CDN HDRI is optional. Every network
+				// failure has already resolved to null inside fetchPremiumAsset. On a
+				// miss we keep the bundled studio HDRI; if decoding/loading that fails
+				// too, the procedural key/fill/rim rig below still lights the model.
+				const premiumHdri = await fetchPremiumAsset(PREMIUM_HDRI_URL, 1500, {
+					signal: loadAbort.signal,
+					integrity: PREMIUM_HDRI_SRI
+				});
+				if (disposed) {
+					pmrem.dispose();
+					return;
+				}
+
+				let hdr: Three.DataTexture | null = null;
+				if (premiumHdri) {
+					try {
+						hdr = hdrLoader.createDataTexture(premiumHdri);
+					} catch (environmentError) {
+						console.warn('[CPUExplodedView] Premium HDRI could not be decoded.', environmentError);
+					}
+				}
+				if (!hdr) {
+					try {
+						hdr = await hdrLoader.loadAsync(url('hdri/studio_small_08_1k.hdr'));
+					} catch (environmentError) {
+						console.warn(
+							'[CPUExplodedView] Fallback HDRI failed to load; using procedural lighting.',
+							environmentError
+						);
+					}
+				}
+
+				if (hdr) {
 					if (disposed) {
 						hdr.dispose();
 						pmrem.dispose();
 						return;
 					}
-					hdr.mapping = THREE.EquirectangularReflectionMapping;
-					environmentTexture = pmrem.fromEquirectangular(hdr).texture;
-					scene.environment = environmentTexture;
-					scene.environmentIntensity = 0.92;
-					hdr.dispose();
-				} catch (environmentError) {
-					console.warn('[CPUExplodedView] HDRI environment failed to load.', environmentError);
-				} finally {
-					pmrem.dispose();
+					try {
+						hdr.mapping = THREE.EquirectangularReflectionMapping;
+						environmentTexture = pmrem.fromEquirectangular(hdr).texture;
+						scene.environment = environmentTexture;
+						scene.environmentIntensity = 0.92;
+					} catch (environmentError) {
+						console.warn(
+							'[CPUExplodedView] HDRI environment generation failed; using procedural lighting.',
+							environmentError
+						);
+					} finally {
+						hdr.dispose();
+					}
 				}
+				pmrem.dispose();
 
 				if (disposed) return;
 				loadPercent = 24;
@@ -701,6 +752,7 @@
 		void initialise();
 
 		return () => {
+			loadAbort.abort();
 			disposed = true;
 			parallax?.destroy();
 			window.clearTimeout(refreshTimer);
@@ -720,6 +772,9 @@
 				renderer.dispose();
 				renderer.domElement.remove();
 			}
+			// The PMREM environment map is shared by every tuned material, so the
+			// helper is told to keep it and its single owner disposes it here. This
+			// releases the premium HDRI-derived texture when the CDN path was used.
 			if (modelRoot) disposeObject3D(modelRoot, [environmentTexture]);
 			environmentTexture?.dispose();
 			keyLight?.shadow.map?.dispose();

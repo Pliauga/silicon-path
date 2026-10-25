@@ -7,7 +7,7 @@
 # `pnpm dev` and `pnpm preview`; the full policy below arrives with this file.
 #
 # ---------------------------------------------------------------------------
-# Content-Security-Policy — the four things to know before editing it
+# Content-Security-Policy — the five things to know before editing it
 # ---------------------------------------------------------------------------
 #
 # 1. `'unsafe-eval'` is load-bearing, not an oversight. Emception evaluates its
@@ -39,10 +39,21 @@
 #    same-origin and can only be minted by this page's own script, so it reaches no
 #    new host. Found by the `securitypolicyviolation` smoke test (src/csp.smoke.test.ts).
 #
+# 5. `https://cdn.jsdelivr.net` is the only third-party origin. It is listed by
+#    exact host — never a wildcard — in `connect-src` only, because the
+#    progressive-asset pilot fetches a pinned, SRI-verified three.js example HDRI
+#    with `fetch()`. `connect-src` handles the CDN fetch, not `img-src`: no image
+#    element loads from the CDN, so granting it to `img-src` would be unused
+#    authority. The CPU study falls back to its bundled studio HDRI (then to the
+#    procedural key/fill/rim rig) if the request fails or exceeds its 1.5 s
+#    budget. jsDelivr sends `Access-Control-Allow-Origin: *` and
+#    `Cross-Origin-Resource-Policy: cross-origin`, so the CORS fetch also
+#    satisfies the COEP pair below.
+#
 # It is deliberately NOT a nonce-based policy: there is no server to mint a
 # nonce per response on a fully prerendered site.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' 'sha256-4Iplerk1vABbnBkP3b6Us2kJ5bGXVyQvWC3iWW9hWh0=' 'sha256-C9KVLw7LicqtDZ5Kgl7OA25Xl9CTR73JEnbjH7/z4tw=' 'sha256-DHBmRQm+HQElyXXAAGdR0J4jeMeX136bd9vz7CXxkqs=' 'sha256-F7EzAjuaWq8UAQ86mRYfNqAfk8w1m5oQ2i7tQxm8S8I=' 'sha256-hjJW5OFbAmS7W30AUPaxJanBldwuHzqUFQR1fRQ5L/Y=' 'sha256-vmZDs/FGWKzHDUWLWdQzW/AEbX6gibbdQLvKbgXOEmo='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' blob:; worker-src 'self' blob:; media-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' 'sha256-4Iplerk1vABbnBkP3b6Us2kJ5bGXVyQvWC3iWW9hWh0=' 'sha256-C9KVLw7LicqtDZ5Kgl7OA25Xl9CTR73JEnbjH7/z4tw=' 'sha256-DHBmRQm+HQElyXXAAGdR0J4jeMeX136bd9vz7CXxkqs=' 'sha256-F7EzAjuaWq8UAQ86mRYfNqAfk8w1m5oQ2i7tQxm8S8I=' 'sha256-hjJW5OFbAmS7W30AUPaxJanBldwuHzqUFQR1fRQ5L/Y=' 'sha256-vmZDs/FGWKzHDUWLWdQzW/AEbX6gibbdQLvKbgXOEmo='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' blob: https://cdn.jsdelivr.net; worker-src 'self' blob:; media-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin
@@ -60,15 +71,17 @@
 #   Without this pair the compiler still boots, but `scanf` silently sees EOF.
 # * `Cross-Origin-Resource-Policy: same-origin` finishes the job: with COEP at
 #   `require-corp`, every subresource must opt in, and this states that ours are
-#   for this origin only. The app loads no third-party resource.
+#   for this origin only. The one optional third-party load (the jsDelivr HDRI
+#   above) opts in with its own CORS + CORP headers.
 # * `Strict-Transport-Security` is ignored over plain http, which matters because
 #   the built bundle is also served locally over http. `includeSubDomains` and
 #   `preload` are omitted until every subdomain of the eventual domain is known
 #   to be https-only — they are one-way doors.
-# * `upgrade-insecure-requests` is intentionally absent: every source is already
-#   `'self'`, and on a plain-http origin the directive rewrites subresource URLs
-#   to https, which would then fail the same-origin check and break exactly the
-#   local `python -m http.server` workflow the README describes.
+# * `upgrade-insecure-requests` is intentionally absent: every source is
+#   same-origin or explicitly https, and on a plain-http origin the directive
+#   rewrites subresource URLs to https, which would then fail the same-origin
+#   check and break exactly the local `python -m http.server` workflow the README
+#   describes.
 
 # Netlify's MIME sniffing is reliable, but the toolchain streams `.wasm` bytes out
 # of `.tar.brotli` payloads and the compilers fetch them as opaque binaries; this
