@@ -4,6 +4,15 @@
 allowBuilds:
   esbuild: true
 
+# `overrides` — force a patched `tinypool` if it ever re-appears in the tree.
+# vitest 4.1.12 no longer depends on tinypool at all, so today this override is
+# dormant; it is the guard for a future 4.x minor that re-introduces an older
+# range. GHSA-5gmw-xhrv-c9v3 (prototype-pollution RCE, <=2.1.0) and
+# GHSA-85c8-ppgw-ccpr (prototype-pollution RCE, <2.1.2) are both fixed by
+# tinypool >=2.1.2. pnpm v11 reads overrides from here, NOT from package.json.
+overrides:
+  tinypool: ^2.1.2
+
 # `minimumReleaseAgeExclude` — pnpm v11 refuses to install a package version
 # published within the last 1440 minutes (its supply-chain guard). That guard
 # is worth keeping on, so this is a narrow, version-pinned exception rather
