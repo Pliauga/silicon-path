@@ -13,8 +13,15 @@
  *    the only reliable stop is `worker.terminate()`. The next run boots a fresh
  *    worker; that is slower but correct, and infinite loops are the rare case.
  *
+ * 3. Output is capped (see `OUTPUT_LIMIT_BYTES`). wasi-run has no back-pressure:
+ *    `while (1) puts("x");` grows the worker's buffers until the tab is killed
+ *    by the OS, and that happens long before the 5 s watchdog fires. The cap is
+ *    enforced from the streaming callbacks so it trips on the first kilobyte
+ *    over the line, then terminates the worker like any other runaway program.
+ *
  * `compileAndRun` from the browser adapter drives the three phases; we only
- * add the watchdog, the timeout semantics, and the diagnostic parsing.
+ * add the watchdog, the output ceiling, the timeout semantics, and the
+ * diagnostic parsing.
  */
 
 import { compileAndRun, TOOLCHAIN_PRESETS } from '@gameguild/emception-browser';
@@ -61,6 +68,21 @@ export const RUN_TIMEOUT_MS = 5_000;
 
 /** Booting fetches the manifest and three IDBFS layers; cold IDB can be slow. */
 const BOOT_TIMEOUT_MS = 60_000;
+
+/**
+ * Byte ceiling for everything the toolchain writes to stdout and stderr,
+ * combined, across the compile, link and run phases.
+ *
+ * Both buffers live in the worker, so a runaway `printf` is a memory-exhaustion
+ * path rather than a display problem: the page has no way to drain them and the
+ * tab is OOM-killed before the 5 s watchdog can help. 100 KB is far more than
+ * any lesson prints (the largest fixture is a few KB) and small enough that the
+ * capture, the truncation and the termination all stay cheap.
+ */
+export const OUTPUT_LIMIT_BYTES = 100_000;
+
+/** Appended to the truncated stream so the student sees why the run stopped. */
+export const OUTPUT_TRUNCATED_MARKER = '[Output truncated: execution limit reached]';
 
 /**
  * What `prewarm()` builds. It is never shown and never cached for the student:
@@ -146,6 +168,25 @@ function timeoutResult(partial: Partial<CompileResult> = {}): CompileResult {
 	};
 }
 
+/**
+ * The run was stopped because it wrote more than `OUTPUT_LIMIT_BYTES`. It is
+ * reported as a runtime error rather than a timeout: the program was terminated
+ * by the host, not by the clock, and the marker is what tells the student which
+ * of the two happened. Exit code 124 matches the timeout convention (the
+ * process never produced an exit status of its own).
+ */
+function truncatedResult(stdout: string, stderr: string, durationMs: number): CompileResult {
+	const cut = stdout.endsWith('\n') || stdout.length === 0 ? stdout : `${stdout}\n`;
+	return {
+		status: 'runtime-error',
+		stdout: `${cut}${OUTPUT_TRUNCATED_MARKER}`,
+		stderr,
+		diagnostics: [],
+		exitCode: 124,
+		durationMs
+	};
+}
+
 function phaseOutputs(outcome: BuildOutcome): ToolOutput {
 	if (outcome.finalPhase === 'compile' && outcome.compile) return outcome.compile;
 	if (outcome.finalPhase === 'link' && outcome.link) return outcome.link;
@@ -154,6 +195,18 @@ function phaseOutputs(outcome: BuildOutcome): ToolOutput {
 
 function emptyOutput(): ToolOutput {
 	return { exitCode: 1, stdout: '', stderr: '' };
+}
+
+const UTF8 = new TextEncoder();
+
+/**
+ * Byte length in UTF-8 — the unit `OUTPUT_LIMIT_BYTES` is measured in. A C
+ * program's output is almost always ASCII, where this is just `text.length`, so
+ * the encode is skipped rather than run per chunk.
+ */
+function byteLength(text: string): number {
+	// eslint-disable-next-line no-control-regex -- matching the ASCII range is the point.
+	return /[^\x00-\x7F]/.test(text) ? UTF8.encode(text).length : text.length;
 }
 
 installStrippedLinkStep();
@@ -332,22 +385,69 @@ export class EmceptionBackend implements CBackend {
 			};
 		});
 
+		/*
+		 * Output is captured as it streams so the ceiling can be enforced while
+		 * the program is still writing. `onStdout`/`onStderr` are additive: the
+		 * adapter still returns the full text of each phase, so nothing here
+		 * changes what a well-behaved program sees — the capture only exists to
+		 * decide when to stop. Bytes are counted, and the final chunk is cut on a
+		 * character boundary so a multi-byte glyph is never split in half.
+		 */
+		const stdoutChunks: string[] = [];
+		const stderrChunks: string[] = [];
+		let capturedBytes = 0;
+		let outputLimited = false;
+		let resolveOutputLimit: (() => void) | undefined;
+
+		const outputLimit = new Promise<'output-limit'>((resolve) => {
+			resolveOutputLimit = () => resolve('output-limit');
+		});
+
+		const hitOutputLimit = (): void => {
+			if (outputLimited) return;
+			outputLimited = true;
+			logger.warn(
+				`[compiler] program wrote more than ${OUTPUT_LIMIT_BYTES} B of output; terminating worker`
+			);
+			resolveOutputLimit?.();
+		};
+
+		const capture = (chunks: string[]) => (text: string): void => {
+			if (outputLimited || text.length === 0) return;
+			const remaining = OUTPUT_LIMIT_BYTES - capturedBytes;
+			if (remaining <= 0) {
+				hitOutputLimit();
+				return;
+			}
+			const size = byteLength(text);
+			const piece = size <= remaining ? text : text.slice(0, remaining);
+			chunks.push(piece);
+			capturedBytes += Math.min(size, remaining);
+			if (size > remaining || capturedBytes >= OUTPUT_LIMIT_BYTES) hitOutputLimit();
+		};
+
+		const onStdout = capture(stdoutChunks);
+		const onStderr = capture(stderrChunks);
+
 		await clearBuildOutputs(client);
 
-		const outcome: BuildOutcome | 'timeout' = await Promise.race([
+		const outcome: BuildOutcome | 'timeout' | 'output-limit' = await Promise.race([
 			compileAndRun(client, {
 				toolchain: ToolchainPreset.C,
 				source: withPrelude(source),
 				stdin,
 				cwd: WORKDIR,
 				paths: { sourcePath: SOURCE_PATH, objectPath: OBJECT_PATH, wasmPath: WASM_PATH },
+				onStdout,
+				onStderr,
 				onPhase: (phase: string) => {
 					const mapped = phase as RunPhase;
 					this.emitPhase(mapped);
 					if (mapped === 'run') armRunTimer?.();
 				}
 			}),
-			watchdog
+			watchdog,
+			outputLimit
 		]).finally(() => {
 			if (runTimer) clearTimeout(runTimer);
 		});
@@ -356,6 +456,17 @@ export class EmceptionBackend implements CBackend {
 			// The instance is still spinning; the only way out is to remove it.
 			this.killWorker();
 			return timeoutResult({ durationMs: Math.round(performance.now() - startedAt) });
+		}
+
+		if (outcome === 'output-limit') {
+			// Same reasoning as the watchdog: a program wedged in a print loop
+			// keeps allocating, so the worker has to go.
+			this.killWorker();
+			return truncatedResult(
+				stdoutChunks.join(''),
+				stderrChunks.join(''),
+				Math.round(performance.now() - startedAt)
+			);
 		}
 
 		const durationMs = Math.round(performance.now() - startedAt);
@@ -374,6 +485,13 @@ export class EmceptionBackend implements CBackend {
 		}
 
 		if (timedOut) return timeoutResult({ durationMs });
+
+		// The ceiling can trip in the same turn the pipeline settles; the race
+		// then resolves with the outcome while `outputLimited` is set. Report the
+		// truncation, not a success the student would read as complete output.
+		if (outputLimited) {
+			return truncatedResult(stdoutChunks.join(''), stderrChunks.join(''), durationMs);
+		}
 
 		// Workaround for an upstream toolchain bug: once a program has consumed
 		// the shared-memory stdin channel, the *next* compile in the same worker

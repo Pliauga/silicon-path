@@ -1,8 +1,71 @@
-# Cross-origin isolation for static hosts (Netlify / Cloudflare Pages style).
-# Emception's SharedArrayBuffer stdin channel needs both headers on every route.
+# Security headers for the static deployment (Netlify / Cloudflare Pages `_headers` syntax).
+#
+# This file is the *entire* server-side configuration of the site: the build is a
+# prerendered bundle copied to a static host, with no proxy, no server routes and
+# no runtime to add a header later. A header missing here is missing in
+# production. `vite.config.ts` mirrors the cross-origin isolation pair for
+# `pnpm dev` and `pnpm preview`; the full policy below arrives with this file.
+#
+# ---------------------------------------------------------------------------
+# Content-Security-Policy — the three things to know before editing it
+# ---------------------------------------------------------------------------
+#
+# 1. `'unsafe-eval'` is load-bearing, not an oversight. Emception evaluates its
+#    Emscripten glue with `new Function(...)` inside the toolchain worker, and a
+#    dedicated worker inherits the policy container of the document that created
+#    it — a separate rule for the worker URL cannot relax the inherited policy.
+#    `'wasm-unsafe-eval'` does not cover this: it permits WebAssembly
+#    compilation, not `new Function` / `eval`.
+#
+# 2. The `'sha256-…'` entries authorise the inline scripts SvelteKit prerenders —
+#    the pre-first-paint theme bootstrap from `src/app.html`, and the hydration
+#    bootstrap (`__sveltekit_...`). Their values are a function of the emitted
+#    bytes, and SvelteKit names the hydration global from a per-build value, so
+#    they change on EVERY build — not only when the UI does — and they already
+#    differ between page groups. A committed list is stale after one `pnpm build`,
+#    which is why `scripts/csp-hashes.mjs` recomputes it in `build/_headers` on
+#    every build. The values below are a snapshot from a clean build: edit the
+#    policy here, but let the build own the hash list.
+#
+# 3. `style-src` keeps `'unsafe-inline'` on purpose. Svelte injects scoped
+#    component styles at runtime and the Three.js studies set inline styles;
+#    hashing them would mean hashing dozens of emitted stylesheets to defend a
+#    channel that cannot execute script. The value of this policy is the strict
+#    `script-src`, `object-src` and `base-uri`.
+#
+# It is deliberately NOT a nonce-based policy: there is no server to mint a
+# nonce per response on a fully prerendered site.
 /*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' 'sha256-4Iplerk1vABbnBkP3b6Us2kJ5bGXVyQvWC3iWW9hWh0=' 'sha256-C9KVLw7LicqtDZ5Kgl7OA25Xl9CTR73JEnbjH7/z4tw=' 'sha256-DHBmRQm+HQElyXXAAGdR0J4jeMeX136bd9vz7CXxkqs=' 'sha256-F7EzAjuaWq8UAQ86mRYfNqAfk8w1m5oQ2i7tQxm8S8I=' 'sha256-hjJW5OFbAmS7W30AUPaxJanBldwuHzqUFQR1fRQ5L/Y=' 'sha256-vmZDs/FGWKzHDUWLWdQzW/AEbX6gibbdQLvKbgXOEmo='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; media-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
+  Strict-Transport-Security: max-age=63072000
+#
+# Notes on the non-CSP headers:
+#
+# * `Cross-Origin-Opener-Policy` + `Cross-Origin-Embedder-Policy` are what make
+#   the page cross-origin isolated. Emception's SharedArrayBuffer stdin channel
+#   needs `SharedArrayBuffer`, and browsers only expose it to isolated documents.
+#   Without this pair the compiler still boots, but `scanf` silently sees EOF.
+# * `Cross-Origin-Resource-Policy: same-origin` finishes the job: with COEP at
+#   `require-corp`, every subresource must opt in, and this states that ours are
+#   for this origin only. The app loads no third-party resource.
+# * `Strict-Transport-Security` is ignored over plain http, which matters because
+#   the built bundle is also served locally over http. `includeSubDomains` and
+#   `preload` are omitted until every subdomain of the eventual domain is known
+#   to be https-only — they are one-way doors.
+# * `upgrade-insecure-requests` is intentionally absent: every source is already
+#   `'self'`, and on a plain-http origin the directive rewrites subresource URLs
+#   to https, which would then fail the same-origin check and break exactly the
+#   local `python -m http.server` workflow the README describes.
 
+# Netlify's MIME sniffing is reliable, but the toolchain streams `.wasm` bytes out
+# of `.tar.brotli` payloads and the compilers fetch them as opaque binaries; this
+# keeps the declared type explicit for hosts that guess from content instead.
 /emception/cdn/*.wasm
   Content-Type: application/wasm

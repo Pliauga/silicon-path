@@ -115,7 +115,9 @@ Install complains about your Node version. Run `node --version`. Anything below 
 
 The first Run takes several seconds. That's normal. The compiler boots once, which takes roughly 4 to 7 seconds, and later runs take about a second. A program that waits for input (`scanf`) makes the next run boot it again.
 
-A program that reads input gets nothing. This only happens if you serve the built files with some other web server. `pnpm dev` and `pnpm preview` already send the headers the compiler needs. Anything else has to send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
+A program that reads input gets nothing, or the compiler doesn't start at all. This is almost always the web server, not the code: if you serve `build/` yourself — `python -m http.server build`, `npx serve build`, or opening `build/index.html` straight from disk — the browser withholds `SharedArrayBuffer`, because those servers don't send the two headers cross-origin isolation requires, and the compiler's input channel is built on it.
+
+Use `pnpm preview`: it serves the same `build/` directory on http://localhost:4173 with the headers attached. To host the build anywhere else, that server has to send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` on every response. `static/_headers` already contains them, along with the Content-Security-Policy and the rest of the security headers, in Netlify and Cloudflare Pages format, so those two hosts apply everything automatically. Everything else in `build/` is plain static files.
 
 Progress vanished. It lives in your browser's local storage for that address. Clearing site data, using a private window, or switching browser or port starts you from zero.
 
@@ -124,7 +126,7 @@ The 3D scenes are slow. They're the heaviest part. Close other heavy tabs and ch
 ## Other commands
 
 ```
-pnpm build      build the static site into build/
+pnpm build      build the static site into build/ (also refreshes the CSP hashes)
 pnpm preview    serve that build on http://localhost:4173
 pnpm check      type checks
 pnpm test       unit tests
